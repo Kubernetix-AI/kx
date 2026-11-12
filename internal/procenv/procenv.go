@@ -1,6 +1,7 @@
 // Package procenv builds the environment of the programs kx starts (docker,
-// git): kx's own environment without the secrets they never need, so a
-// Docker plugin, credential helper or git hook can't read them.
+// git, the browser): kx's own environment without the secrets they never
+// need, so a Docker plugin, credential helper, git hook or browser can't
+// read them.
 package procenv
 
 import (

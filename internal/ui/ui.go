@@ -21,6 +21,8 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/term"
+
+	"github.com/kubernetix-ai/kx/internal/safetext"
 )
 
 // ErrNoTTY means a prompt was needed but there is no terminal to ask on.
@@ -249,7 +251,8 @@ func (p *Printer) encode(v any, indent string) error {
 	if err := enc.Encode(v); err != nil {
 		return err
 	}
-	p.writeOut(b.String())
+	// Values often hold text kx didn't write (app logs, server messages).
+	p.writeOut(safetext.EscapeJSON(b.String()))
 	return nil
 }
 

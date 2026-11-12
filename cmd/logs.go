@@ -12,7 +12,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/kubernetix-ai/kx/internal/api"
+	"github.com/kubernetix-ai/kx/internal/ci"
 	"github.com/kubernetix-ai/kx/internal/kxerr"
+	"github.com/kubernetix-ai/kx/internal/safetext"
+	"github.com/kubernetix-ai/kx/internal/ui"
 )
 
 func init() { register(newLogsCmd) }
@@ -80,9 +83,7 @@ func runLogs(ctx context.Context, a *App, cmd *cobra.Command, o logsOpts) error 
 	if err != nil {
 		return err
 	}
-	for _, l := range lines {
-		printLogLine(s, l)
-	}
+	printLogLines(s, lines)
 	if !o.follow {
 		return nil
 	}
@@ -117,6 +118,7 @@ func runLogs(ctx context.Context, a *App, cmd *cobra.Command, o logsOpts) error 
 		for k, v := range seen {
 			skip[k] = v
 		}
+		var fresh []api.LogLine
 		for _, l := range batch {
 			if l.NS < last {
 				continue
@@ -125,24 +127,49 @@ func runLogs(ctx context.Context, a *App, cmd *cobra.Command, o logsOpts) error 
 				skip[l.Line]--
 				continue
 			}
-			printLogLine(s, l)
+			fresh = append(fresh, l)
 			if l.NS > last {
 				last, seen = l.NS, map[string]int{}
 			}
 			seen[l.Line]++
 		}
+		printLogLines(s, fresh)
 	}
 }
 
-func printLogLine(s *Session, l api.LogLine) {
+// printLogLines prints a batch of the app's output on stdout.
+func printLogLines(s *Session, lines []api.LogLine) {
 	if s.App.jsonOut {
-		_ = s.P.PrintJSONLine(struct {
-			Time string `json:"time"`
-			Line string `json:"line"`
-		}{l.Time.UTC().Format(time.RFC3339Nano), cleanLogText(l.Line)})
+		for _, l := range lines {
+			_ = s.P.PrintJSONLine(struct {
+				Time string `json:"time"`
+				Line string `json:"line"`
+			}{l.Time.UTC().Format(time.RFC3339Nano), cleanLogText(l.Line)})
+		}
 		return
 	}
-	s.P.LogLine(l.Time.Local().Format("2006-01-02 15:04:05"), l.Line)
+	texts := make([]string, len(lines))
+	for i, l := range lines {
+		texts[i] = safetext.Neutralize(ui.CleanText(l.Line))
+	}
+	defer stopCommands(s, texts)()
+	for i, l := range lines {
+		s.P.LogLine(l.Time.Local().Format("2006-01-02 15:04:05"), texts[i])
+	}
+}
+
+// stopCommands keeps a CI runner from acting on a block of the app's
+// output, whose lines are already neutralised: in GitHub Actions it starts
+// a ::stop-commands:: block with a fresh random token, as kx deploy does,
+// and returns the function that ends it. Both lines go to stdout with the
+// app's output, so the runner reads them in order.
+func stopCommands(s *Session, lines []string) (end func()) {
+	if len(lines) == 0 || s.CI.Provider != ci.GitHub {
+		return func() {}
+	}
+	tok := safetext.StopToken(lines)
+	s.P.Result("::stop-commands::" + tok)
+	return func() { s.P.Result("::" + tok + "::") }
 }
 
 var versionArgRe = regexp.MustCompile(`^[vV]?([0-9]{1,9})$`)
@@ -195,7 +222,7 @@ func deploymentLogs(ctx context.Context, s *Session, c *api.Client, app *api.App
 	label := fmt.Sprintf("%s v%d", app.Name, dep.Version)
 	switch {
 	case dep.Status == api.StatusFailed && reason != "":
-		s.P.Info("%s failed: %s.", label, strings.TrimRight(reason, ". "))
+		s.P.Info("%s failed: %s.", label, strings.TrimRight(safetext.Neutralize(reason), ". "))
 	case dep.Status == api.StatusFailed:
 		s.P.Info("%s failed.", label)
 	case dep.Status == api.StatusReady:
@@ -209,8 +236,13 @@ func deploymentLogs(ctx context.Context, s *Session, c *api.Client, app *api.App
 		s.P.Info("There are no logs for %s yet.", label)
 		return nil
 	}
+	var lines []string
 	for _, line := range strings.Split(text, "\n") {
-		s.P.Result(cleanLogText(line))
+		lines = append(lines, safetext.Neutralize(cleanLogText(line)))
+	}
+	defer stopCommands(s, lines)()
+	for _, line := range lines {
+		s.P.Result(line)
 	}
 	return nil
 }

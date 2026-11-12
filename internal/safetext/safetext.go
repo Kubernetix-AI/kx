@@ -10,6 +10,8 @@
 package safetext
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"strings"
 	"unicode"
 )
@@ -47,6 +49,40 @@ func neutralizeLine(line string) string {
 		}
 		b.WriteByte(line[i])
 		i++
+	}
+	return b.String()
+}
+
+// StopToken returns a random token for a GitHub "::stop-commands::"
+// block that occurs in none of lines, so they can't end the block early.
+func StopToken(lines []string) string {
+	all := strings.Join(lines, "\n")
+	for {
+		b := make([]byte, 16)
+		_, _ = rand.Read(b) // crypto/rand.Read never fails on supported platforms
+		if tok := hex.EncodeToString(b); !strings.Contains(all, tok) {
+			return tok
+		}
+	}
+}
+
+// EscapeJSON makes encoded JSON inert for CI runners without changing
+// what it decodes to: a "#" that would start "##[" or "##vso[" is written
+// as the JSON escape \u0023. A "#" can only occur inside a JSON string,
+// where the escape stands for the same character. JSON needs nothing else:
+// a string can't hold a raw line break, so no line of JSON starts with
+// "::".
+func EscapeJSON(s string) string {
+	if !strings.Contains(s, "##") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if strings.HasPrefix(s[i:], "##[") || hasPrefixFold(s[i:], "##vso[") {
+			b.WriteString(`\u0023`)
+			continue
+		}
+		b.WriteByte(s[i])
 	}
 	return b.String()
 }

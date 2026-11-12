@@ -3,11 +3,14 @@ package ui
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/kubernetix-ai/kx/internal/safetext"
 )
 
 // Public checksum test vectors shared with the platform: well formed, never
@@ -141,6 +144,30 @@ func TestPrinter_JSONStableKeys(t *testing.T) {
 	_ = p.PrintJSONLine(map[string]string{"line": "hello " + tok})
 	if out2.String() != "{\"line\":\"hello kx_01234567…\"}\n" {
 		t.Fatalf("json line = %q", out2.String())
+	}
+}
+
+// JSON output (kx logs --json, kx status --json) carries text kx didn't
+// write; a CI runner must not read "##[" or "##vso[" in it as a command,
+// and the JSON must still decode to the same text.
+func TestPrinter_JSONCannotIssueWorkflowCommands(t *testing.T) {
+	p, out, _ := newTest("")
+	v := map[string]string{"line": "step ##[warning]forged ##vso[task.prependpath]/tmp/x"}
+	if err := p.PrintJSON(v); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PrintJSONLine(v); err != nil {
+		t.Fatal(err)
+	}
+	if cmds := safetext.Commands(out.String()); len(cmds) != 0 {
+		t.Fatalf("a runner would act on %q in:\n%s", cmds, out.String())
+	}
+	dec := json.NewDecoder(strings.NewReader(out.String()))
+	for i := 0; i < 2; i++ {
+		var back map[string]string
+		if err := dec.Decode(&back); err != nil || back["line"] != v["line"] {
+			t.Fatalf("decoded %q (%v), want %q", back["line"], err, v["line"])
+		}
 	}
 }
 

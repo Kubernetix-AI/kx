@@ -11,8 +11,6 @@ package deploy
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -526,24 +524,12 @@ func (r *runner) showUntrusted(lines []string, print func(string)) {
 		lines[i] = untrusted(lines[i])
 	}
 	if r.o.StopCommands {
-		tok := stopToken(lines)
+		tok := safetext.StopToken(lines)
 		r.p.Info("::stop-commands::%s", tok)
 		defer r.p.Info("::%s::", tok)
 	}
 	for _, l := range lines {
 		print(l)
-	}
-}
-
-// stopToken is a random token that occurs in none of lines.
-func stopToken(lines []string) string {
-	for {
-		b := make([]byte, 16)
-		_, _ = rand.Read(b) // crypto/rand.Read never fails on supported platforms
-		tok := hex.EncodeToString(b)
-		if !strings.Contains(strings.Join(lines, "\n"), tok) {
-			return tok
-		}
 	}
 }
 

@@ -2,11 +2,16 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/kubernetix-ai/kx/internal/api"
+	"github.com/kubernetix-ai/kx/internal/safetext"
 )
 
 func TestLogs_LastLinesOldestFirst(t *testing.T) {
@@ -147,5 +152,144 @@ func TestLogs_NotLinked(t *testing.T) {
 	h.expect(h.run("logs"), 2)
 	if h.err.String() != "This folder isn't linked to an app yet.\nRun: kx link\n" {
 		t.Fatalf("stderr = %q", h.err.String())
+	}
+}
+
+// hostileLogLines are app output lines that try to issue CI workflow
+// commands: the modern form after Unicode spaces, the legacy forms
+// mid-line, and ones hidden after a line break or behind a control
+// character kx removes.
+var hostileLogLines = []string{
+	"::error::forged",
+	"　::add-mask::wide",
+	"step ##[warning]mid-line",
+	"see ##vso[task.prependpath]/tmp/x",
+	"two lines\n::warning::embedded",
+	"\x00::error::after-nul",
+	"a break\n\x00::error::after-break",
+	"::stop-commands::guess",
+}
+
+var stopCommandsRe = regexp.MustCompile(`(?m)^::stop-commands::([0-9a-f]{32})$`)
+
+// commandNames lists what a runner would act on in out, by command name.
+func commandNames(out string) string {
+	var names []string
+	for _, c := range safetext.Commands(out) {
+		name, _, _ := strings.Cut(strings.TrimPrefix(c, "::"), "::")
+		names = append(names, name)
+	}
+	return strings.Join(names, ",")
+}
+
+func TestLogs_AppOutputCannotIssueWorkflowCommands(t *testing.T) {
+	var pairs [][2]string
+	for i, l := range hostileLogLines {
+		pairs = append(pairs, [2]string{strconv.Itoa(1762938001000000000 + i), l})
+	}
+	reason := "crashed ##[error]forged reason"
+	setUp := func(t *testing.T, github bool) *harness {
+		h := newHarness(t)
+		if github {
+			githubJob(h)
+		} else {
+			h.loginAs("acme-corp", tokCorp, &dec11)
+		}
+		h.api.runtimeLogs = func(map[string]string) string { return logsJSON(pairs...) }
+		h.api.deployments[appShopID][0].CustomerError = reason
+		h.api.depLogsFor = func(string) (api.DeploymentLogs, bool) {
+			return api.DeploymentLogs{BuildLogs: strings.Join(hostileLogLines[:3], "\n"), DeploymentLogs: strings.Join(hostileLogLines[3:], "\n")}, true
+		}
+		return h
+	}
+	for _, args := range [][]string{{"logs", "--app", "shop-api"}, {"logs", "--app", "shop-api", "--deployment", "v15"}} {
+		for _, github := range []bool{false, true} {
+			h := setUp(t, github)
+			h.expect(h.run(args...), 0)
+			want := ""
+			if github {
+				want = "stop-commands,resume-commands"
+			}
+			if got := commandNames(h.out.String()); got != want {
+				t.Fatalf("%v github=%v: a runner would act on %q in stdout:\n%s", args, github, got, h.out.String())
+			}
+			if got := commandNames(h.err.String()); got != "" {
+				t.Fatalf("%v github=%v: a runner would act on %q in stderr:\n%s", args, github, got, h.err.String())
+			}
+			for _, s := range []string{"forged", "wide", "mid-line", "embedded", "after-nul", "after-break"} {
+				if !strings.Contains(h.out.String(), s) {
+					t.Fatalf("%v: the app's text %q is missing from stdout:\n%s", args, s, h.out.String())
+				}
+			}
+			if github {
+				m := stopCommandsRe.FindStringSubmatch(h.out.String())
+				if m == nil || !strings.HasPrefix(h.out.String(), m[0]+"\n") || !strings.HasSuffix(h.out.String(), "\n::"+m[1]+"::\n") {
+					t.Fatalf("%v: the app's output isn't inside one stop-commands block on stdout:\n%s", args, h.out.String())
+				}
+			}
+		}
+	}
+
+	// --json keeps the text exactly as before, but encoded so a runner
+	// can't read a command in it.
+	h := setUp(t, true)
+	h.expect(h.run("logs", "--app", "shop-api", "--json"), 0)
+	if got := commandNames(h.out.String()); got != "" {
+		t.Fatalf("--json: a runner would act on %q in:\n%s", got, h.out.String())
+	}
+	dec := json.NewDecoder(strings.NewReader(h.out.String()))
+	for _, l := range hostileLogLines {
+		var back struct{ Line string }
+		if err := dec.Decode(&back); err != nil || back.Line != cleanLogText(l) {
+			t.Fatalf("--json line = %q (%v), want %q", back.Line, err, cleanLogText(l))
+		}
+	}
+	h = setUp(t, true)
+	h.expect(h.run("logs", "--app", "shop-api", "--deployment", "v15", "--json"), 0)
+	if got := commandNames(h.out.String()); got != "" {
+		t.Fatalf("--deployment --json: a runner would act on %q in:\n%s", got, h.out.String())
+	}
+	var dep struct {
+		Reason    string `json:"reason"`
+		BuildLogs string `json:"build_logs"`
+	}
+	if err := json.Unmarshal(h.out.Bytes(), &dep); err != nil || dep.Reason != reason || dep.BuildLogs != strings.Join(hostileLogLines[:3], "\n") {
+		t.Fatalf("--deployment --json = %+v (%v)", dep, err)
+	}
+}
+
+func TestLogsFollow_EachBatchInItsOwnStopCommandsBlock(t *testing.T) {
+	h := newHarness(t)
+	githubJob(h)
+	var mu sync.Mutex
+	n := 0
+	h.api.runtimeLogs = func(map[string]string) string {
+		mu.Lock()
+		defer mu.Unlock()
+		n++
+		switch n {
+		case 1:
+			return logsJSON([2]string{"1762938001000000000", "::error::one"})
+		case 2:
+			return logsJSON([2]string{"1762938001000000000", "::error::one"}, [2]string{"1762938002000000000", "##[warning]two"})
+		default:
+			return logsJSON([2]string{"1762938002000000000", "##[warning]two"})
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.sleepHook = func(n int) error {
+		if n >= 3 {
+			cancel()
+			return context.Canceled
+		}
+		return nil
+	}
+	h.expect(h.runCtx(ctx, "logs", "--app", "shop-api", "--follow"), 0)
+	if got := commandNames(h.out.String()); got != "stop-commands,resume-commands,stop-commands,resume-commands" {
+		t.Fatalf("a runner would act on %q in:\n%s", got, h.out.String())
+	}
+	if m := stopCommandsRe.FindAllStringSubmatch(h.out.String(), -1); len(m) != 2 || m[0][1] == m[1][1] {
+		t.Fatalf("want two blocks with different tokens:\n%s", h.out.String())
 	}
 }

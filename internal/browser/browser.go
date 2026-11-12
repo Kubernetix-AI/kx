@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/kubernetix-ai/kx/internal/ci"
+	"github.com/kubernetix-ai/kx/internal/procenv"
 )
 
 // CanOpen reports whether opening a browser makes sense here: never in CI
@@ -27,6 +28,8 @@ func Open(getenv func(string) string, rawURL string) error {
 			continue
 		}
 		cmd := exec.Command(path, c[1:]...)
+		// The browser, and whatever it starts, doesn't need kx's tokens.
+		cmd.Env = procenv.Environ()
 		if err := cmd.Start(); err != nil {
 			continue
 		}
