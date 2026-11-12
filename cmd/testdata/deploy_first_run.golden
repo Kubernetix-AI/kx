@@ -1,0 +1,13 @@
+Which app should this folder deploy to?
+  1) billing-worker (new app)
+  2) shop-api
+  3) web
+Choose [1]: Saved in .kx.json. Next time, just run kx deploy.
+
+✓ Checked   Dockerfile, port 8080
+✓ Built     billing-worker:local-20261112090000
+✓ Pushed    registry.kubernetix.ai/acme-corp/billing-worker
+✓ Created   app billing-worker
+✓ Live      v1  queued → starting → live
+  4 of 5 deploys left today on the Free plan.
+https://7a7a7a7a-0000-4000-8000-000000000001--acme-corp.apps.example.test

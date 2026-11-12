@@ -1,0 +1,863 @@
+package cmd
+
+import (
+	"bufio"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/kubernetix-ai/kx/internal/api"
+	"github.com/kubernetix-ai/kx/internal/ci"
+	"github.com/kubernetix-ai/kx/internal/config"
+	"github.com/kubernetix-ai/kx/internal/kxerr"
+	"github.com/kubernetix-ai/kx/internal/safetext"
+)
+
+const ghSHA = "3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345"
+
+func (h *harness) dockerfile(body string) {
+	h.t.Helper()
+	if err := os.WriteFile(filepath.Join(h.dir, "Dockerfile"), []byte(body), 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// inFolder moves the harness to a new project folder called name.
+func (h *harness) inFolder(name string) {
+	h.t.Helper()
+	h.dir = filepath.Join(filepath.Dir(h.dir), name)
+	if err := os.MkdirAll(filepath.Join(h.dir, ".git"), 0o755); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func TestDeploy_FirstRunPickerSavesKxJSON_Golden(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.inFolder("billing-worker")
+	h.dockerfile("FROM node:22\nEXPOSE 8080\n")
+	h.tty, h.stdin = true, "\n"
+	h.expect(h.run("deploy"), 0)
+	golden(t, "deploy_first_run", h.norm(h.err.String()+h.out.String()))
+
+	_, p, err := config.FindProject(h.dir)
+	if err != nil || p == nil || p.App != "billing-worker" || p.Org != "acme-corp" || p.AppID == "" {
+		t.Fatalf(".kx.json = %+v, %v (want the new app's ID saved after creating it)", p, err)
+	}
+	if len(h.api.newApps) != 1 || h.api.newApps[0]["name"] != "billing-worker" || h.api.newApps[0]["port"] != float64(8080) {
+		t.Fatalf("POST /apps = %v", h.api.newApps)
+	}
+
+	// The next run asks nothing.
+	h.tty, h.stdin = false, ""
+	h.expect(h.run("deploy"), 0)
+	if strings.Contains(h.err.String(), "Which app") || len(h.api.newApps) != 1 {
+		t.Fatalf("second run asked again or created another app:\n%s", h.err.String())
+	}
+}
+
+func TestDeploy_StdoutIsOnlyTheURL(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+	h.expect(h.run("deploy"), 0)
+	if h.out.String() != "https://"+appShopID+"--acme-corp.apps.example.test\n" {
+		t.Fatalf("stdout = %q", h.out.String())
+	}
+	errOut := h.err.String()
+	for _, want := range []string{"✓ Checked   Dockerfile, port 8080\n", "✓ Built     shop-api:local-20261112090000\n", "✓ Pushed    registry.kubernetix.ai/acme-corp/shop-api\n", "✓ Live      v16  queued → starting → live\n", "  4 of 5 deploys left today on the Free plan.\n"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, errOut)
+		}
+	}
+	post := h.api.deployPosts[0]
+	if post.AppID != appShopID || post.Body["image_url"] != "registry.kubernetix.ai/acme-corp/shop-api@"+testDigest {
+		t.Fatalf("deploy request = %+v", post)
+	}
+	if got := strings.Join(h.docker.got(), "\n"); got != "check\nbuild shop-api:local-20261112090000\ntag shop-api:local-20261112090000 registry.kubernetix.ai/acme-corp/shop-api:local-20261112090000\npush registry.kubernetix.ai/acme-corp/shop-api:local-20261112090000" {
+		t.Fatalf("docker calls:\n%s", got)
+	}
+}
+
+func TestDeploy_JSON(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy", "--json"), 0)
+	var out map[string]any
+	if err := json.Unmarshal(h.out.Bytes(), &out); err != nil {
+		t.Fatalf("stdout is not one JSON value: %v\n%s", err, h.out.String())
+	}
+	if out["url"] != "https://"+appShopID+"--acme-corp.apps.example.test" || out["version"] != float64(16) || out["status"] != "live" ||
+		out["app"] != "shop-api" || out["image"] != "registry.kubernetix.ai/acme-corp/shop-api@"+testDigest || out["deployment_id"] == "" {
+		t.Fatalf("json = %v", out)
+	}
+}
+
+func TestDeploy_FailureOutput_Golden(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+	h.api.statuses = []string{"pending", "deploying", "failed"}
+	h.api.failReason = "your container is crashing on start"
+	var logLines []string
+	for i := 1; i <= 25; i++ {
+		logLines = append(logLines, "boot step "+string(rune('a'+i-1)))
+	}
+	h.api.depLogsFor = func(id string) (api.DeploymentLogs, bool) {
+		if strings.HasPrefix(id, "new-") {
+			return api.DeploymentLogs{DeploymentID: id, DeploymentLogs: strings.Join(logLines, "\n") + "\n"}, true
+		}
+		return api.DeploymentLogs{}, false
+	}
+	h.expect(h.run("deploy"), 8)
+	if h.out.String() != "" {
+		t.Fatalf("stdout = %q, want nothing when the deploy fails", h.out.String())
+	}
+	golden(t, "deploy_failed", h.norm(h.err.String()))
+}
+
+func TestDeploy_TimeoutOutput(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.dockerfile("FROM scratch\n")
+	h.api.statuses = []string{"pending", "deploying"}
+	h.sleepHook = func(int) error { h.now = h.now.Add(time.Minute); return nil }
+	h.expect(h.run("deploy"), 9)
+	lines := strings.Split(strings.TrimRight(h.err.String(), "\n"), "\n")
+	got := strings.Join(lines[len(lines)-2:], "\n")
+	want := "shop-api v16 is still starting after 15 minutes, so kx stopped waiting; the deploy continues.\nCheck on it: kx status"
+	if got != want || h.out.String() != "" {
+		t.Fatalf("last lines =\n%s\nwant\n%s\nstdout %q", got, want, h.out.String())
+	}
+	h.expect(h.run("deploy", "--timeout", "3m"), 9)
+	if !strings.Contains(h.err.String(), "after 3 minutes") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+}
+
+func TestDeploy_FlagErrors(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	tests := []struct {
+		args []string
+		what string
+	}{
+		{[]string{"deploy", "--timeout", "soon"}, "kx deploy --timeout takes a length of time"},
+		{[]string{"deploy", "--timeout", "0s"}, "kx deploy --timeout takes a length of time"},
+		{[]string{"deploy", "--image", "registry.kubernetix.ai/acme-corp/shop-api:v1", "--build", "./api"}, "--image deploys an image that's already built"},
+		{[]string{"deploy", "--image", "registry.kubernetix.ai/acme-corp/shop-api:v1", "--dockerfile", "Dockerfile.prod"}, "--image deploys an image that's already built"},
+		{[]string{"deploy", "--image", "-v"}, "isn't an image name"},
+		{[]string{"deploy", "--image", "a b"}, "isn't an image name"},
+		{[]string{"deploy", "--github"}, "kx deploy --github only works inside a GitHub Actions job."},
+		{[]string{"deploy", "extra"}, "kx deploy takes no arguments."},
+	}
+	for _, tt := range tests {
+		h.expect(h.run(tt.args...), 2)
+		if !strings.Contains(h.err.String(), tt.what) {
+			t.Errorf("kx %v: stderr = %q, want %q", tt.args, h.err.String(), tt.what)
+		}
+	}
+	if n := len(h.api.got()); n != 0 {
+		t.Fatalf("made %d API calls for flag errors", n)
+	}
+}
+
+func TestDeploy_NoDockerfile(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.expect(h.run("deploy"), 2)
+	if !strings.Contains(h.err.String(), "There's no Dockerfile in "+h.dir+".\nRun kx deploy in the folder that has your Dockerfile.\n") {
+		t.Fatalf("stderr = %q", h.err.String())
+	}
+	if len(h.api.got()) != 0 || len(h.docker.got()) != 0 {
+		t.Fatal("did something without a Dockerfile")
+	}
+}
+
+func TestDeploy_DockerProblemsStopBeforeAnyAPICall(t *testing.T) {
+	for _, tt := range []struct {
+		err  error
+		what string
+	}{
+		{kxerr.ErrDockerMissing, "kx builds your app with Docker, and Docker isn't installed on this computer."},
+		{kxerr.ErrDockerStopped, "Docker is installed but not running."},
+		{kxerr.ErrDockerWindowsContainers, "Docker Desktop is set to Windows containers"},
+	} {
+		h := newHarness(t)
+		h.loginAs("acme-corp", tokCorp, &dec11)
+		h.link("shop-api", appShopID, "acme-corp")
+		h.dockerfile("FROM scratch\n")
+		h.docker.checkErr = tt.err
+		h.expect(h.run("deploy"), 10)
+		if !strings.Contains(h.err.String(), tt.what) {
+			t.Errorf("stderr = %q", h.err.String())
+		}
+		if n := len(h.api.got()); n != 0 {
+			t.Errorf("%v: made %d API calls before giving up", tt.err, n)
+		}
+	}
+}
+
+func TestDeploy_ImageWorksWithoutDocker(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.docker.checkErr = kxerr.ErrDockerMissing
+	img := "registry.kubernetix.ai/acme-corp/shop-api@" + testDigest
+	h.expect(h.run("deploy", "--image", img), 0)
+	if len(h.docker.got()) != 0 || h.api.mints != 0 {
+		t.Fatalf("docker calls %v, mints %d", h.docker.got(), h.api.mints)
+	}
+	if h.api.deployPosts[0].Body["image_url"] != img {
+		t.Fatalf("image_url = %v", h.api.deployPosts[0].Body["image_url"])
+	}
+}
+
+func TestDeploy_BuildFolderAndDockerfileFlags(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	if err := os.MkdirAll(filepath.Join(h.dir, "api"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.dir, "api", "Dockerfile.prod"), []byte("FROM scratch\nEXPOSE 3000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.expect(h.run("deploy", "--build", "api", "--dockerfile", filepath.Join("api", "Dockerfile.prod")), 0)
+	if !strings.Contains(h.err.String(), "✓ Checked   Dockerfile.prod, port 8080") || !strings.Contains(h.err.String(), "The Dockerfile exposes port 3000, but shop-api listens on port 8080.") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+}
+
+func TestDeploy_DockerfileRelativeToBuildFolder(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	if err := os.MkdirAll(filepath.Join(h.dir, "api"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.dir, "api", "Dockerfile.prod"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// As the Action passes them: path: api, dockerfile: Dockerfile.prod.
+	h.expect(h.run("deploy", "--build=api", "--dockerfile=Dockerfile.prod"), 0)
+	if !strings.Contains(h.err.String(), "✓ Checked   Dockerfile.prod, port 8080") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	// A path that exists from the working folder wins, as with docker build -f.
+	if err := os.WriteFile(filepath.Join(h.dir, "Dockerfile.prod"), []byte("FROM scratch\nEXPOSE 3000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.expect(h.run("deploy", "--build=api", "--dockerfile=Dockerfile.prod"), 0)
+	if !strings.Contains(h.err.String(), "exposes port 3000") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+}
+
+func TestDeploy_NotLinkedAndNoTerminal(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy"), 2)
+	if !strings.Contains(h.err.String(), "This folder isn't linked to an app yet, and kx can't ask which one here.\nRun: kx deploy --app <app>") {
+		t.Fatalf("stderr = %q", h.err.String())
+	}
+}
+
+func TestDeploy_LinkedNewAppIsCreated(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.inFolder("billing-worker")
+	h.link("billing-worker", "", "acme-corp") // kx link chose "(new app)"
+	h.dockerfile("FROM scratch\nEXPOSE 9000\n")
+	h.expect(h.run("deploy"), 0)
+	if len(h.api.newApps) != 1 || h.api.newApps[0]["port"] != float64(9000) {
+		t.Fatalf("POST /apps = %v", h.api.newApps)
+	}
+	if !strings.Contains(h.err.String(), "✓ Created   app billing-worker\n✓ Live      v1  ") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+}
+
+func TestDeploy_AppTokenCannotCreateApps(t *testing.T) {
+	h := newHarness(t)
+	h.env["KX_TOKEN"] = tokApp
+	h.inFolder("billing-worker")
+	h.link("billing-worker", "", "acme-corp")
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy"), 3)
+	if !strings.Contains(h.err.String(), "This token can only deploy shop-api, and you asked to deploy billing-worker.") {
+		t.Fatalf("stderr = %q", h.err.String())
+	}
+	if len(h.api.newApps) != 0 || len(h.api.deployPosts) != 0 {
+		t.Fatal("an app token created or deployed something")
+	}
+}
+
+func TestDeploy_TokenWithoutDeployDoesNotCreateApps(t *testing.T) {
+	h := newHarness(t)
+	h.env["KX_TOKEN"] = tokRead
+	h.inFolder("billing-worker")
+	h.link("billing-worker", "", "acme-corp")
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy"), 4)
+	if !strings.Contains(h.err.String(), "There's no app called billing-worker") || len(h.api.newApps) != 0 {
+		t.Fatalf("stderr = %q, POST /apps %d", h.err.String(), len(h.api.newApps))
+	}
+}
+
+func TestDeploy_PickerOffersNewAppOnlyToTokensThatCanDeploy(t *testing.T) {
+	h := newHarness(t)
+	h.env["KX_TOKEN"] = tokRead
+	h.inFolder("billing-worker")
+	h.dockerfile("FROM scratch\n")
+	h.tty, h.stdin = true, "\n"
+	h.run("deploy")
+	if strings.Contains(h.err.String(), "(new app)") || !strings.Contains(h.err.String(), "Which app should this folder deploy to?") {
+		t.Fatalf("picker:\n%s", h.err.String())
+	}
+}
+
+func TestDeploy_AppTokenDeploysItsAppWithoutAsking(t *testing.T) {
+	h := newHarness(t)
+	h.env["KX_TOKEN"] = tokDeploy
+	h.dockerfile("FROM scratch\n")
+	h.tty, h.stdin = true, ""
+	h.expect(h.run("deploy"), 0)
+	if strings.Contains(h.err.String(), "Which app") || h.api.deployPosts[0].AppID != appShopID {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+}
+
+func TestDeploy_TokenWithoutPushImages(t *testing.T) {
+	h := newHarness(t)
+	h.env["KX_TOKEN"] = tokApp // Deploy and Read, no Push images
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy"), 3)
+	if !strings.Contains(h.err.String(), "This token can't upload images.\nCreate a token with Push images on the app's Deploy tab, or deploy an image that's already pushed: kx deploy --image <image>\n") {
+		t.Fatalf("stderr = %q", h.err.String())
+	}
+	if len(h.api.deployPosts) != 0 {
+		t.Fatal("deployed without an image")
+	}
+}
+
+func TestDeploy_CommitAlreadyPushedUnderImmutableTags(t *testing.T) {
+	h := newHarness(t)
+	githubJob(h)
+	h.dockerfile("FROM scratch\n")
+	h.docker.pushErrs = []error{&kxerr.PushFailed{Err: kxerr.ErrTagExists}}
+	h.expect(h.run("deploy", "--github"), 0)
+	calls := strings.Join(h.docker.got(), "\n")
+	if !strings.Contains(calls, "push registry.kubernetix.ai/acme-corp/shop-api:3f9c2a1b7d4e\n") ||
+		!strings.Contains(calls, "push registry.kubernetix.ai/acme-corp/shop-api:3f9c2a1b7d4e-20261112090000") {
+		t.Fatalf("docker calls:\n%s", calls)
+	}
+	if !strings.Contains(h.err.String(), "This commit was already pushed; uploaded it as 3f9c2a1b7d4e-20261112090000.\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	if got := readOutputs(t, h.env["GITHUB_OUTPUT"])["image"]; got != "registry.kubernetix.ai/acme-corp/shop-api@"+testDigest {
+		t.Fatalf("image output = %q, want the digest kx pushed", got)
+	}
+}
+
+func TestDeploy_LaptopCachesRegistryCredential(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy"), 0)
+	h.expect(h.run("deploy"), 0)
+	if h.api.mints != 1 {
+		t.Fatalf("minted %d credentials for two deploys, want 1 (cached)", h.api.mints)
+	}
+	entries, _ := filepath.Glob(filepath.Join(h.configDir, "cache", "registry-*.json"))
+	if len(entries) != 1 {
+		t.Fatalf("cache files = %v", entries)
+	}
+	if runtime.GOOS != "windows" {
+		if fi, _ := os.Stat(entries[0]); fi.Mode().Perm() != 0o600 {
+			t.Fatalf("cache file mode %o", fi.Mode().Perm())
+		}
+	}
+}
+
+func TestDeploy_NoCredentialCacheForKXToken(t *testing.T) {
+	h := newHarness(t) // no CI variables at all, like a Jenkins or Azure agent
+	h.env["KX_TOKEN"] = tokDeploy
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy"), 0)
+	h.expect(h.run("deploy"), 0)
+	if h.api.mints != 2 {
+		t.Fatalf("minted %d credentials for two KX_TOKEN deploys, want 2 (never cached)", h.api.mints)
+	}
+	if entries, _ := filepath.Glob(filepath.Join(h.configDir, "cache", "*")); len(entries) != 0 {
+		t.Fatalf("cached a credential for KX_TOKEN: %v", entries)
+	}
+}
+
+// ghHarness sets up a GitHub Actions push job with a fake GitHub API.
+type ghServer struct {
+	mu       sync.Mutex
+	statuses []map[string]string
+	code     int
+}
+
+func (g *ghServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var body map[string]string
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	g.statuses = append(g.statuses, body)
+	if g.code != 0 {
+		w.WriteHeader(g.code)
+		return
+	}
+	w.WriteHeader(201)
+}
+
+func (g *ghServer) got() []map[string]string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]map[string]string(nil), g.statuses...)
+}
+
+func githubJob(h *harness) *ghServer {
+	h.t.Helper()
+	gh := &ghServer{}
+	srv := httptest.NewServer(gh)
+	h.t.Cleanup(srv.Close)
+	dir := h.t.TempDir()
+	for k, v := range map[string]string{
+		"GITHUB_ACTIONS": "true", "CI": "true", "GITHUB_EVENT_NAME": "push", "GITHUB_SHA": ghSHA,
+		"GITHUB_REPOSITORY": "acme/shop-api", "GITHUB_RUN_ID": "9001", "GITHUB_RUN_ATTEMPT": "1",
+		"GITHUB_TOKEN": "ghs_test", "GITHUB_API_URL": srv.URL,
+		"GITHUB_OUTPUT": filepath.Join(dir, "output"), "GITHUB_STEP_SUMMARY": filepath.Join(dir, "summary"),
+		"KX_TOKEN": tokDeploy,
+	} {
+		h.env[k] = v
+	}
+	return gh
+}
+
+func readOutputs(t *testing.T, path string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return out
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		name, delim, ok := strings.Cut(sc.Text(), "<<")
+		if !ok {
+			t.Fatalf("output line %q is not in the heredoc form", sc.Text())
+		}
+		var val []string
+		for sc.Scan() && sc.Text() != delim {
+			val = append(val, sc.Text())
+		}
+		out[name] = strings.Join(val, "\n")
+	}
+	return out
+}
+
+func TestMasksRegistryCredential(t *testing.T) {
+	h := newHarness(t)
+	githubJob(h)
+	h.dockerfile("FROM scratch\n")
+	var stderrAtPush string
+	h.docker.onPush = func(api.RegistryCredential) { stderrAtPush = h.err.String() }
+	h.expect(h.run("deploy", "--github", "--environment", "production"), 0)
+	all := h.err.String()
+	first := -1
+	for i, line := range strings.Split(all, "\n") {
+		if strings.Contains(line, regPassword) {
+			first = i
+			if line != "::add-mask::"+regPassword {
+				t.Fatalf("first line with the password is not the mask command")
+			}
+			break
+		}
+	}
+	if first < 0 {
+		t.Fatal("the registry credential was never masked")
+	}
+	if !strings.Contains(stderrAtPush, "::add-mask::"+regPassword+"\n") {
+		t.Fatal("the credential was not masked before docker push ran")
+	}
+	if !strings.Contains(all, "::add-mask::"+base64.StdEncoding.EncodeToString([]byte("kx-push:"+regPassword))+"\n") {
+		t.Fatal("the encoded Docker login was not masked")
+	}
+}
+
+func TestDeploy_GitHubMode(t *testing.T) {
+	h := newHarness(t)
+	gh := githubJob(h)
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy", "--github", "--environment", "staging", "--build", ".", "--timeout", "15m"), 0)
+
+	if h.out.String() != "https://"+appShopID+"--acme-corp.apps.example.test\n" {
+		t.Fatalf("stdout = %q", h.out.String())
+	}
+	if !strings.Contains(h.err.String(), "✓ Built     shop-api:3f9c2a1b7d4e") {
+		t.Fatalf("tag is not the commit SHA:\n%s", h.err.String())
+	}
+	statuses := gh.got()
+	var descs []string
+	for _, s := range statuses {
+		if s["context"] != "Kubernetix / staging" {
+			t.Fatalf("status context = %q", s["context"])
+		}
+		descs = append(descs, s["state"]+": "+s["description"])
+	}
+	if strings.Join(descs, " | ") != "pending: Building | pending: Deploying v16 | success: Live in 0s" &&
+		!strings.HasPrefix(strings.Join(descs, " | "), "pending: Building | pending: Deploying v16 | success: Live in") {
+		t.Fatalf("statuses = %v", descs)
+	}
+	if statuses[len(statuses)-1]["target_url"] != "https://"+appShopID+"--acme-corp.apps.example.test" {
+		t.Fatalf("final status links to %q", statuses[len(statuses)-1]["target_url"])
+	}
+	// (The earlier statuses link to the dashboard, which is http in this
+	// test, so kx leaves the link off: GitHub only gets https links.)
+
+	outs := readOutputs(t, h.env["GITHUB_OUTPUT"])
+	if outs["url"] != "https://"+appShopID+"--acme-corp.apps.example.test" || outs["version"] != "v16" ||
+		outs["image"] != "registry.kubernetix.ai/acme-corp/shop-api@"+testDigest || outs["deployment-id"] == "" || len(outs) != 4 {
+		t.Fatalf("outputs = %v", outs)
+	}
+	sum, _ := os.ReadFile(h.env["GITHUB_STEP_SUMMARY"])
+	if !strings.Contains(string(sum), "### shop-api v16 is live") || !strings.Contains(string(sum), "| Commit | `3f9c2a1b7d4e` |") {
+		t.Fatalf("summary:\n%s", sum)
+	}
+	if h.api.mints != 1 {
+		t.Fatalf("mints = %d", h.api.mints)
+	}
+	if entries, _ := filepath.Glob(filepath.Join(h.configDir, "cache", "*")); len(entries) != 0 {
+		t.Fatalf("cached a credential in CI: %v", entries)
+	}
+	want := ci.Detect(func(k string) string { return h.env[k] }).IdempotencyKey("shop-api")
+	if want == "" || h.api.deployPosts[0].Key != want {
+		t.Fatalf("Idempotency-Key = %q, want the run's UUIDv5 %q", h.api.deployPosts[0].Key, want)
+	}
+}
+
+func TestDeploy_GitHubReRunOfSameAttemptDeploysOnce(t *testing.T) {
+	h := newHarness(t)
+	githubJob(h)
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy", "--github"), 0)
+	h.expect(h.run("deploy", "--github"), 0) // e.g. the step retried inside one attempt
+	if len(h.api.deployPosts) != 2 || h.api.deployPosts[0].Key != h.api.deployPosts[1].Key {
+		t.Fatalf("posts = %+v", h.api.deployPosts)
+	}
+	n := 0
+	for _, d := range h.api.deployments[appShopID] {
+		if strings.HasPrefix(d.ID, "new-") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d deployments created, want 1", n)
+	}
+	h.env["GITHUB_RUN_ATTEMPT"] = "2" // a re-run deploys again
+	h.expect(h.run("deploy", "--github"), 0)
+	if h.api.deployPosts[2].Key == h.api.deployPosts[0].Key {
+		t.Fatal("a re-run reused the first attempt's key")
+	}
+}
+
+func TestDeploy_GitHubFailure(t *testing.T) {
+	h := newHarness(t)
+	gh := githubJob(h)
+	h.dockerfile("FROM scratch\n")
+	h.api.statuses = []string{"pending", "failed"}
+	h.api.failReason = "your container is crashing on start"
+	h.expect(h.run("deploy", "--github"), 8)
+	want := "::error title=Kubernetix deploy::shop-api v16 didn't go live: your container is crashing on start. Version 14 is still serving.%0ASee why: kx logs --deployment v16\n"
+	if !strings.Contains(h.err.String(), want) {
+		t.Fatalf("stderr lacks the annotation:\n%s", h.err.String())
+	}
+	st := gh.got()
+	last := st[len(st)-1]
+	if last["state"] != "failure" || !strings.HasPrefix(last["description"], "shop-api v16 didn't go live") {
+		t.Fatalf("final status = %v", last)
+	}
+	outs := readOutputs(t, h.env["GITHUB_OUTPUT"])
+	if outs["version"] != "v16" || outs["deployment-id"] == "" {
+		t.Fatalf("outputs = %v", outs)
+	}
+	sum, _ := os.ReadFile(h.env["GITHUB_STEP_SUMMARY"])
+	if !strings.Contains(string(sum), "### shop-api v16 didn't go live") || !strings.Contains(string(sum), "Version 14 is still serving.") {
+		t.Fatalf("summary:\n%s", sum)
+	}
+}
+
+func TestDeploy_OwnErrorStillWorksAfterAnUntrustedBlock(t *testing.T) {
+	for _, github := range []bool{true, false} {
+		h := newHarness(t)
+		githubJob(h)
+		h.dockerfile("FROM scratch\n")
+		h.api.statuses = []string{"pending", "failed"}
+		h.api.failReason = "your container is crashing on start"
+		h.api.depLogsFor = func(id string) (api.DeploymentLogs, bool) {
+			return api.DeploymentLogs{DeploymentLogs: "\u3000::stop-commands::guess\n::error::forged\nstep ##[warning]x\n"}, true
+		}
+		args := []string{"deploy"}
+		if github {
+			args = append(args, "--github")
+		}
+		h.expect(h.run(args...), 8)
+		got := safetext.Commands(h.err.String())
+		var kinds []string
+		for _, c := range got {
+			name, _, _ := strings.Cut(strings.TrimPrefix(c, "::"), "::")
+			name, _, _ = strings.Cut(name, " ")
+			kinds = append(kinds, name)
+		}
+		want := "stop-commands,resume-commands" // wrapped in any GitHub Actions run
+		if github {
+			want = "add-mask,add-mask," + want + ",error"
+		}
+		if strings.Join(kinds, ",") != want {
+			t.Fatalf("github=%v: runner would act on %q", github, got)
+		}
+		if strings.Contains(h.err.String(), "forged") && strings.Contains(strings.Join(got, "\n"), "forged") {
+			t.Fatal("the forged annotation got through")
+		}
+	}
+}
+
+func TestDeploy_GitHubBuildFailureSummary(t *testing.T) {
+	h := newHarness(t)
+	githubJob(h)
+	h.dockerfile("FROM scratch\n")
+	h.docker.buildErr = &kxerr.BuildFailed{Err: errors.New("exit status 1")}
+	h.expect(h.run("deploy", "--github"), 6)
+	if !strings.Contains(h.err.String(), "#5 ERROR: npm ci failed") {
+		t.Fatalf("Docker's output not shown:\n%s", h.err.String())
+	}
+	sum, _ := os.ReadFile(h.env["GITHUB_STEP_SUMMARY"])
+	if !strings.Contains(string(sum), "### shop-api wasn't deployed") || !strings.Contains(string(sum), "Nothing was deployed, so what was live before is still live.") {
+		t.Fatalf("summary:\n%s", sum)
+	}
+	if outs := readOutputs(t, h.env["GITHUB_OUTPUT"]); len(outs) != 0 {
+		t.Fatalf("outputs after a failed build = %v", outs)
+	}
+}
+
+func TestDeploy_GitHubReportsEarlyFailures(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		setup      func(h *harness)
+		exit       int
+		what       string
+		wantStatus bool
+	}{
+		{"bad timeout", []string{"deploy", "--github", "--timeout", "soon"}, nil, 2, "kx deploy --timeout takes a length of time", true},
+		{"damaged .kx.json", []string{"deploy", "--github"}, func(h *harness) {
+			if err := os.WriteFile(filepath.Join(h.dir, ".kx.json"), []byte("{not json"), 0o644); err != nil {
+				h.t.Fatal(err)
+			}
+		}, 2, "The .kx.json in", true},
+		{"bad environment", []string{"deploy", "--github", "--environment", ""}, nil, 2, "--environment needs a name", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			gh := githubJob(h)
+			if tt.setup != nil {
+				tt.setup(h)
+			}
+			h.expect(h.run(tt.args...), tt.exit)
+			if !strings.Contains(h.err.String(), "::error title=Kubernetix deploy::"+tt.what) {
+				t.Fatalf("no annotation:\n%s", h.err.String())
+			}
+			st := gh.got()
+			if tt.wantStatus && (len(st) != 1 || st[0]["state"] != "failure" || !strings.HasPrefix(st[0]["description"], tt.what)) {
+				t.Fatalf("statuses = %v", st)
+			}
+			if !tt.wantStatus && len(st) != 0 {
+				t.Fatalf("set a status under an environment name nobody asked for: %v", st)
+			}
+			sum, _ := os.ReadFile(h.env["GITHUB_STEP_SUMMARY"])
+			if !strings.Contains(string(sum), "wasn't deployed") || !strings.Contains(string(sum), "Nothing was deployed") {
+				t.Fatalf("summary:\n%s", sum)
+			}
+		})
+	}
+}
+
+func TestDeploy_GitHubWithoutTokenWarnsAndDeploys(t *testing.T) {
+	h := newHarness(t)
+	gh := githubJob(h)
+	h.env["GITHUB_TOKEN"] = ""
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy", "--github"), 0)
+	if strings.Count(h.err.String(), "::warning") != 1 || len(gh.got()) != 0 {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+}
+
+func TestDeploy_GitHubMissingPermissionWarnsAndDeploys(t *testing.T) {
+	h := newHarness(t)
+	gh := githubJob(h)
+	gh.code = 403
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy", "--github"), 0)
+	if !strings.Contains(h.err.String(), "::warning title=Kubernetix deploy::The job's GITHUB_TOKEN can't set commit statuses") || len(gh.got()) != 1 {
+		t.Fatalf("stderr:\n%s\nstatus calls %d", h.err.String(), len(gh.got()))
+	}
+}
+
+func TestPullRequest_Skips(t *testing.T) {
+	for _, event := range []string{"pull_request", "pull_request_target", "schedule"} {
+		h := newHarness(t)
+		githubJob(h)
+		h.env["GITHUB_EVENT_NAME"] = event
+		h.env["KX_TOKEN"] = "" // forks get no secrets
+		h.expect(h.run("deploy", "--github"), 0)
+		if h.err.String() != ci.SkipMessage+"\n" || h.out.String() != "" {
+			t.Fatalf("%s: stderr %q stdout %q", event, h.err.String(), h.out.String())
+		}
+		if len(h.api.got()) != 0 || len(h.docker.got()) != 0 {
+			t.Fatalf("%s: did work in a pull request", event)
+		}
+		if _, err := os.Stat(h.env["GITHUB_OUTPUT"]); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s: wrote outputs", event)
+		}
+	}
+}
+
+func TestDeploy_WorkflowDispatchDeploys(t *testing.T) {
+	h := newHarness(t)
+	githubJob(h)
+	h.env["GITHUB_EVENT_NAME"] = "workflow_dispatch"
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy", "--github"), 0)
+}
+
+func TestDeploy_GitLabMergeRequestSkips(t *testing.T) {
+	for _, env := range []map[string]string{
+		{"CI_PIPELINE_SOURCE": "merge_request_event"},
+		{"CI_PIPELINE_SOURCE": "external_pull_request_event"},
+		{"CI_PIPELINE_SOURCE": "push", "CI_MERGE_REQUEST_IID": "12"},
+	} {
+		h := newHarness(t)
+		h.env["GITLAB_CI"], h.env["CI"] = "true", "true"
+		for k, v := range env {
+			h.env[k] = v
+		}
+		h.expect(h.run("deploy"), 0)
+		if h.err.String() != ci.SkipMessage+"\n" || len(h.api.got()) != 0 {
+			t.Fatalf("%v: stderr %q, requests %v", env, h.err.String(), h.api.got())
+		}
+	}
+}
+
+func TestDeploy_BitbucketPullRequestSkips(t *testing.T) {
+	h := newHarness(t)
+	h.env["BITBUCKET_BUILD_NUMBER"], h.env["BITBUCKET_PR_ID"], h.env["CI"] = "41", "7", "true"
+	h.expect(h.run("deploy", "--json"), 0)
+	if h.err.String() != "" || !strings.Contains(h.out.String(), `"skipped": true`) || len(h.api.got()) != 0 {
+		t.Fatalf("stderr %q stdout %q", h.err.String(), h.out.String())
+	}
+}
+
+func TestDeploy_IdempotencyKeyPerPlatform(t *testing.T) {
+	uuidV4 := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	tests := []struct {
+		name          string
+		env           map[string]string
+		retry         map[string]string // what changes on a re-run or retried job
+		deterministic bool
+	}{
+		{"GitHub", map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "push", "GITHUB_SHA": ghSHA, "GITHUB_REPOSITORY": "acme/shop-api", "GITHUB_RUN_ID": "9001", "GITHUB_RUN_ATTEMPT": "1"},
+			map[string]string{"GITHUB_RUN_ATTEMPT": "2"}, true},
+		{"GitLab", map[string]string{"GITLAB_CI": "true", "CI_PIPELINE_SOURCE": "push", "CI_COMMIT_SHA": ghSHA, "CI_PROJECT_PATH": "acme/shop-api", "CI_PIPELINE_ID": "55", "CI_JOB_ID": "77"},
+			map[string]string{"CI_JOB_ID": "78"}, true},
+		{"Bitbucket", map[string]string{"BITBUCKET_BUILD_NUMBER": "41", "BITBUCKET_COMMIT": ghSHA, "BITBUCKET_REPO_FULL_NAME": "acme/shop-api", "BITBUCKET_STEP_UUID": "{9f1c}"}, nil, false},
+		{"generic CI", map[string]string{"CI": "true"}, nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			for k, v := range tt.env {
+				h.env[k] = v
+			}
+			h.env["KX_TOKEN"] = tokDeploy
+			h.dockerfile("FROM scratch\n")
+			h.api.failPosts = 1 // kx's own retry must resend the same key
+			h.expect(h.run("deploy"), 0)
+			h.expect(h.run("deploy"), 0) // the same attempt again (or, off GitHub/GitLab, any new run)
+			for k, v := range tt.retry {
+				h.env[k] = v
+			}
+			h.expect(h.run("deploy"), 0)
+			p := h.api.deployPosts
+			if len(p) != 4 {
+				t.Fatalf("%d deploy requests, want 4", len(p))
+			}
+			if p[0].Key == "" || p[0].Key != p[1].Key {
+				t.Fatalf("an HTTP retry changed the key: %q then %q", p[0].Key, p[1].Key)
+			}
+			if tt.deterministic {
+				want := ci.Detect(func(k string) string { return h.env[k] }).IdempotencyKey("shop-api")
+				if p[1].Key != p[2].Key {
+					t.Fatal("the same attempt got a different key, so a retried step would deploy twice")
+				}
+				if p[3].Key == p[2].Key || p[3].Key != want {
+					t.Fatalf("re-run key %q, want a new deterministic key %q", p[3].Key, want)
+				}
+				return
+			}
+			for i, q := range p {
+				if !uuidV4.MatchString(q.Key) {
+					t.Fatalf("request %d key %q is not a random (v4) UUID", i, q.Key)
+				}
+			}
+			if p[2].Key == p[1].Key || p[3].Key == p[2].Key {
+				t.Fatal("two kx runs shared a key, so a re-run would get the earlier deploy back")
+			}
+		})
+	}
+}
+
+func TestDeploy_GitLabPushDeploys(t *testing.T) {
+	h := newHarness(t)
+	for k, v := range map[string]string{"GITLAB_CI": "true", "CI": "true", "CI_PIPELINE_SOURCE": "push", "CI_COMMIT_SHA": ghSHA,
+		"CI_PROJECT_PATH": "acme/shop-api", "CI_PIPELINE_ID": "55", "CI_JOB_ID": "77", "KX_TOKEN": tokDeploy} {
+		h.env[k] = v
+	}
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy"), 0)
+	want := ci.Detect(func(k string) string { return h.env[k] }).IdempotencyKey("shop-api")
+	if h.api.deployPosts[0].Key != want || !strings.Contains(h.err.String(), "shop-api:3f9c2a1b7d4e") {
+		t.Fatalf("key %q want %q\n%s", h.api.deployPosts[0].Key, want, h.err.String())
+	}
+	if strings.Contains(h.err.String(), "::") {
+		t.Fatal("printed GitHub workflow commands outside GitHub mode")
+	}
+}

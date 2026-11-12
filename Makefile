@@ -38,6 +38,13 @@ fuzz: ## Run each fuzz test for FUZZTIME (default 30s)
 	$(GO) test ./internal/api -run '^$$' -fuzz '^FuzzParseErrorBody$$' -fuzztime $(FUZZTIME)
 	$(GO) test ./internal/config -run '^$$' -fuzz '^FuzzParseUser$$' -fuzztime $(FUZZTIME)
 	$(GO) test ./internal/config -run '^$$' -fuzz '^FuzzParseProject$$' -fuzztime $(FUZZTIME)
+	$(GO) test ./internal/docker -run '^$$' -fuzz '^FuzzParseDigest$$' -fuzztime $(FUZZTIME)
+	$(GO) test ./internal/docker -run '^$$' -fuzz '^FuzzParseCachedCredential$$' -fuzztime $(FUZZTIME)
+	$(GO) test ./internal/deploy -run '^$$' -fuzz '^FuzzExposedPort$$' -fuzztime $(FUZZTIME)
+	$(GO) test ./internal/deploy -run '^$$' -fuzz '^FuzzChangedBesidesKxJSON$$' -fuzztime $(FUZZTIME)
+	$(GO) test ./internal/docker -run '^$$' -fuzz '^FuzzParseBuildxDriver$$' -fuzztime $(FUZZTIME)
+	$(GO) test ./internal/docker -run '^$$' -fuzz '^FuzzParseDockerContext$$' -fuzztime $(FUZZTIME)
+	$(GO) test ./internal/safetext -run '^$$' -fuzz '^FuzzNeutralize$$' -fuzztime $(FUZZTIME)
 
 snapshot: ## Build release archives locally without publishing (needs goreleaser)
 	goreleaser release --snapshot --clean

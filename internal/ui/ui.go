@@ -196,12 +196,23 @@ func (p *Printer) Warn(format string, args ...any) {
 // Step prints a finished step: "✓ Built     shop-api:3f9c   1m 12s".
 // elapsed 0 leaves the time off.
 func (p *Printer) Step(label, detail string, elapsed time.Duration) {
+	p.writeErr(p.paint(green, "✓") + " " + stepLine(label, detail, elapsed) + "\n")
+}
+
+// stepLine lays out a step's label, detail and time, cleaning the label
+// and detail of terminal control text first.
+func stepLine(label, detail string, elapsed time.Duration) string {
 	label, detail = CleanField(label), CleanField(detail)
 	line := fmt.Sprintf("%-10s%s", label, detail)
 	if elapsed > 0 {
 		line = fmt.Sprintf("%-10s%-45s%s", label, detail, Duration(elapsed))
 	}
-	p.writeErr(p.paint(green, "✓") + " " + strings.TrimRight(line, " ") + "\n")
+	return strings.TrimRight(line, " ")
+}
+
+// StepFailed prints a step that failed: "✗ Failed    v15  …   1m 2s".
+func (p *Printer) StepFailed(label, detail string, elapsed time.Duration) {
+	p.writeErr(p.paint(red, "✗") + " " + stepLine(label, detail, elapsed) + "\n")
 }
 
 // Result prints a result on stdout (for deploy, the URL alone).

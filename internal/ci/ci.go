@@ -7,9 +7,9 @@ package ci
 import (
 	"context"
 	"errors"
-	"os/exec"
 	"strings"
 
+	"github.com/kubernetix-ai/kx/internal/procenv"
 	"github.com/kubernetix-ai/kx/internal/uuid"
 )
 
@@ -41,7 +41,7 @@ type Env struct {
 	Repository string
 	// RunID is the run, pipeline or build number; RunAttempt tells retries
 	// of the same run apart (GitHub's run attempt, GitLab's job ID,
-	// Bitbucket's step UUID).
+	// Bitbucket's step UUID, which IdempotencyKey doesn't rely on).
 	RunID      string
 	RunAttempt string
 	// Event is the provider's trigger name (GitHub event, GitLab pipeline
@@ -69,12 +69,15 @@ func Detect(getenv func(string) string) Env {
 		source := getenv("CI_PIPELINE_SOURCE")
 		return Env{
 			Provider: GitLab, Name: "GitLab CI", IsCI: true,
-			CommitSHA:     getenv("CI_COMMIT_SHA"),
-			Repository:    getenv("CI_PROJECT_PATH"),
-			RunID:         getenv("CI_PIPELINE_ID"),
-			RunAttempt:    getenv("CI_JOB_ID"),
-			Event:         source,
-			IsPullRequest: source == "merge_request_event",
+			CommitSHA:  getenv("CI_COMMIT_SHA"),
+			Repository: getenv("CI_PROJECT_PATH"),
+			RunID:      getenv("CI_PIPELINE_ID"),
+			RunAttempt: getenv("CI_JOB_ID"),
+			Event:      source,
+			// Merge request pipelines, and pull requests from an external
+			// repository (GitLab CI/CD for GitHub repositories).
+			IsPullRequest: source == "merge_request_event" || source == "external_pull_request_event" ||
+				getenv("CI_MERGE_REQUEST_IID") != "" || getenv("CI_EXTERNAL_PULL_REQUEST_IID") != "",
 		}
 	case getenv("BITBUCKET_BUILD_NUMBER") != "":
 		pr := getenv("BITBUCKET_PR_ID") != ""
@@ -101,12 +104,12 @@ func Detect(getenv func(string) string) Env {
 
 // SkipsDeploy reports whether kx must not deploy in this pipeline: any pull
 // or merge request, and on GitHub every event other than push and
-// workflow_dispatch.
+// workflow_dispatch, including a run that names no event (fail closed).
 func (e Env) SkipsDeploy() bool {
 	if e.IsPullRequest {
 		return true
 	}
-	if e.Provider == GitHub && e.Event != "" && e.Event != "push" && e.Event != "workflow_dispatch" {
+	if e.Provider == GitHub && e.Event != "push" && e.Event != "workflow_dispatch" {
 		return true
 	}
 	return false
@@ -114,10 +117,16 @@ func (e Env) SkipsDeploy() bool {
 
 // IdempotencyKey returns a UUIDv5 of repository, run ID, attempt and app,
 // so retries inside one CI attempt reuse the same key and a re-run deploys
-// again. It is empty outside CI or when the run has no ID; callers then
+// again. Only GitHub Actions (run ID and run attempt) and GitLab CI (a new
+// job ID for every retry) get one: elsewhere it isn't known that a re-run
+// changes the attempt, and a reused key would hand back the earlier deploy
+// instead of deploying again. It is empty then, and outside CI; callers
 // make one random key per invocation.
 func (e Env) IdempotencyKey(app string) string {
-	if !e.IsCI || e.RunID == "" {
+	if e.Provider != GitHub && e.Provider != GitLab {
+		return ""
+	}
+	if !e.IsCI || e.RunID == "" || e.RunAttempt == "" {
 		return ""
 	}
 	key, err := uuid.V5(uuid.NamespaceKx, strings.Join([]string{e.Repository, e.RunID, e.RunAttempt, app}, "\x00"))
@@ -133,7 +142,7 @@ func (e Env) Commit(ctx context.Context, dir string) (string, error) {
 	if e.CommitSHA != "" {
 		return e.CommitSHA, nil
 	}
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	cmd := procenv.Command(ctx, "git", "rev-parse", "HEAD")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {

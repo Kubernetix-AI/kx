@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -44,11 +45,15 @@ var allCodes = []string{
 	"app_not_found", "deployment_not_found", "org_not_found", "not_found", "not_live", "version_not_found", "token_not_found",
 	"validation_error", "request_rejected", "duplicate_app", "app_deleting", "invalid_deployment_status",
 	"deploy_limit_reached", "plan_limit_reached", "push_rate_limited", "rate_limited", "registry_not_ready",
-	"docker_missing", "docker_stopped", "docker_windows_containers", "no_dockerfile",
-	"build_failed", "push_failed", "deploy_failed", "wait_timeout",
+	"docker_missing", "docker_stopped", "docker_windows_containers", "docker_permission", "no_dockerfile",
+	"build_failed", "push_failed", "deploy_failed", "wait_timeout", "previous_deploy_running",
+	"nothing_live", "no_rollback_target", "already_live", "tag_exists", "no_digest", "rollback_unconfirmed", "docker_context_unknown",
 	"multi_region_app", "not_linked", "usage", "login_in_ci", "insecure_api_url",
 	"bad_project_file", "bad_settings_file", "network", "server_error", "timeout", "interrupted", "unexpected",
 }
+
+// dockerContextNameRe is what Docker allows as a context name.
+var dockerContextNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,99}$`)
 
 const (
 	plansURL       = "platform.kubernetix.ai/plans"
@@ -89,6 +94,14 @@ func Explain(err error) Problem {
 		notLive  *kxerr.NotLive
 		noVer    *kxerr.NoVersion
 		noTok    *kxerr.NoToken
+		prevRun  *kxerr.PreviousRunning
+		stopped  *kxerr.StoppedWaiting
+		noLive   *kxerr.NothingLive
+		noTarget *kxerr.NoRollbackTarget
+		already  *kxerr.AlreadyLive
+		notReady *kxerr.NotRollbackable
+		unknown  *kxerr.RollbackUnconfirmed
+		dockCtx  *kxerr.DockerContextUnknown
 	)
 	switch {
 	case errors.As(err, &apiErr):
@@ -125,6 +138,8 @@ func Explain(err error) Problem {
 		return Problem{"docker_stopped", "Docker is installed but not running.", "Start Docker Desktop, then run kx deploy again.", ExitDocker}
 	case errors.Is(err, kxerr.ErrDockerWindowsContainers):
 		return Problem{"docker_windows_containers", "Docker Desktop is set to Windows containers, and kx builds Linux images.", "Switch Docker Desktop to Linux containers, then run kx deploy again.", ExitDocker}
+	case errors.Is(err, kxerr.ErrDockerPermission):
+		return Problem{"docker_permission", "Docker is running, but this user isn't allowed to use it.", "Add yourself to the docker group (sudo usermod -aG docker $USER), then log in again and run kx deploy.", ExitDocker}
 	case errors.As(err, &noDocker):
 		return Problem{"no_dockerfile", "There's no Dockerfile in " + noDocker.Dir + ".", "Run kx deploy in the folder that has your Dockerfile.", ExitUsage}
 	case errors.As(err, &limit):
@@ -135,6 +150,32 @@ func Explain(err error) Problem {
 		return deployFailed(failed)
 	case errors.As(err, &timeout):
 		return Problem{"wait_timeout", fmt.Sprintf("%s v%d is still starting after %s, so kx stopped waiting; the deploy continues.", timeout.App, timeout.Version, minutes(timeout.After)), "Check on it: kx status", ExitTimeout}
+	case errors.As(err, &prevRun):
+		return Problem{"previous_deploy_running", fmt.Sprintf("%s v%d is still deploying after %s, so kx didn't start another deploy.", prevRun.App, prevRun.Version, minutes(prevRun.After)), "Check on it: kx status", ExitTimeout}
+	case errors.As(err, &stopped):
+		return Problem{"interrupted", fmt.Sprintf("kx stopped waiting for %s v%d because it was interrupted; the deploy continues.", stopped.App, stopped.Version), "Check on it: kx status", ExitUnexpected}
+	case errors.As(err, &noLive):
+		return Problem{"nothing_live", noLive.App + " has no live version to roll back from.", "Deploy it: kx deploy", ExitNotFound}
+	case errors.As(err, &noTarget):
+		return Problem{"no_rollback_target", noTarget.App + " has no earlier live version with a different image to roll back to.", "See recent versions: kx status", ExitNotFound}
+	case errors.As(err, &already):
+		return Problem{"already_live", fmt.Sprintf("%s v%d is already live.", already.App, already.Version), "Pick another version: kx status", ExitUsage}
+	case errors.As(err, &notReady):
+		return Problem{"invalid_deployment_status", fmt.Sprintf("%s v%d never went live, so kx can't roll back to it.", notReady.App, notReady.Version), "Pick a version that went live: kx status", ExitUsage}
+	case errors.As(err, &dockCtx):
+		name := "your active Docker context"
+		if dockerContextNameRe.MatchString(dockCtx.Name) {
+			name = "the Docker context " + dockCtx.Name
+		}
+		return Problem{"docker_context_unknown", "kx couldn't read the address of " + name + ", so it can't upload the image from the engine that built it.", "Set DOCKER_HOST to that engine's address, then run kx deploy again.", ExitDocker}
+	case errors.As(err, &unknown):
+		// Exit 1 (network or server trouble), not 8: the rollback may well
+		// have started, so "the deploy failed" would be wrong.
+		return Problem{"rollback_unconfirmed", fmt.Sprintf("kx couldn't confirm the rollback of %s to v%d because Kubernetix didn't answer, so it may or may not have started.", unknown.App, unknown.Version), "Check: kx status", ExitUnexpected}
+	case errors.Is(err, kxerr.ErrTagExists):
+		return Problem{"tag_exists", "The registry already has an image with that tag and won't replace it.", "Wait a minute, then run kx deploy again.", ExitPush}
+	case errors.Is(err, kxerr.ErrNoDigest):
+		return Problem{"no_digest", "Docker didn't report the digest of the image it uploaded, so kx can't be sure what it would deploy.", "Update Docker, then run kx deploy again.", ExitPush}
 	case errors.As(err, &build):
 		return Problem{"build_failed", "Docker couldn't build your app.", "Fix the error shown above, then run kx deploy again.", ExitBuild}
 	case errors.As(err, &push):

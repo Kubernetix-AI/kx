@@ -16,6 +16,8 @@ import (
 
 	"github.com/kubernetix-ai/kx/internal/api"
 	"github.com/kubernetix-ai/kx/internal/browser"
+	"github.com/kubernetix-ai/kx/internal/deploy"
+	"github.com/kubernetix-ai/kx/internal/docker"
 	"github.com/kubernetix-ai/kx/internal/ui"
 )
 
@@ -34,6 +36,8 @@ type App struct {
 	CanOpenBrowser func() bool
 	HTTPClient     *http.Client // nil keeps the api package's default
 	Sleep          func(ctx context.Context, d time.Duration) error
+	// Docker builds and pushes images; nil runs the docker command.
+	Docker deploy.Builder
 
 	// PreparePrinter, if set, adjusts each new Printer (tests use it to
 	// pretend there is a terminal).
@@ -124,6 +128,14 @@ func (a *App) defaults() {
 			}
 		}
 	}
+}
+
+// docker returns the Docker the commands use.
+func (a *App) docker() deploy.Builder {
+	if a.Docker != nil {
+		return a.Docker
+	}
+	return docker.Engine{}
 }
 
 // printer returns a Printer for the current run (honouring --json).

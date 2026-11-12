@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kubernetix-ai/kx/internal/kxerr"
+	"github.com/kubernetix-ai/kx/internal/safetext"
 )
 
 // ErrContext is what kx knew when a request failed. Explain uses it to
@@ -130,7 +131,7 @@ func clean(s string, max int) string {
 		space = false
 		b.WriteRune(r)
 	}
-	out := b.String()
+	out := safetext.Neutralize(b.String())
 	if len(out) > max {
 		cut := max
 		for cut > 0 && !utf8.RuneStart(out[cut]) {

@@ -1,0 +1,27 @@
+✓ Checked   Dockerfile, port 8080
+✓ Built     shop-api:local-20261112090000
+✓ Pushed    registry.kubernetix.ai/acme-corp/shop-api
+✗ Failed    v16  queued → starting → failed
+The last 20 log lines of v16:
+  boot step f
+  boot step g
+  boot step h
+  boot step i
+  boot step j
+  boot step k
+  boot step l
+  boot step m
+  boot step n
+  boot step o
+  boot step p
+  boot step q
+  boot step r
+  boot step s
+  boot step t
+  boot step u
+  boot step v
+  boot step w
+  boot step x
+  boot step y
+shop-api v16 didn't go live: your container is crashing on start. Version 14 is still serving.
+See why: kx logs --deployment v16

@@ -239,3 +239,88 @@ func (e *NoVersion) Error() string { return e.App + " has no " + e.Version }
 type NoToken struct{ Which, Org string }
 
 func (e *NoToken) Error() string { return "no token " + e.Which }
+
+// ErrDockerPermission means Docker is running but this user may not use it
+// (on Linux, usually not being in the docker group).
+var ErrDockerPermission = errors.New("not allowed to use docker")
+
+// PreviousRunning means App's newest deployment, vVersion, was still in
+// progress after After, so kx did not start another one.
+type PreviousRunning struct {
+	App     string
+	Version int
+	After   time.Duration
+}
+
+func (e *PreviousRunning) Error() string {
+	return fmt.Sprintf("%s v%d is still deploying", e.App, e.Version)
+}
+
+// StoppedWaiting means kx was interrupted while waiting for App vVersion,
+// which keeps deploying.
+type StoppedWaiting struct {
+	App     string
+	Version int
+}
+
+func (e *StoppedWaiting) Error() string {
+	return fmt.Sprintf("stopped waiting for %s v%d", e.App, e.Version)
+}
+
+// NothingLive means App has no live version, so there is nothing to roll
+// back from.
+type NothingLive struct{ App string }
+
+func (e *NothingLive) Error() string { return e.App + " has nothing live" }
+
+// NoRollbackTarget means App has no earlier live version with a different
+// image.
+type NoRollbackTarget struct{ App string }
+
+func (e *NoRollbackTarget) Error() string { return e.App + " has nothing to roll back to" }
+
+// AlreadyLive means the version asked for is the one serving.
+type AlreadyLive struct {
+	App     string
+	Version int
+}
+
+func (e *AlreadyLive) Error() string { return fmt.Sprintf("%s v%d is already live", e.App, e.Version) }
+
+// NotRollbackable means App vVersion never went live, so it can't be
+// rolled back to.
+type NotRollbackable struct {
+	App     string
+	Version int
+}
+
+func (e *NotRollbackable) Error() string {
+	return fmt.Sprintf("%s v%d never went live", e.App, e.Version)
+}
+
+// ErrTagExists means the registry already has the image tag kx pushed and
+// won't replace it (immutable tags).
+var ErrTagExists = errors.New("the registry already has that image tag")
+
+// ErrNoDigest means Docker pushed an image without reporting its digest,
+// so kx can't pin the deploy to the image it uploaded.
+var ErrNoDigest = errors.New("docker did not report the pushed image's digest")
+
+// RollbackUnconfirmed means the rollback request of App to vVersion got no
+// clear answer (a gateway error, a timeout or a broken connection), so it
+// may or may not have started. kx never resends it.
+type RollbackUnconfirmed struct {
+	App     string
+	Version int
+}
+
+func (e *RollbackUnconfirmed) Error() string {
+	return fmt.Sprintf("rollback of %s to v%d unconfirmed", e.App, e.Version)
+}
+
+// DockerContextUnknown means the active Docker context (Name) isn't the
+// default one and kx couldn't read a usable address for it, so it can't
+// reach the engine that built the image.
+type DockerContextUnknown struct{ Name string }
+
+func (e *DockerContextUnknown) Error() string { return "cannot read docker context " + e.Name }

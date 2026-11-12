@@ -170,6 +170,61 @@ func TestIdempotencyKey(t *testing.T) {
 	}
 }
 
+// Only providers whose attempt or job ID is known to change on every
+// retry get a deterministic key; elsewhere a re-run must deploy again, so
+// kx makes a random key per invocation instead.
+func TestIdempotencyKey_PerPlatform(t *testing.T) {
+	tests := []struct {
+		name          string
+		env           map[string]string
+		deterministic bool
+	}{
+		{"GitHub run and attempt", map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "acme/shop-api", "GITHUB_RUN_ID": "1", "GITHUB_RUN_ATTEMPT": "1"}, true},
+		{"GitHub without an attempt", map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "acme/shop-api", "GITHUB_RUN_ID": "1"}, false},
+		{"GitLab pipeline and job", map[string]string{"GITLAB_CI": "true", "CI_PROJECT_PATH": "acme/shop-api", "CI_PIPELINE_ID": "55", "CI_JOB_ID": "77"}, true},
+		{"GitLab without a job ID", map[string]string{"GITLAB_CI": "true", "CI_PROJECT_PATH": "acme/shop-api", "CI_PIPELINE_ID": "55"}, false},
+		{"Bitbucket (step re-runs unverified)", map[string]string{"BITBUCKET_BUILD_NUMBER": "41", "BITBUCKET_REPO_FULL_NAME": "acme/shop-api", "BITBUCKET_STEP_UUID": "{9f1c}"}, false},
+		{"generic CI", map[string]string{"CI": "true"}, false},
+		{"laptop", map[string]string{}, false},
+	}
+	for _, tt := range tests {
+		got := Detect(envOf(tt.env)).IdempotencyKey("shop-api")
+		if (got != "") != tt.deterministic {
+			t.Errorf("%s: IdempotencyKey = %q, deterministic want %v", tt.name, got, tt.deterministic)
+		}
+	}
+	// GitLab: a retried job has a new job ID and so a new key.
+	gl := Detect(envOf(map[string]string{"GITLAB_CI": "true", "CI_PROJECT_PATH": "acme/shop-api", "CI_PIPELINE_ID": "55", "CI_JOB_ID": "77"}))
+	retry := gl
+	retry.RunAttempt = "78"
+	if gl.IdempotencyKey("shop-api") == retry.IdempotencyKey("shop-api") {
+		t.Fatal("a retried GitLab job reused the key")
+	}
+}
+
+// No pull or merge request may ever deploy, and an Actions run that
+// doesn't say why it runs doesn't either.
+func TestSkipsDeploy_Edges(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		skip bool
+	}{
+		{"GitHub without an event name", map[string]string{"GITHUB_ACTIONS": "true"}, true},
+		{"GitHub push", map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "push"}, false},
+		{"GitLab external pull request", map[string]string{"GITLAB_CI": "true", "CI_PIPELINE_SOURCE": "external_pull_request_event"}, true},
+		{"GitLab merge request IID", map[string]string{"GITLAB_CI": "true", "CI_PIPELINE_SOURCE": "push", "CI_MERGE_REQUEST_IID": "12"}, true},
+		{"GitLab external pull request IID", map[string]string{"GITLAB_CI": "true", "CI_PIPELINE_SOURCE": "push", "CI_EXTERNAL_PULL_REQUEST_IID": "3"}, true},
+		{"GitLab push", map[string]string{"GITLAB_CI": "true", "CI_PIPELINE_SOURCE": "push"}, false},
+		{"Bitbucket pull request", map[string]string{"BITBUCKET_BUILD_NUMBER": "1", "BITBUCKET_PR_ID": "9"}, true},
+	}
+	for _, tt := range tests {
+		if got := Detect(envOf(tt.env)).SkipsDeploy(); got != tt.skip {
+			t.Errorf("%s: SkipsDeploy = %v, want %v", tt.name, got, tt.skip)
+		}
+	}
+}
+
 func TestCommit_FromEnv(t *testing.T) {
 	e := Env{IsCI: true, CommitSHA: "3f9c2a1b7d4e5f60718293a4b5c6d7e8f9a0b1c2"}
 	got, err := e.Commit(context.Background(), t.TempDir())

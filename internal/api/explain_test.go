@@ -132,6 +132,20 @@ func explainCases() []explainCase {
 		{"no such token", &kxerr.NoToken{Which: "kx_nothere", Org: "acme-corp"}, Problem{"token_not_found", "There's no token kx_nothere in acme-corp.", "See your tokens: kx token list", 4}},
 		{"no such token (API)", apiErr(404, "token_not_found", loginCtx), Problem{"token_not_found", "That token isn't in acme-corp any more.", "See your tokens: kx token list", 4}},
 		{"wrapped", fmt.Errorf("deploying: %w", kxerr.ErrDockerStopped), Problem{"docker_stopped", "Docker is installed but not running.", "Start Docker Desktop, then run kx deploy again.", 10}},
+
+		// kx deploy and kx rollback.
+		{"rollback unconfirmed", &kxerr.RollbackUnconfirmed{App: "shop-api", Version: 13}, Problem{"rollback_unconfirmed", "kx couldn't confirm the rollback of shop-api to v13 because Kubernetix didn't answer, so it may or may not have started.", "Check: kx status", 1}},
+		{"docker context unknown", &kxerr.DockerContextUnknown{Name: "colima"}, Problem{"docker_context_unknown", "kx couldn't read the address of the Docker context colima, so it can't upload the image from the engine that built it.", "Set DOCKER_HOST to that engine's address, then run kx deploy again.", 10}},
+		{"docker context unknown, odd name", &kxerr.DockerContextUnknown{Name: "x\ny"}, Problem{"docker_context_unknown", "kx couldn't read the address of your active Docker context, so it can't upload the image from the engine that built it.", "Set DOCKER_HOST to that engine's address, then run kx deploy again.", 10}},
+		{"tag exists twice", &kxerr.PushFailed{Err: kxerr.ErrTagExists}, Problem{"tag_exists", "The registry already has an image with that tag and won't replace it.", "Wait a minute, then run kx deploy again.", 7}},
+		{"no digest", fmt.Errorf("push: %w", kxerr.ErrNoDigest), Problem{"no_digest", "Docker didn't report the digest of the image it uploaded, so kx can't be sure what it would deploy.", "Update Docker, then run kx deploy again.", 7}},
+		{"docker permission", kxerr.ErrDockerPermission, Problem{"docker_permission", "Docker is running, but this user isn't allowed to use it.", "Add yourself to the docker group (sudo usermod -aG docker $USER), then log in again and run kx deploy.", 10}},
+		{"previous deploy still running", &kxerr.PreviousRunning{App: "shop-api", Version: 14, After: 15 * time.Minute}, Problem{"previous_deploy_running", "shop-api v14 is still deploying after 15 minutes, so kx didn't start another deploy.", "Check on it: kx status", 9}},
+		{"stopped waiting", &kxerr.StoppedWaiting{App: "shop-api", Version: 15}, Problem{"interrupted", "kx stopped waiting for shop-api v15 because it was interrupted; the deploy continues.", "Check on it: kx status", 1}},
+		{"nothing live", &kxerr.NothingLive{App: "shop-api"}, Problem{"nothing_live", "shop-api has no live version to roll back from.", "Deploy it: kx deploy", 4}},
+		{"no rollback target", &kxerr.NoRollbackTarget{App: "shop-api"}, Problem{"no_rollback_target", "shop-api has no earlier live version with a different image to roll back to.", "See recent versions: kx status", 4}},
+		{"already live", &kxerr.AlreadyLive{App: "shop-api", Version: 14}, Problem{"already_live", "shop-api v14 is already live.", "Pick another version: kx status", 2}},
+		{"rollback target never went live", &kxerr.NotRollbackable{App: "shop-api", Version: 13}, Problem{"invalid_deployment_status", "shop-api v13 never went live, so kx can't roll back to it.", "Pick a version that went live: kx status", 2}},
 	}
 }
 
@@ -315,5 +329,14 @@ func TestExplain_RealTokenErrorBodies(t *testing.T) {
 			}
 			checkShape(t, got)
 		})
+	}
+}
+
+func TestExplain_ServerTextCannotIssueWorkflowCommands(t *testing.T) {
+	for _, msg := range []string{"name ##[warning]bad", "x ##vso[task.prependpath]/tmp", "::error::top"} {
+		p := Explain(&Error{Status: 400, Code: "validation_error", Message: msg})
+		if strings.Contains(p.What, "##[") || strings.Contains(strings.ToLower(p.What), "##vso[") {
+			t.Errorf("Explain kept a workflow command: %q", p.What)
+		}
 	}
 }

@@ -93,6 +93,17 @@ func TestPrinter_StepFormat(t *testing.T) {
 	}
 }
 
+func TestPrinter_StepFailedFormat(t *testing.T) {
+	p, out, errw := newTest("")
+	p.StepFailed("Failed", "v15  queued → starting → failed", 62*time.Second)
+	p.StepFailed("Failed", "v15", 0)
+	want := "✗ Failed    v15  queued → starting → failed" + strings.Repeat(" ", 14) + "1m 2s\n" +
+		"✗ Failed    v15\n"
+	if errw.String() != want || out.String() != "" {
+		t.Fatalf("steps =\n%s\nwant\n%s", errw.String(), want)
+	}
+}
+
 func TestPrinter_FailText(t *testing.T) {
 	p, out, errw := newTest("")
 	p.Fail("not_logged_in", "You're not logged in to Kubernetix.", "Run: kx login")

@@ -32,12 +32,12 @@ func TestHelp_OpensWithExamples(t *testing.T) {
 	if ex < 0 || usage < 0 || ex > usage {
 		t.Fatalf("--help does not open with examples:\n%s", out)
 	}
-	for _, name := range []string{"login", "link", "status", "logs", "open", "apps", "token", "whoami", "logout", "version"} {
+	for _, name := range []string{"login", "deploy", "link", "status", "logs", "open", "rollback", "apps", "token", "whoami", "logout", "version"} {
 		if !strings.Contains(out, "\n  "+name+" ") {
 			t.Errorf("--help does not list %s", name)
 		}
 	}
-	for _, sub := range []string{"login", "logs", "token", "apps", "link", "status", "open", "whoami", "logout", "version"} {
+	for _, sub := range []string{"login", "deploy", "rollback", "logs", "token", "apps", "link", "status", "open", "whoami", "logout", "version"} {
 		h.expect(h.run(sub, "--help"), 0)
 		if !strings.Contains(h.out.String(), "Examples:") {
 			t.Errorf("kx %s --help has no examples:\n%s", sub, h.out.String())
@@ -66,8 +66,12 @@ func TestHelp_CommandWorksButIsHidden(t *testing.T) {
 
 func TestUnknownCommand(t *testing.T) {
 	h := newHarness(t)
+	h.expect(h.run("frobnicate"), 2)
+	if h.err.String() != "kx has no command called \"frobnicate\".\nSee every command: kx --help\n" {
+		t.Fatalf("stderr = %q", h.err.String())
+	}
 	h.expect(h.run("deplyo"), 2)
-	if h.err.String() != "kx has no command called \"deplyo\".\nSee every command: kx --help\n" {
+	if !strings.Contains(h.err.String(), "Did you mean: kx deploy") {
 		t.Fatalf("stderr = %q", h.err.String())
 	}
 	h.expect(h.run("lgos"), 2)
