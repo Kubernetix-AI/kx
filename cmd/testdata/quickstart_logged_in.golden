@@ -1,0 +1,7 @@
+kx puts the app in this folder on Kubernetix, in three steps:
+
+  1. Install kx    ✓ done
+  2. kx login      ✓ logged in to acme-corp
+  3. kx deploy     build this folder and put it live
+
+Then: kx status, kx logs, kx open. Every command: kx --help

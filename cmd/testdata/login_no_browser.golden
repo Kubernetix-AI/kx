@@ -1,0 +1,6 @@
+Open this page so you can create a token for this computer:
+https://platform.kubernetix.ai/settings?tab=tokens&new=cli
+Click "Create token", then "Copy", and paste it here.
+Token: ••••••••••••••••
+Logged in to acme-corp as sam@acme.dev. This token can deploy every app in acme-corp until 11 Dec 2026.
+Next: open your project folder and run kx deploy

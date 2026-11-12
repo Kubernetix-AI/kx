@@ -1,0 +1,19 @@
+{
+  "app": "shop-api",
+  "app_id": "6f1c2a9e-3b7d-4e21-9c0a-5d8e7f6a1b2c",
+  "live_version": 14,
+  "url": "https://6f1c2a9e-3b7d-4e21-9c0a-5d8e7f6a1b2c--acme-corp.apps.example.test",
+  "latest": {
+    "version": 15,
+    "status": "failed"
+  },
+  "replicas": {
+    "ready": 2,
+    "total": 2
+  },
+  "deploys_today": {
+    "used": 1,
+    "limit": 5,
+    "plan": "free"
+  }
+}

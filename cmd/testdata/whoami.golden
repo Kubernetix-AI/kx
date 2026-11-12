@@ -1,0 +1,4 @@
+ORG        USER          LOGIN ENDS
+acme-corp  sam@acme.dev  11 Dec 2026 (default)
+acme-labs  sam@acme.dev  never
+acme-old   sam@acme.dev  ended 1 Nov 2026

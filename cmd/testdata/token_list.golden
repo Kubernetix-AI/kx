@@ -1,0 +1,3 @@
+TOKEN        NAME    ACCESS     CAN                 EXPIRES      LAST USED      STATUS
+kx_01234567  laptop  every app  deploy, read, push  11 Dec 2026  2 minutes ago  active
+kx_00000000  github  shop-api   deploy, read        never        never          active

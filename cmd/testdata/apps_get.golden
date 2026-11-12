@@ -1,0 +1,7 @@
+Name      shop-api
+ID        6f1c2a9e-3b7d-4e21-9c0a-5d8e7f6a1b2c
+Status    ready
+Version   v15
+URL       https://6f1c2a9e-3b7d-4e21-9c0a-5d8e7f6a1b2c--acme-corp.apps.example.test
+Port      8080
+Replicas  2
