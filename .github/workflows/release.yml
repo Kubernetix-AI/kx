@@ -1,0 +1,234 @@
+# Release: builds, attests and publishes kx when a maintainer pushes a
+# vX.Y.Z (or vX.Y.Z-rc.N) tag. See docs/RELEASING.md.
+#
+#   check    the tag is a release tag, annotated, on main; tests pass
+#   release  goreleaser builds a draft release; every file is checked
+#            against the contract and attested; then the draft is published
+#   verify   downloads the published files the way installers do and checks
+#            checksums, archive contents, kx version and provenance
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+# One release at a time. A run already going is never cancelled, but GitHub
+# keeps only one waiting run: pushing a third tag replaces the one waiting.
+# Push one release tag at a time, and re-run any run shown as cancelled.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check the tag and run the tests
+    if: github.repository == 'Kubernetix-AI/kx'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.tag.outputs.commit }}
+      version: ${{ steps.tag.outputs.version }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+      latest: ${{ steps.tag.outputs.latest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the tag
+        id: tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.(0|[1-9][0-9]*))?$'
+          if ! [[ "$TAG" =~ $semver ]]; then
+            echo "::error::This tag is not a release tag. Release tags look like v1.2.3 or v1.2.3-rc.1."
+            exit 1
+          fi
+          if [ "$(git cat-file -t "refs/tags/$TAG")" != tag ]; then
+            echo "::error::$TAG is a lightweight tag. Delete it and create an annotated tag: git tag -a $TAG -m \"kx ${TAG#v}\""
+            exit 1
+          fi
+          commit="$(git rev-parse "refs/tags/$TAG^{commit}")"
+          if [ "$commit" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::$TAG points at $commit, but the checked-out commit is $(git rev-parse HEAD)."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$commit" refs/remotes/origin/main; then
+            echo "::error::$TAG points at a commit that is not on main. Release only from main: delete the tag and tag a commit on main."
+            exit 1
+          fi
+
+          prerelease=false
+          if [[ "$TAG" == *-rc.* ]]; then prerelease=true; fi
+          # The newest stable version is "latest", which is what the install
+          # scripts download. A hotfix on an older line must not take that over.
+          highest="$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+          latest=false
+          if [ "$prerelease" = false ] && [ "$highest" = "$TAG" ]; then latest=true; fi
+
+          {
+            echo "commit=$commit"
+            echo "version=${TAG#v}"
+            echo "prerelease=$prerelease"
+            echo "latest=$latest"
+          } >>"$GITHUB_OUTPUT"
+          echo "Releasing kx ${TAG#v} from $commit (prerelease: $prerelease, latest: $latest)"
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Verify modules
+        run: go mod verify
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test -race
+        run: go test -race ./...
+
+  release:
+    name: Build, attest and publish
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # create the draft release, upload its files, publish it
+      id-token: write # sign the build provenance attestations
+      attestations: write # store the attestations
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          # No cache: a release is built only from the module proxy and the
+          # checksum database, never from a cache another workflow wrote.
+          cache: false
+
+      - name: Build the commit that was checked
+        env:
+          COMMIT: ${{ needs.check.outputs.commit }}
+        run: |
+          if [ "$(git rev-parse HEAD)" != "$COMMIT" ]; then
+            echo "::error::The tag moved while the release was running. Never move a release tag."
+            exit 1
+          fi
+
+      - name: Install goreleaser
+        env:
+          GORELEASER_VERSION: v2.20.1
+        run: |
+          set -euo pipefail
+          # go install checks every module against the Go checksum database.
+          GOBIN="$RUNNER_TEMP/bin" go install "github.com/goreleaser/goreleaser/v2@${GORELEASER_VERSION}"
+          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
+
+      - name: Build and upload a draft release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # Build the tag that triggered this run (checked above), not the
+          # highest tag on the commit: v1.0.0 and v1.0.0-rc.1 can share one.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
+        run: goreleaser release --clean
+
+      - name: Check the files against the release contract
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: scripts/check-release-assets.sh --version "$VERSION" dist
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/kx_*.tar.gz
+            dist/kx_*.zip
+            dist/checksums.txt
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          LATEST: ${{ needs.check.outputs.latest }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$LATEST"
+
+  verify:
+    name: Verify the published release
+    needs: [check, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the published files
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # The same public URLs the install scripts and the Action use.
+          base="https://github.com/Kubernetix-AI/kx/releases/download/$TAG"
+          mkdir -p "$RUNNER_TEMP/published"
+          for f in checksums.txt kx_linux_amd64.tar.gz kx_linux_arm64.tar.gz \
+            kx_darwin_amd64.tar.gz kx_darwin_arm64.tar.gz \
+            kx_windows_amd64.zip kx_windows_arm64.zip; do
+            curl -fsSL --proto '=https' --tlsv1.2 --retry 5 --retry-delay 3 --retry-all-errors \
+              -o "$RUNNER_TEMP/published/$f" "$base/$f"
+          done
+
+      - name: Check checksums, archives and kx version
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          (cd "$RUNNER_TEMP/published" && sha256sum --strict -c checksums.txt)
+          scripts/check-release-assets.sh --exact --version "$VERSION" "$RUNNER_TEMP/published"
+
+      - name: Verify build provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          for f in "$RUNNER_TEMP"/published/*; do
+            gh attestation verify "$f" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref "refs/tags/$TAG" \
+              --deny-self-hosted-runners
+          done
+
+      - name: Check that "latest" points at this release
+        if: needs.check.outputs.latest == 'true'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # The redirect can lag a little behind publishing, so try for a minute.
+          for attempt in 1 2 3 4 5 6; do
+            final="$(curl -fsSL --proto '=https' --tlsv1.2 --retry 5 --retry-delay 3 -o /dev/null \
+              -w '%{url_effective}' https://github.com/Kubernetix-AI/kx/releases/latest)"
+            if [ "${final##*/}" = "$TAG" ]; then
+              echo "releases/latest leads to $TAG"
+              exit 0
+            fi
+            echo "Attempt $attempt: releases/latest still leads to ${final##*/}"
+            sleep 10
+          done
+          echo "::error::releases/latest leads to ${final##*/}, not $TAG. Installers would not get this release. Re-run this job once before treating the release as bad."
+          exit 1

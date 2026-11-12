@@ -89,3 +89,46 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: go build -trimpath -o "dist/kx-${GOOS}-${GOARCH}" .
+
+  release-snapshot:
+    name: Release dry run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install goreleaser
+        env:
+          GORELEASER_VERSION: v2.20.1
+        run: |
+          GOBIN="$RUNNER_TEMP/bin" go install "github.com/goreleaser/goreleaser/v2@${GORELEASER_VERSION}"
+          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
+      - name: goreleaser check
+        run: goreleaser check
+      - name: Build the release archives without publishing
+        run: goreleaser release --snapshot --clean
+      - name: Check the archives against the release contract
+        run: scripts/check-release-assets.sh --version "$(jq -r .version dist/metadata.json)" dist
+
+  # The one check that branch protection requires: it passes only when every
+  # job above passed.
+  ci:
+    name: CI
+    if: always()
+    needs: [lint, test, vuln, build, release-snapshot]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for r in $RESULTS; do
+            if [ "$r" != success ]; then
+              echo "::error::Not every CI job passed: $RESULTS"
+              exit 1
+            fi
+          done

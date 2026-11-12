@@ -1,0 +1,130 @@
+# goreleaser builds the kx release: six archives and checksums.txt.
+#
+# The archive names are a contract. The install scripts and the
+# Kubernetix-AI/deploy Action download these exact names, so never add the
+# version to them or change the format:
+#
+#   kx_linux_amd64.tar.gz   kx_darwin_amd64.tar.gz   kx_windows_amd64.zip
+#   kx_linux_arm64.tar.gz   kx_darwin_arm64.tar.gz   kx_windows_arm64.zip
+#   checksums.txt           (sha256sum format)
+#
+# Each archive holds only the kx (or kx.exe) binary, at its root.
+#
+# Builds are reproducible: the same commit and Go toolchain give the same
+# bytes. Every timestamp comes from the commit, not the clock.
+#
+# Releases are made by .github/workflows/release.yml, never from a laptop.
+# Locally, `make snapshot` (goreleaser release --snapshot --clean) builds
+# the same archives into dist/ without publishing anything.
+version: 2
+
+project_name: kx
+
+metadata:
+  mod_timestamp: "{{ .CommitTimestamp }}"
+
+git:
+  tag_sort: -version:refname
+  prerelease_suffix: "-"
+
+builds:
+  - id: kx
+    main: .
+    binary: kx
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/kubernetix-ai/kx/internal/version.Version={{ .Version }}
+      - -X github.com/kubernetix-ai/kx/internal/version.Commit={{ .FullCommit }}
+      - -X github.com/kubernetix-ai/kx/internal/version.Date={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: kx
+    ids: [kx]
+    name_template: "kx_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    wrap_in_directory: false
+    # Only the binary: no README or LICENSE inside the archive.
+    files:
+      - none*
+    builds_info:
+      owner: root
+      group: root
+      mode: 0755
+      mtime: "{{ .CommitDate }}"
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+changelog:
+  use: git
+  sort: asc
+  abbrev: 12
+  groups:
+    - title: Features
+      regexp: '^feat(\([^)]*\))?!?:'
+      order: 0
+    - title: Fixes
+      regexp: '^fix(\([^)]*\))?!?:'
+      order: 1
+    - title: Security
+      regexp: '^sec(urity)?(\([^)]*\))?!?:'
+      order: 2
+    - title: Other changes
+      order: 999
+  filters:
+    exclude:
+      - '^docs(\([^)]*\))?:'
+      - '^test(\([^)]*\))?:'
+      - '^ci(\([^)]*\))?:'
+      - '^chore(\([^)]*\))?:'
+      - '^build(\([^)]*\))?:'
+      - '^Merge '
+
+release:
+  github:
+    owner: Kubernetix-AI
+    name: kx
+  name_template: "kx {{ .Version }}"
+  # The release workflow creates a draft, attests every file, checks the
+  # files against the contract and only then publishes the release, so a
+  # release is never public without its provenance.
+  draft: true
+  replace_existing_draft: true
+  prerelease: auto
+  mode: keep-existing
+  footer: |
+    ## Install
+
+    ```sh
+    curl -fsSL https://platform.kubernetix.ai/install.sh | KX_VERSION={{ .Version }} sh
+    ```
+
+    ```powershell
+    $env:KX_VERSION = "{{ .Version }}"; irm https://platform.kubernetix.ai/install.ps1 | iex
+    ```
+
+    ## Verify
+
+    Every file in this release has a build provenance attestation made by the
+    release workflow of this repository from tag `{{ .Tag }}`.
+
+    ```sh
+    sha256sum --ignore-missing -c checksums.txt
+    gh attestation verify kx_linux_amd64.tar.gz --repo Kubernetix-AI/kx \
+      --signer-workflow Kubernetix-AI/kx/.github/workflows/release.yml \
+      --source-ref refs/tags/{{ .Tag }}
+    ```
