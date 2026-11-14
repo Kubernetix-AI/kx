@@ -299,49 +299,6 @@ func (t Token) Can(p string) bool {
 // AppScoped reports whether the token is limited to one app.
 func (t Token) AppScoped() bool { return t.Scope == "app" }
 
-// CreateTokenRequest is the body of POST /orgs/{org}/tokens.
-// ExpiresInDays 0 leaves the server default (90 days); NeverExpires sends
-// null.
-type CreateTokenRequest struct {
-	Name          string
-	AppID         string
-	Permissions   []string
-	ExpiresInDays int
-	NeverExpires  bool
-}
-
-// MarshalJSON writes expires_in_days as a number, as null, or not at all.
-func (r CreateTokenRequest) MarshalJSON() ([]byte, error) {
-	type body struct {
-		Name          string          `json:"name"`
-		AppID         string          `json:"app_id,omitempty"`
-		Permissions   []string        `json:"permissions"`
-		ExpiresInDays json.RawMessage `json:"expires_in_days,omitempty"`
-	}
-	b := body{Name: r.Name, AppID: r.AppID, Permissions: r.Permissions}
-	switch {
-	case r.NeverExpires:
-		b.ExpiresInDays = json.RawMessage("null")
-	case r.ExpiresInDays > 0:
-		b.ExpiresInDays = json.RawMessage(fmt.Sprint(r.ExpiresInDays))
-	}
-	return json.Marshal(b)
-}
-
-// CreatedToken is a new token: its view plus Secret, the only copy of the
-// token. Formatting it with fmt never shows Secret.
-type CreatedToken struct {
-	Token
-	Secret string `json:"token"`
-}
-
-func (c CreatedToken) String() string {
-	return fmt.Sprintf("CreatedToken{%s %q, secret redacted}", c.Prefix, c.Name)
-}
-
-// GoString keeps %#v from printing the secret.
-func (c CreatedToken) GoString() string { return c.String() }
-
 // LogQuery selects runtime log lines.
 type LogQuery struct {
 	Limit   int       // 1-5000; 0 means the server default (100)

@@ -34,8 +34,8 @@ CI runner, and reports produced only by automated scanners without a demonstrate
 - **API tokens** look like `kx_` + 46 characters. kx checks the format and checksum locally
   and refuses legacy `ct_` keys, so a mistyped or wrong secret is never sent.
 - **Printing.** kx shows at most a token's first 11 characters (`kx_` + 8). Every line kx
-  prints passes through a filter that shortens anything shaped like a whole token. The one
-  exception is `kx token create`, which prints the new token once, alone on standard output.
+  prints passes through a filter that shortens anything shaped like a whole token. kx never
+  creates tokens, so it never has a new token to show: people create them in the dashboard.
 - **Storage.** `kx login` saves one token per organization in kx's settings file
   (`os.UserConfigDir()/kx/config.json`), written atomically with permissions `0600`. On
   Windows those permissions don't apply; the file inherits the permissions of your user
@@ -59,10 +59,9 @@ CI runner, and reports produced only by automated scanners without a demonstrate
   revoke it. If Kubernetix refuses the token because of the account that created it, kx
   can't revoke it and says to do so in the dashboard. Logging in again to the same
   organization revokes the token it replaces, unless tokens made with it depend on it.
-- **Expiry.** Tokens made by `kx login` last 30 days (or 1 day with `--expires 1d`). Tokens
-  made with `kx token create` default to 90 days and never outlive the login that makes
-  them; dashboard tokens default to 90 days. Revoking a token revokes the tokens made with
-  it, and takes effect immediately.
+- **Expiry.** Tokens made for `kx login` last 30 days (or 1 day with `--expires 1d`);
+  other dashboard tokens default to 90 days. A token can't create tokens. Revoking a token
+  takes effect immediately.
 
 ## Supported versions
 

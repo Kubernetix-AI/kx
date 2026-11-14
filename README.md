@@ -168,18 +168,14 @@ kx apps get shop-api
 | Command | What it does |
 |---|---|
 | `kx whoami` | Lists each organization this computer is logged in to and when each login ends. |
-| `kx token create [name]` | Creates an API token and prints it once, alone on standard output. |
 | `kx token list` | Lists tokens: what each can do, when it expires, when it was last used. |
-| `kx token revoke <token>` | Revokes a token (by prefix, name or ID) and the tokens it created. |
+| `kx token revoke <token>` | Revokes a token (by prefix, name or ID). |
 | `kx logout` | Revokes this computer's token on Kubernetix, then forgets it. If tokens were made with it, asks before revoking them too. |
 | `kx version` | Prints the version, commit, build date and platform. |
 
 ```sh
 kx whoami
 
-kx token create                                  # every app, deploy + read + push, until your login ends
-kx token create ci --app shop-api                # one app, deploy + read
-kx token create reader --permissions read --expires 7d
 kx token list --app shop-api
 kx token revoke kx_AbCdEfGh
 
@@ -190,14 +186,10 @@ kx logout --yes                  # also revoke tokens made with this login, with
 kx version
 ```
 
-`--expires` takes `1d` to `365d` (default 90 days). `--permissions` takes `deploy`, `read`
-and `push`, separated by commas; one-app tokens get `deploy,read` unless you ask for
-`push`, because image upload rights reach the whole organization's registry.
-
-A token made with `kx token create` can't do more or last longer than the login (or
-`KX_TOKEN`) that makes it, so from a 30-day `kx login` it ends with that login at the
-latest. Revoking a token also revokes the tokens made with it. For longer-lived tokens,
-including ones that never expire, use the dashboard: Settings → API tokens.
+Tokens are created in the dashboard, by people signed in: a deploy token for CI on the app's
+**Deploy** tab, any other token under Settings → API tokens. A token can't create tokens, so
+kx doesn't either (`kx token create` points to the dashboard); `kx token` lists and revokes
+them.
 
 ## Configuration
 
@@ -299,8 +291,7 @@ Pipelines setups.
 
 - Tokens start with `kx_` and carry a checksum, so kx rejects a mistyped token before
   sending it anywhere. kx refuses the old `ct_` keys.
-- kx only ever prints a token's first 11 characters (`kx_` and 8 more), except once when
-  `kx token create` shows a new token.
+- kx only ever prints a token's first 11 characters (`kx_` and 8 more).
 - The settings file is written with permissions `0600` (on Windows it inherits your user
   profile folder's permissions). `.kx.json` holds no secret.
 - kx talks to the API over HTTPS only and never follows redirects, so your token is only

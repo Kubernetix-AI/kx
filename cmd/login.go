@@ -217,9 +217,9 @@ func newLogoutCmd(a *App) *cobra.Command {
 		GroupID: groupAccount,
 		Long: `Revoke the saved token on Kubernetix, then delete it from this computer.
 
-Revoking a token also revokes the tokens made with it (kx token create). If
-there are any, kx lists them and asks first; without a terminal it needs
---yes, and otherwise logs out on this computer only.`,
+Revoking a token also revokes any tokens that were made with it. If there
+are any, kx lists them and asks first; without a terminal it needs --yes,
+and otherwise logs out on this computer only.`,
 		Example: `  kx logout                  log out of your current organization
   kx logout --org acme-labs  log out of another one
   kx logout --yes            also revoke tokens made with this login, without asking`,
@@ -477,9 +477,9 @@ type retired struct {
 
 // retirePreviousToken revokes old, the token this computer used for org
 // before a new login replaced it, so it isn't left active and forgotten.
-// Revoking a token also revokes the tokens made with it (a CI token made
-// with kx token create, say), so a token that has any, or that can't tell,
-// is kept. It is best effort and never fails the new login.
+// Revoking a token also revokes any tokens that were made with it, so a
+// token that has any, or that can't tell, is kept. It is best effort and
+// never fails the new login.
 func retirePreviousToken(ctx context.Context, a *App, s *Session, org, old string) retired {
 	prefix := api.TokenPrefix(old)
 	failed := retired{line: fmt.Sprintf("kx couldn't revoke the token this computer used before for %s (%s); revoke it with: kx token revoke %s", org, prefix, prefix), warn: true}

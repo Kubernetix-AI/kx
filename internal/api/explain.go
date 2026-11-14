@@ -78,7 +78,6 @@ func Explain(err error) Problem {
 		orgNot   *kxerr.OrgNotLoggedIn
 		mismatch *kxerr.TokenAppMismatch
 		orgMis   *kxerr.TokenOrgMismatch
-		refused  *kxerr.TokenCreateRefused
 		invalid  *kxerr.InvalidToken
 		insecure *kxerr.InsecureURL
 		usage    *kxerr.Usage
@@ -118,8 +117,8 @@ func Explain(err error) Problem {
 			what = "This folder deploys to " + orgNot.Org
 		}
 		return Problem{"org_not_logged_in", what + ", but this computer is only logged in to " + joinAnd(orgNot.LoggedIn) + ".", "Run: kx login --org " + orgNot.Org, ExitAuth}
-	case errors.As(err, &refused):
-		return explainCreateRefused(refused)
+	case errors.Is(err, kxerr.ErrTokenCreateMoved):
+		return Problem{"token_create_not_allowed", "kx can't create tokens; only people signed in to the dashboard can.", "Create one in the dashboard: Settings → API tokens (for CI, the app's Deploy tab)", ExitUsage}
 	case errors.As(err, &orgMis):
 		what := "KX_TOKEN belongs to " + orgMis.TokenOrg + ", but you asked for " + orgMis.Org + "."
 		if orgMis.FromFolder {
@@ -336,36 +335,6 @@ func explainAPI(e *Error) Problem {
 		return Problem{"request_rejected", "Kubernetix didn't accept the request: " + sentence(msg), checkValuesFix, ExitUsage}
 	}
 	return Problem{"server_error", "Something went wrong on Kubernetix's side.", "Try again in a minute; if it keeps happening, open an issue at " + issuesURL, ExitUnexpected}
-}
-
-func explainCreateRefused(e *kxerr.TokenCreateRefused) Problem {
-	who := "This token"
-	switch e.Source {
-	case kxerr.SourceLogin:
-		who = "This login"
-	case kxerr.SourceEnv:
-		who = "The token in KX_TOKEN"
-	}
-	const code, dashboard = "token_create_not_allowed", "Settings → API tokens"
-	switch e.Reason {
-	case kxerr.CreateExpiry:
-		if e.Until != nil {
-			return Problem{code, who + " can only create tokens that end by " + e.Until.UTC().Format("2 Jan 2006") + ".", "Create longer-lived tokens in the dashboard: " + dashboard, ExitAuth}
-		}
-		return Problem{code, who + " can only create tokens with an end date.", "Choose one with --expires, up to 365d, or create a token that never expires in the dashboard: " + dashboard, ExitAuth}
-	case kxerr.CreatePermissions:
-		words := make([]string, 0, len(e.Permissions))
-		for _, p := range e.Permissions {
-			if p == PermPush {
-				p = "push images"
-			}
-			words = append(words, p)
-		}
-		return Problem{code, who + " can only create tokens that can " + joinAnd(words) + ".", "Create tokens with more permissions in the dashboard: " + dashboard, ExitAuth}
-	case kxerr.CreateApp:
-		return Problem{code, who + " can only create tokens for " + e.App + ".", "Run: kx token create --app " + e.App, ExitAuth}
-	}
-	return Problem{code, who + " was made by another token, so it can't create tokens.", "Create tokens in the dashboard: " + dashboard, ExitAuth}
 }
 
 func explainInvalidToken(e *kxerr.InvalidToken) Problem {

@@ -293,137 +293,36 @@ func TestOpen(t *testing.T) {
 	}
 }
 
-func TestToken_Create(t *testing.T) {
-	h := newHarness(t)
-	h.loginAs("acme-corp", tokCorp, &dec11)
-	h.expect(h.run("token", "create", "ci", "--app", "shop-api", "--expires", "7d"), 0)
-	if h.out.String() != tokLabs+"\n" {
-		t.Fatalf("stdout = %q, want the new token alone", h.out.String())
-	}
-	if !strings.HasPrefix(h.err.String(), "Copy this token now. You won't be able to see it again.\n") {
-		t.Fatalf("stderr = %q", h.err.String())
-	}
-	body := h.api.created[0]
-	perms, _ := json.Marshal(body["permissions"])
-	if body["name"] != "ci" || body["app_id"] != appShopID || string(perms) != `["deploy","read"]` || body["expires_in_days"] != float64(7) {
-		t.Fatalf("request = %v", body)
-	}
-}
-
-func TestToken_CreateDefaults(t *testing.T) {
-	h := newHarness(t)
-	h.loginAs("acme-corp", tokCorp, &dec11)
-	h.expect(h.run("token", "create"), 0)
-	body := h.api.created[0]
-	if !strings.HasPrefix(body["name"].(string), "kx-") {
-		t.Fatalf("default name = %v", body["name"])
-	}
-	perms, _ := json.Marshal(body["permissions"])
-	if string(perms) != `["deploy","read","registry:push"]` {
-		t.Fatalf("org token default permissions = %s", perms)
-	}
-	if _, ok := body["expires_in_days"]; ok {
-		t.Fatalf("default expiry should leave expires_in_days out, got %v", body)
-	}
-	// The default expiry gives way to the login's: it ends with the login.
-	if !strings.HasSuffix(h.err.String(), "on every app until 11 Dec 2026.\n") {
-		t.Fatalf("stderr = %q", h.err.String())
-	}
-	h.expect(h.run("token", "create", "x", "--json"), 0)
-	if !strings.Contains(h.out.String(), `"token": "`+tokLabs+`"`) {
-		t.Fatalf("--json lost the token: %s", h.out.String())
-	}
-}
-
-// A token made with kx can't do more or last longer than the token that
-// makes it (the platform refuses with token_not_allowed). kx says what the
-// limit is and where to get a longer-lived token, in two lines.
-func TestToken_CreateBeyondTheLoginExplains(t *testing.T) {
-	const dashboardFix = "Create longer-lived tokens in the dashboard: Settings → API tokens\n"
-	tests := []struct {
-		name  string
-		setup func(h *harness)
-		args  []string
-		want  string
-	}{
-		{"1y from a 30-day login", func(h *harness) { h.loginAs("acme-corp", tokCorp, &dec11) },
-			[]string{"token", "create", "ci", "--expires", "1y"},
-			"This login can only create tokens that end by 11 Dec 2026.\n" + dashboardFix},
-		{"never from a 30-day login", func(h *harness) { h.loginAs("acme-corp", tokCorp, &dec11) },
-			[]string{"token", "create", "ci", "--expires", "never"},
-			"This login can only create tokens that end by 11 Dec 2026.\n" + dashboardFix},
-		{"1y from KX_TOKEN", func(h *harness) { h.env["KX_TOKEN"] = tokCorp },
-			[]string{"token", "create", "ci", "--expires", "365d"},
-			"The token in KX_TOKEN can only create tokens that end by 11 Dec 2026.\n" + dashboardFix},
-		{"never from a login that never ends", func(h *harness) { h.loginAs("acme-labs", tokLabs, nil) },
-			[]string{"token", "create", "ci", "--expires", "never"},
-			"This login can only create tokens with an end date.\nChoose one with --expires, up to 365d, or create a token that never expires in the dashboard: Settings → API tokens\n"},
-		{"more permissions than the token", func(h *harness) { h.env["KX_TOKEN"] = tokApp },
-			[]string{"token", "create", "ci", "--permissions", "deploy,push"},
-			"The token in KX_TOKEN can only create tokens that can deploy and read.\nCreate tokens with more permissions in the dashboard: Settings → API tokens\n"},
-		{"made by another token", func(h *harness) {
-			h.env["KX_TOKEN"] = tokApp
-			who := h.api.who[tokApp]
-			child := *who.Token
-			child.ParentTokenID, child.CreatedVia = "tok-corp", "token"
-			who.Token = &child
-			h.api.who[tokApp] = who
-		}, []string{"token", "create", "ci"},
-			"The token in KX_TOKEN was made by another token, so it can't create tokens.\nCreate tokens in the dashboard: Settings → API tokens\n"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			h := newHarness(t)
-			tt.setup(h)
-			h.expect(h.run(tt.args...), 3)
-			if h.err.String() != tt.want {
-				t.Fatalf("stderr =\n%q\nwant\n%q", h.err.String(), tt.want)
-			}
-			if len(h.api.created) != 1 {
-				t.Fatalf("requests sent: %d", len(h.api.created))
-			}
-		})
-	}
-
-	h := newHarness(t)
-	h.loginAs("acme-corp", tokCorp, &dec11)
-	h.expect(h.run("token", "create", "ci", "--expires", "never", "--json"), 3)
-	if !strings.HasPrefix(h.out.String(), `{"error":{"code":"token_create_not_allowed","message":"This login can only create tokens that end by 11 Dec 2026."`) {
-		t.Fatalf("--json = %q", h.out.String())
-	}
-	if body := h.api.created[0]; body["expires_in_days"] != nil {
-		t.Fatalf("never should send expires_in_days: null, got %v", body)
-	}
-}
-
-// Without flags, a token made from an app token is for that app and has at
-// most that token's permissions, so the defaults never get refused.
-func TestToken_CreateDefaultsStayWithinTheToken(t *testing.T) {
-	h := newHarness(t)
-	h.env["KX_TOKEN"] = tokApp
-	h.expect(h.run("token", "create", "ci"), 0)
-	body := h.api.created[0]
-	perms, _ := json.Marshal(body["permissions"])
-	if body["app_id"] != appShopID || string(perms) != `["deploy","read"]` {
-		t.Fatalf("request = %v", body)
-	}
-}
-
-func TestToken_CreateRejects(t *testing.T) {
+// Tokens can't create tokens: only people signed in to the dashboard can.
+// kx token create, with any arguments an old script passes, points there
+// without asking Kubernetix anything.
+func TestToken_CreatePointsToTheDashboard(t *testing.T) {
 	for _, args := range [][]string{
-		{"token", "create", "x", "--expires", "0d"},
-		{"token", "create", "x", "--expires", "366d"},
-		{"token", "create", "x", "--expires", "2y"},
-		{"token", "create", "x", "--permissions", "admin"},
-		{"token", "create", "x", "--permissions", ""},
-		{"token", "create", strings.Repeat("n", 65)},
+		{"token", "create"},
+		{"token", "create", "ci", "--app", "shop-api", "--expires", "7d"},
+		{"token", "create", "reader", "--permissions", "read", "--expires=never"},
 	} {
 		h := newHarness(t)
 		h.loginAs("acme-corp", tokCorp, &dec11)
 		h.expect(h.run(args...), 2)
-		if len(h.api.created) != 0 {
-			t.Fatalf("%v sent a request", args)
+		if h.err.String() != "kx can't create tokens; only people signed in to the dashboard can.\nCreate one in the dashboard: Settings → API tokens (for CI, the app's Deploy tab)\n" || h.out.String() != "" {
+			t.Fatalf("%v: stdout %q stderr %q", args, h.out.String(), h.err.String())
 		}
+		if reqs := h.api.got(); len(reqs) != 0 {
+			t.Fatalf("%v: sent %v", args, reqs)
+		}
+	}
+
+	h := newHarness(t)
+	h.expect(h.run("token", "create", "ci", "--json"), 2)
+	if !strings.HasPrefix(h.out.String(), `{"error":{"code":"token_create_not_allowed","message":"kx can't create tokens; only people signed in to the dashboard can."`) {
+		t.Fatalf("--json = %q", h.out.String())
+	}
+
+	// It isn't advertised.
+	h.expect(h.run("token", "--help"), 0)
+	if help := h.out.String() + h.err.String(); strings.Contains(help, "  create") || strings.Contains(help, "token create") {
+		t.Fatalf("kx token --help lists create:\n%s", help)
 	}
 }
 

@@ -75,31 +75,9 @@ func (e *TokenOrgMismatch) Error() string {
 	return "KX_TOKEN is for " + e.TokenOrg + ", not " + e.Org
 }
 
-// Why the platform refused to let a token create a token
-// (TokenCreateRefused.Reason). A token can only make tokens narrower than
-// itself: within its permissions, app and expiry, and never from a token
-// that another token made.
-const (
-	CreateExpiry      = "expiry"      // would outlive the token, or never expire
-	CreatePermissions = "permissions" // asks for permissions the token lacks
-	CreateApp         = "app"         // an app token asked for another app or every app
-	CreateDerived     = "derived"     // the token was itself made by a token
-)
-
-// TokenCreateRefused means the token in use (from Source) was not allowed
-// to create the token asked for. Until is when it ends (nil: never),
-// Permissions what it can do, App its app if it is limited to one.
-type TokenCreateRefused struct {
-	Reason      string
-	Source      TokenSource
-	Until       *time.Time
-	Permissions []string
-	App         string
-}
-
-func (e *TokenCreateRefused) Error() string {
-	return "token may not create that token (" + e.Reason + ")"
-}
+// ErrTokenCreateMoved means kx token create was run: tokens can't create
+// tokens, so only people signed in to the dashboard create them.
+var ErrTokenCreateMoved = errors.New("tokens are created in the dashboard")
 
 // TokenAppMismatch means an app-scoped token for TokenApp was asked to act on App.
 type TokenAppMismatch struct{ TokenApp, App string }

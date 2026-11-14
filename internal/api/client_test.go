@@ -330,33 +330,11 @@ func TestWhoAmI_Shapes(t *testing.T) {
 	}
 }
 
-func TestCreateTokenRequest_JSON(t *testing.T) {
-	tests := []struct {
-		req  CreateTokenRequest
-		want string
-	}{
-		{CreateTokenRequest{Name: "ci", Permissions: []string{"read"}}, `{"name":"ci","permissions":["read"]}`},
-		{CreateTokenRequest{Name: "ci", AppID: "a1", Permissions: []string{"deploy"}, ExpiresInDays: 30}, `{"name":"ci","app_id":"a1","permissions":["deploy"],"expires_in_days":30}`},
-		{CreateTokenRequest{Name: "ci", Permissions: []string{"read"}, NeverExpires: true}, `{"name":"ci","permissions":["read"],"expires_in_days":null}`},
-	}
-	for _, tt := range tests {
-		b, err := json.Marshal(tt.req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(b) != tt.want {
-			t.Errorf("json = %s, want %s", b, tt.want)
-		}
-	}
-}
-
 func TestTokenEndpoints(t *testing.T) {
 	var seen []string
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		seen = append(seen, r.Method+" "+r.URL.RequestURI())
 		switch r.Method {
-		case "POST":
-			writeJSON(w, 201, map[string]any{"id": "t2", "token_prefix": "kx_zzzzzzzz", "name": "ci", "scope": "app", "app_id": "a1", "permissions": []string{"deploy"}, "status": "active", "token": "kx_zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz2x81PZ"})
 		case "GET":
 			writeJSON(w, 200, map[string]any{"tokens": []map[string]any{{"id": "t2", "token_prefix": "kx_zzzzzzzz", "status": "active"}}})
 		case "DELETE":
@@ -364,13 +342,6 @@ func TestTokenEndpoints(t *testing.T) {
 		}
 	})
 	ctx := context.Background()
-	created, err := c.CreateToken(ctx, "acme-corp", CreateTokenRequest{Name: "ci", AppID: "a1", Permissions: []string{"deploy"}})
-	if err != nil || created.Secret == "" || created.ID != "t2" {
-		t.Fatalf("CreateToken = %+v, %v", created, err)
-	}
-	if strings.Contains(fmt.Sprintf("%v %+v %s", created, created, created), created.Secret) {
-		t.Fatal("CreatedToken formatting shows the secret")
-	}
 	list, err := c.ListTokens(ctx, "acme-corp", "a1")
 	if err != nil || len(list) != 1 {
 		t.Fatalf("ListTokens = %v, %v", list, err)
@@ -378,7 +349,7 @@ func TestTokenEndpoints(t *testing.T) {
 	if err := c.RevokeToken(ctx, "acme-corp", "t2"); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"POST /api/v1/orgs/acme-corp/tokens", "GET /api/v1/orgs/acme-corp/tokens?app_id=a1", "DELETE /api/v1/orgs/acme-corp/tokens/t2"}
+	want := []string{"GET /api/v1/orgs/acme-corp/tokens?app_id=a1", "DELETE /api/v1/orgs/acme-corp/tokens/t2"}
 	if strings.Join(seen, "|") != strings.Join(want, "|") {
 		t.Fatalf("requests = %v", seen)
 	}

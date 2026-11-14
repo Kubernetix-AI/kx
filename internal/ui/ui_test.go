@@ -189,14 +189,6 @@ func TestPrinter_RedactsTokensEverywhere(t *testing.T) {
 	}
 }
 
-func TestPrinter_SecretIsTheOneException(t *testing.T) {
-	p, out, _ := newTest("")
-	p.Secret(tok)
-	if out.String() != tok+"\n" {
-		t.Fatalf("Secret wrote %q", out.String())
-	}
-}
-
 func TestPrinter_Table(t *testing.T) {
 	p, out, _ := newTest("")
 	p.Table([]string{"NAME", "STATUS", "URL"}, [][]string{
@@ -424,14 +416,6 @@ func TestPrinter_CopiesShareState(t *testing.T) {
 	byValue.Result("x")
 	if out.String() != "x\n" {
 		t.Fatalf("copy wrote %q", out.String())
-	}
-}
-
-func TestSecretJSON_NotRedacted(t *testing.T) {
-	p, out, _ := newTest("")
-	_ = p.SecretJSON(map[string]string{"token": tok})
-	if !strings.Contains(out.String(), tok) {
-		t.Fatalf("SecretJSON redacted the token: %q", out.String())
 	}
 }
 

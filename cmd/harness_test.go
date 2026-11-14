@@ -64,7 +64,6 @@ type fakeAPI struct {
 	usage       api.Usage
 	replicas    []api.Replica
 	runtimeLogs func(q map[string]string) string // the API's log-stream JSON
-	created     []map[string]any
 
 	// Deploy side.
 	regCred     api.RegistryCredential
@@ -241,13 +240,13 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 403, map[string]string{"error": "insufficient_permissions", "message": "no"})
 			return
 		}
-		f.serveTokens(w, r, parts, who.Token)
+		f.serveTokens(w, r, parts)
 	default:
 		writeJSON(w, 404, map[string]string{"error": "not_found", "message": "no route"})
 	}
 }
 
-func (f *fakeAPI) serveTokens(w http.ResponseWriter, r *http.Request, parts []string, caller *api.Token) {
+func (f *fakeAPI) serveTokens(w http.ResponseWriter, r *http.Request, parts []string) {
 	switch {
 	case r.Method == "GET" && len(parts) == 3:
 		var list []api.Token
@@ -257,62 +256,11 @@ func (f *fakeAPI) serveTokens(w http.ResponseWriter, r *http.Request, parts []st
 			}
 		}
 		writeJSON(w, 200, map[string]any{"tokens": list})
-	case r.Method == "POST" && len(parts) == 3:
-		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		f.created = append(f.created, body)
-		exp, refusal := f.decision5(caller, body)
-		if refusal != "" {
-			// The platform's body for a refusal, naming the calling token.
-			writeJSON(w, 403, map[string]string{"error": "token_not_allowed", "message": refusal, "token_prefix": caller.Prefix, "token_name": caller.Name})
-			return
-		}
-		view := map[string]any{"id": "tok-new", "org_id": parts[1], "name": body["name"], "token_prefix": "kx_zzzzzzzz",
-			"scope": "org", "permissions": body["permissions"], "status": "active", "token": tokLabs,
-			"expires_at": exp.Format(time.RFC3339), "created_at": f.now.Format(time.RFC3339)}
-		if id, ok := body["app_id"].(string); ok && id != "" {
-			view["scope"], view["app_id"], view["app_name"] = "app", id, "shop-api"
-		}
-		writeJSON(w, 201, view)
 	case r.Method == "DELETE" && len(parts) == 4:
 		w.WriteHeader(204)
 	default:
 		writeJSON(w, 404, map[string]string{"error": "not_found", "message": "no route"})
 	}
-}
-
-// decision5 applies the platform's rules for a token that makes a token:
-// narrower only, within the caller's permissions, app and expiry, never
-// "never", and not from a token that was itself made by a token. It
-// returns the new token's expiry, or the platform's refusal message.
-func (f *fakeAPI) decision5(caller *api.Token, body map[string]any) (time.Time, string) {
-	if caller.ParentTokenID != "" {
-		return time.Time{}, "A token made by another token can't make tokens."
-	}
-	perms, _ := body["permissions"].([]any)
-	for _, p := range perms {
-		if !caller.Can(p.(string)) {
-			return time.Time{}, "A token can only make tokens with permissions it has itself."
-		}
-	}
-	if app, _ := body["app_id"].(string); caller.AppScoped() && app != caller.AppID {
-		return time.Time{}, "This token can only make tokens for its own app; set app_id to " + caller.AppID + "."
-	}
-	days, set := body["expires_in_days"]
-	if set && days == nil {
-		return time.Time{}, "A token made by another token must expire, within a year and no later than the token that makes it."
-	}
-	exp := f.now.Add(90 * 24 * time.Hour)
-	if n, ok := days.(float64); ok {
-		exp = f.now.Add(time.Duration(n) * 24 * time.Hour)
-	}
-	if caller.ExpiresAt != nil && exp.After(*caller.ExpiresAt) {
-		if set {
-			return time.Time{}, "A token can't outlive the token that makes it, which expires on " + caller.ExpiresAt.UTC().Format("2 Jan 2006 15:04 MST") + "."
-		}
-		exp = caller.ExpiresAt.UTC()
-	}
-	return exp, ""
 }
 
 func (f *fakeAPI) got() []string {
@@ -417,8 +365,7 @@ func (h *harness) runCtx(ctx context.Context, args ...string) int {
 	code := app.Run(ctx, args)
 	all := h.out.String() + h.err.String()
 	for _, tok := range []string{tokCorp, tokLabs, tokApp, tokCorp2, tokRead, tokDeploy} {
-		creating := len(args) >= 2 && args[0] == "token" && args[1] == "create"
-		if strings.Contains(all, tok) && !creating {
+		if strings.Contains(all, tok) {
 			h.t.Errorf("kx %v printed a whole token", args)
 		}
 	}

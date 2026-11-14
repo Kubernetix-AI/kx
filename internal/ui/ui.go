@@ -228,14 +228,6 @@ func (p *Printer) LogLine(stamp, line string) {
 	p.writeOut(p.paintOut(dim, CleanField(stamp)) + "  " + CleanText(line) + "\n")
 }
 
-// Secret prints s on stdout without redaction. Only kx token create uses
-// it, to show a new token once.
-func (p *Printer) Secret(s string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	_, _ = io.WriteString(p.Out, s+"\n")
-}
-
 // PrintJSON writes v as indented JSON on stdout (keys sorted for maps,
 // struct order otherwise), redacting tokens.
 func (p *Printer) PrintJSON(v any) error { return p.encode(v, "  ") }
@@ -352,22 +344,6 @@ func (p *Printer) Dim(s string) string { return p.paint(dim, s) }
 // Bold makes s bold when stderr is a colour terminal. Use it only for text
 // written to stderr.
 func (p *Printer) Bold(s string) string { return p.paint(bold, s) }
-
-// SecretJSON writes v as indented JSON on stdout without redaction. Only
-// kx token create uses it, for the one response that carries a new token.
-func (p *Printer) SecretJSON(v any) error {
-	var b strings.Builder
-	enc := json.NewEncoder(&b)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(v); err != nil {
-		return err
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	_, err := io.WriteString(p.Out, b.String())
-	return err
-}
 
 // Ago describes how long before now t was: "just now", "2 minutes ago",
 // "3 hours ago", "5 days ago".

@@ -192,12 +192,6 @@ func (c *Client) RegistryCredentials(ctx context.Context) (*RegistryCredential, 
 	return &out, c.do(ctx, http.MethodPost, "/registry/credentials", nil, nil, "", &out)
 }
 
-// CreateToken creates an API token in org.
-func (c *Client) CreateToken(ctx context.Context, org string, req CreateTokenRequest) (*CreatedToken, error) {
-	var out CreatedToken
-	return &out, c.do(ctx, http.MethodPost, "/orgs/"+url.PathEscape(org)+"/tokens", nil, req, "", &out)
-}
-
 // ListTokens lists org's tokens, only those for appID when it is set.
 func (c *Client) ListTokens(ctx context.Context, org, appID string) ([]Token, error) {
 	var out struct {

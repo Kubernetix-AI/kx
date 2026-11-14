@@ -366,9 +366,8 @@ func TestLogin_AgainRevokesPreviousToken(t *testing.T) {
 	}
 }
 
-// Revoking a token revokes the tokens made with it (a CI token made with
-// kx token create, say), so kx keeps the previous token if anything
-// depends on it, and says so.
+// Revoking a token revokes any tokens that were made with it, so kx keeps
+// the previous token if anything depends on it, and says so.
 func TestLogin_AgainKeepsPreviousTokenWithChildren(t *testing.T) {
 	h := newHarness(t)
 	h.loginAs("acme-corp", tokCorp, &dec11)
