@@ -199,17 +199,20 @@ func (p *Printer) Choose(ctx context.Context, question string, options []string,
 	}
 }
 
-// chooseByNumber is Choose as a numbered list. With a default, an empty or
-// unknown answer takes it; without one, kx asks again until it gets a
-// number, and returns ErrNoChoice when the input ends first.
+// chooseByNumber is Choose as a numbered list. A number picks its option;
+// an empty line takes the default, if there is one; anything else (a typo,
+// a number out of range) asks again. Input that ends without an answer
+// returns ErrNoChoice, with or without a default.
 func (p *Printer) chooseByNumber(ctx context.Context, question string, options []string, def int) (int, error) {
 	var b strings.Builder
 	b.WriteString(question + "\n")
 	for i, o := range options {
 		fmt.Fprintf(&b, "  %d) %s\n", i+1, o)
 	}
+	again := fmt.Sprintf("Choose a number from 1 to %d: ", len(options))
 	if def >= 0 {
 		fmt.Fprintf(&b, "Choose [%d]: ", def+1)
+		again = fmt.Sprintf("Choose a number from 1 to %d [%d]: ", len(options), def+1)
 	} else {
 		b.WriteString("Choose a number: ")
 	}
@@ -226,12 +229,12 @@ func (p *Printer) chooseByNumber(ctx context.Context, question string, options [
 		switch {
 		case convErr == nil && n >= 1 && n <= len(options):
 			return n - 1, nil
-		case def >= 0:
-			return def, nil
 		case err != nil: // the input ended
 			p.writeErr("\n")
 			return -1, ErrNoChoice
+		case line == "" && def >= 0:
+			return def, nil
 		}
-		p.writeErr(fmt.Sprintf("Choose a number from 1 to %d: ", len(options)))
+		p.writeErr(again)
 	}
 }

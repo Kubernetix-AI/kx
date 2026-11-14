@@ -415,6 +415,35 @@ func TestChoose_NoDefaultNeedsAnExplicitPick(t *testing.T) {
 	}
 }
 
+// With a default, only an empty line takes it: a typo or a number out of
+// range asks again, and input that ends without an answer chooses nothing.
+func TestChoose_NumberedDefaultOnlyOnAnEmptyLine(t *testing.T) {
+	tests := []struct {
+		in    string
+		want  int
+		asked int // times "Choose a number from 1 to 3 [1]: " was shown
+		cause error
+	}{
+		{"\n", 0, 0, nil},
+		{"2\n", 1, 0, nil},
+		{"x\n2\n", 1, 1, nil},
+		{"23\n0\n\n", 0, 2, nil},
+		{"", -1, 0, ErrNoChoice},
+		{"web\n", -1, 1, ErrNoChoice},
+	}
+	for _, tt := range tests {
+		p, _, errw := newTest(tt.in)
+		p.InTTY, p.TTY = true, true
+		got, err := p.Choose(context.Background(), "Pick", []string{"(new app: shop)", "web", "api"}, 0)
+		if got != tt.want || !errors.Is(err, tt.cause) {
+			t.Errorf("%q: Choose = %d, %v; want %d, %v", tt.in, got, err, tt.want, tt.cause)
+		}
+		if n := strings.Count(errw.String(), "Choose a number from 1 to 3 [1]: "); n != tt.asked {
+			t.Errorf("%q: asked again %d times, want %d: %q", tt.in, n, tt.asked, errw.String())
+		}
+	}
+}
+
 func TestChoose_NumberFallbackWithoutDefault(t *testing.T) {
 	p, _, errw := newTest("\n9\n2\n")
 	p.InTTY, p.TTY = true, true
