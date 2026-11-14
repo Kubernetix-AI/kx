@@ -265,6 +265,9 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 		opts.OnDeploy = func(app *api.App, dep *api.Deployment) {
 			_ = gh.SetStatus(ctx, github.StatePending, fmt.Sprintf("Deploying v%d", dep.Version), s.DashboardURL("/apps/"+url.PathEscape(app.ID)))
 		}
+		// A likely cause while kx keeps waiting is a warning: the deploy
+		// may still go live.
+		opts.OnNotLive = func(what, fix string) { gh.Warning(what + "\n" + fix) }
 	}
 
 	res, err := deploy.Run(ctx, c, opts, *s.P)

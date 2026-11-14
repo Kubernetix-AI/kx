@@ -50,7 +50,7 @@ func Rollback(ctx context.Context, c *api.Client, o RollbackOptions, p ui.Printe
 		return nil, errors.New("deploy: an idempotency key is required")
 	}
 	// Image only satisfies prepare's build checks: a rollback builds nothing.
-	r := &runner{c: c, p: &p, o: Options{App: o.App, Org: o.Org, IdempotencyKey: o.IdempotencyKey, Timeout: o.Timeout, Now: o.Now, Sleep: o.Sleep, Image: "rollback", StopCommands: o.StopCommands}}
+	r := &runner{c: c, p: &p, rollback: true, o: Options{App: o.App, Org: o.Org, IdempotencyKey: o.IdempotencyKey, Timeout: o.Timeout, Now: o.Now, Sleep: o.Sleep, Image: "rollback", StopCommands: o.StopCommands}}
 	if err := r.o.prepare(); err != nil {
 		return nil, err
 	}

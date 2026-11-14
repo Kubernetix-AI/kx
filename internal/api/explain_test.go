@@ -121,14 +121,20 @@ func explainCases() []explainCase {
 		{"push failed", &kxerr.PushFailed{Err: errors.New("exit status 1")}, Problem{"push_failed", "kx couldn't upload your image to Kubernetix.", "Check your internet connection, then run kx deploy again.", 7}},
 		{"wait timeout", &kxerr.WaitTimeout{App: "shop-api", Version: 15, After: 15 * time.Minute}, Problem{"wait_timeout", "shop-api v15 is still starting after 15 minutes, so kx stopped waiting; the deploy continues.", "Check on it: kx status", 9}},
 		{"deploy failed with reason, no earlier version", &kxerr.DeployFailed{App: "shop-api", Version: 1, Reason: "the image could not be pulled."}, Problem{"deploy_failed", "shop-api v1 didn't go live: the image could not be pulled.", "See why: kx logs --deployment v1", 8}},
-		{"never ready, health check known", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, NotStarting: &kxerr.NotStarting{After: 2*time.Minute + 10*time.Second, Path: "/", Port: 8080, HealthCheck: true}},
-			Problem{"deploy_failed", "shop-api v15 didn't go live: for 2 minutes its container kept crashing or wasn't answering health checks on / at port 8080. Version 14 is still serving.", "Make your app start and answer on / at port 8080 (the log lines above may say why it didn't), then run kx deploy again.", 8}},
-		{"never ready, health check port only", &kxerr.DeployFailed{App: "shop-api", Version: 1, NotStarting: &kxerr.NotStarting{After: 5 * time.Minute, Port: 3000, HealthCheck: true}},
-			Problem{"deploy_failed", "shop-api v1 didn't go live: for 5 minutes its container kept crashing or wasn't answering health checks at port 3000.", "Make your app start and answer health checks at port 3000 (the log lines above may say why it didn't), then run kx deploy again.", 8}},
+		{"never ready, platform failed it", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Reason: "Deployment failed.", NotStarting: &kxerr.NotStarting{After: 2*time.Minute + 10*time.Second, Path: "/", Port: 8080, HealthCheck: true}},
+			Problem{"deploy_failed", "shop-api v15 didn't go live: its container kept crashing or didn't answer health checks on / at port 8080. Version 14 is still serving.", "Make your app start and answer on / at port 8080 (the log lines above may say why it didn't), then run kx deploy again.", 8}},
+		{"never ready, path not known", &kxerr.DeployFailed{App: "shop-api", Version: 1, NotStarting: &kxerr.NotStarting{After: 5 * time.Minute, Port: 3000, HealthCheck: true}},
+			Problem{"deploy_failed", "shop-api v1 didn't go live: its container kept crashing or didn't answer health checks at port 3000.", "Make your app start and answer health checks at port 3000 (the log lines above may say why it didn't), then run kx deploy again.", 8}},
 		{"never ready, no health check", &kxerr.DeployFailed{App: "shop-api", Version: 1, NotStarting: &kxerr.NotStarting{After: 90 * time.Second}},
-			Problem{"deploy_failed", "shop-api v1 didn't go live: for 90 seconds its container kept stopping right after it started.", "Fix what stops your app from starting (the log lines above may say), then run kx deploy again.", 8}},
-		{"never ready, minutes round down", &kxerr.DeployFailed{App: "shop-api", Version: 1, NotStarting: &kxerr.NotStarting{After: 7*time.Minute + 50*time.Second}},
-			Problem{"deploy_failed", "shop-api v1 didn't go live: for 7 minutes its container kept stopping right after it started.", "Fix what stops your app from starting (the log lines above may say), then run kx deploy again.", 8}},
+			Problem{"deploy_failed", "shop-api v1 didn't go live: its container kept stopping right after it started.", "Fix what stops your app from starting (the log lines above may say), then run kx deploy again.", 8}},
+		{"never ready, rollback", &kxerr.DeployFailed{App: "shop-api", Version: 16, ServingVersion: 15, NotStarting: &kxerr.NotStarting{After: 2 * time.Minute, Path: "/", Port: 8080, HealthCheck: true, Rollback: true}},
+			Problem{"deploy_failed", "shop-api v16 didn't go live: its container kept crashing or didn't answer health checks on / at port 8080. Version 15 is still serving.", "Pick another version to roll back to: kx status", 8}},
+		{"timeout with a likely cause", &kxerr.WaitTimeout{App: "shop-api", Version: 15, After: 15 * time.Minute, NotStarting: &kxerr.NotStarting{After: 2 * time.Minute, Path: "/", Port: 8080, HealthCheck: true}},
+			Problem{"wait_timeout", "shop-api v15 isn't live after 15 minutes: its container keeps crashing or isn't answering health checks on / at port 8080, so kx stopped waiting; the deploy continues.", "Check on it with kx status; to fix it, make your app start and answer on / at port 8080, then run kx deploy again.", 9}},
+		{"timeout with a likely cause, no health check", &kxerr.WaitTimeout{App: "shop-api", Version: 15, After: 15 * time.Minute, NotStarting: &kxerr.NotStarting{After: 2 * time.Minute}},
+			Problem{"wait_timeout", "shop-api v15 isn't live after 15 minutes: its container keeps stopping right after it starts, so kx stopped waiting; the deploy continues.", "Check on it with kx status; the log lines above may say what stops your app from starting.", 9}},
+		{"timeout with a likely cause, rollback", &kxerr.WaitTimeout{App: "shop-api", Version: 16, After: 15 * time.Minute, NotStarting: &kxerr.NotStarting{After: 2 * time.Minute, Path: "/", Port: 8080, HealthCheck: true, Rollback: true}},
+			Problem{"wait_timeout", "shop-api v16 isn't live after 15 minutes: its container keeps crashing or isn't answering health checks on / at port 8080, so kx stopped waiting; the deploy continues.", "Check on it with kx status; if it doesn't go live, pick another version to roll back to.", 9}},
 		{"bad .kx.json", &kxerr.BadConfig{Path: "/code/shop/.kx.json", Project: true, Reason: "not valid JSON"}, Problem{"bad_project_file", "The .kx.json in /code/shop can't be read: not valid JSON.", "Fix it, or delete it and run: kx link", 2}},
 		{"bad settings", &kxerr.BadConfig{Path: "/home/sam/.config/kx/config.json", Reason: "not valid JSON"}, Problem{"bad_settings_file", "kx's settings file /home/sam/.config/kx/config.json can't be read: not valid JSON.", "Delete it and run: kx login", 2}},
 		{"interrupted", context.Canceled, Problem{"interrupted", "kx stopped because it was interrupted.", "Run the command again when you're ready.", 1}},
@@ -222,6 +228,35 @@ func checkShape(t *testing.T, p Problem) {
 	}
 	if p.Exit < 1 || p.Exit > 10 {
 		t.Errorf("exit code %d out of range", p.Exit)
+	}
+}
+
+// The early signal: two lines while kx keeps waiting.
+func TestNotLiveYet(t *testing.T) {
+	tests := []struct {
+		name      string
+		ns        kxerr.NotStarting
+		what, fix string
+	}{
+		{"health check", kxerr.NotStarting{After: 2*time.Minute + 5*time.Second, Path: "/", Port: 8080, HealthCheck: true},
+			"shop-api v15 isn't live yet: for 2 minutes its container has kept crashing or hasn't answered health checks on / at port 8080.",
+			"Make your app start and answer on / at port 8080; the log lines below may say why it hasn't."},
+		{"no health check", kxerr.NotStarting{After: 95 * time.Second},
+			"shop-api v15 isn't live yet: for 95 seconds its container has kept stopping right after it started.",
+			"Fix what stops your app from starting; the log lines below may say what it is."},
+		{"port not known", kxerr.NotStarting{After: 3 * time.Minute, Path: "/healthz", HealthCheck: true},
+			"shop-api v15 isn't live yet: for 3 minutes its container has kept crashing or hasn't answered health checks on /healthz.",
+			"Make your app start and answer on /healthz; the log lines below may say why it hasn't."},
+		{"rollback", kxerr.NotStarting{After: 2 * time.Minute, Path: "/", Port: 8080, HealthCheck: true, Rollback: true},
+			"shop-api v15 isn't live yet: for 2 minutes its container has kept crashing or hasn't answered health checks on / at port 8080.",
+			"If it doesn't go live, pick another version to roll back to: kx status"},
+	}
+	for _, tt := range tests {
+		what, fix := NotLiveYet("shop-api", 15, &tt.ns)
+		if what != tt.what || fix != tt.fix {
+			t.Errorf("%s:\n got %q\n     %q\nwant %q\n     %q", tt.name, what, fix, tt.what, tt.fix)
+		}
+		checkShape(t, Problem{Code: "x", What: what, Fix: fix, Exit: 1})
 	}
 }
 

@@ -163,7 +163,7 @@ func (e *PushRateLimited) Error() string { return "registry credential rate limi
 // DeployFailed means version Version of App did not go live.
 // ServingVersion is the version still serving, 0 if none. Reason is the
 // platform's customer-facing message, if any. NotStarting is set when kx
-// stopped waiting because the version's containers never got ready.
+// saw, while it waited, why the version's containers didn't get ready.
 type DeployFailed struct {
 	App            string
 	Version        int
@@ -172,23 +172,28 @@ type DeployFailed struct {
 	NotStarting    *NotStarting
 }
 
-// NotStarting describes a version whose containers ran but never got
-// ready for After: they crashed on start, or didn't answer the HTTP health
-// check (HealthCheck) on Path (empty if not known) at Port.
+// NotStarting describes what kx saw of a version whose containers ran but
+// didn't get ready for After: they crashed on start, or didn't answer the
+// HTTP health check (HealthCheck) on Path at Port (each empty or 0 when
+// not known). Rollback is set when the version is a rollback, which
+// changes the advice.
 type NotStarting struct {
 	After       time.Duration
 	HealthCheck bool
 	Path        string
 	Port        int
+	Rollback    bool
 }
 
 func (e *DeployFailed) Error() string { return fmt.Sprintf("%s v%d failed", e.App, e.Version) }
 
 // WaitTimeout means kx stopped waiting for App vVersion after After.
+// NotStarting is set when kx saw why its containers weren't getting ready.
 type WaitTimeout struct {
-	App     string
-	Version int
-	After   time.Duration
+	App         string
+	Version     int
+	After       time.Duration
+	NotStarting *NotStarting
 }
 
 func (e *WaitTimeout) Error() string { return fmt.Sprintf("%s v%d still starting", e.App, e.Version) }

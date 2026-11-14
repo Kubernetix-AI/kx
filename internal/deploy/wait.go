@@ -121,9 +121,11 @@ func (r *runner) waitForPrevious(ctx context.Context, app *api.App) error {
 
 // wait polls dep until it is done or the timeout passes. It returns the
 // last state seen and the phases it went through (queued, starting, …).
-// It stops early with *stalled when the new version's replicas run but
-// never get ready (see stallWatch), and says when Kubernetix starts the
-// deployment again after an attempt that didn't go live.
+// When the new version's replicas run but don't get ready (see
+// stallWatch) it says so once, with the likely cause, and keeps waiting;
+// the cause is kept in r.likely for a later failure or timeout. It also
+// says when Kubernetix starts the deployment again after an attempt that
+// didn't go live.
 func (r *runner) wait(ctx context.Context, app *api.App, dep *api.Deployment) (*api.Deployment, []string, error) {
 	o := r.o
 	start := o.Now()
@@ -138,12 +140,13 @@ func (r *runner) wait(ctx context.Context, app *api.App, dep *api.Deployment) (*
 		return fmt.Sprintf("Deploying v%d: %s", d.Version, d.Phase())
 	}
 	spin := r.p.Spinner(label(cur))
-	defer spin.Stop()
+	defer func() { spin.Stop() }()
+	signalled := false
 	failures := 0
 	var limited time.Duration
 	for i := 0; !cur.Done(); i++ {
 		if o.Now().Sub(start) >= o.Timeout {
-			return cur, phases, &kxerr.WaitTimeout{App: app.Name, Version: cur.Version, After: o.Timeout}
+			return cur, phases, &kxerr.WaitTimeout{App: app.Name, Version: cur.Version, After: o.Timeout, NotStarting: r.likely}
 		}
 		if err := o.Sleep(ctx, max(pollInterval(i), limited)); err != nil {
 			return cur, phases, stoppedWaiting(ctx, app, cur, err)
@@ -177,8 +180,20 @@ func (r *runner) wait(ctx context.Context, app *api.App, dep *api.Deployment) (*
 			attempt = n
 		}
 		spin.Update(label(cur))
-		if st := watch.check(ctx, o.Now(), cur); st != nil {
-			return cur, phases, st
+		st, ok := watch.check(ctx, o.Now(), cur)
+		if !ok {
+			continue
+		}
+		r.stuck, r.likely, r.olderRunning = st, nil, watch.older
+		if st == nil {
+			continue // nothing stuck now: no cause to report
+		}
+		r.likely = r.likelyCause(app, cur, st)
+		if !signalled {
+			signalled = true
+			spin.Stop()
+			r.signalNotLive(ctx, app, cur, r.likely)
+			spin = r.p.Spinner(label(cur))
 		}
 	}
 	return cur, phases, nil

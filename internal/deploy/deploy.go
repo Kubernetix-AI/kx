@@ -97,6 +97,11 @@ type Options struct {
 	// app's logs) in a GitHub ::stop-commands:: block. Set it whenever kx
 	// runs in GitHub Actions, in any mode: the runner reads every line.
 	StopCommands bool
+
+	// OnNotLive sees the two lines kx prints, while it keeps waiting, when
+	// the new version's containers aren't getting ready (GitHub mode makes
+	// them a warning annotation).
+	OnNotLive func(what, fix string)
 }
 
 // Result is what a deploy did. After a failure Run still returns the
@@ -136,6 +141,9 @@ func (o *Options) prepare() error {
 	if o.OnDeploy == nil {
 		o.OnDeploy = func(*api.App, *api.Deployment) {}
 	}
+	if o.OnNotLive == nil {
+		o.OnNotLive = func(string, string) {}
+	}
 	switch {
 	case o.IdempotencyKey == "":
 		return errors.New("deploy: an idempotency key is required")
@@ -155,6 +163,14 @@ type runner struct {
 	c *api.Client
 	o Options
 	p *ui.Printer
+
+	rollback bool // the deployment is a rollback (changes the advice)
+	// What the replicas said at the last look while waiting: the stuck
+	// ones, the likely cause kx tells the person (nil when nothing is
+	// stuck), and whether an earlier version was running too.
+	stuck        *stalled
+	likely       *kxerr.NotStarting
+	olderRunning bool
 }
 
 // Run deploys and waits (unless NoWait) until the deployment is live,
@@ -255,18 +271,11 @@ func (r *runner) finish(ctx context.Context, app *api.App, dep *api.Deployment, 
 	if final != nil {
 		res.Status = final.Status
 	}
-	var st *stalled
-	if err != nil && !errors.As(err, &st) {
+	if err != nil {
 		return res, err
 	}
 	took := r.o.Now().Sub(start)
 	path := strings.Join(phases, " → ")
-	if st != nil {
-		r.p.StepFailed("Failed", fmt.Sprintf("v%d  %s", final.Version, path), took)
-		failed := r.notStarting(ctx, app, final, st)
-		res.ServingVersion = failed.ServingVersion
-		return res, failed
-	}
 	if final.Status != api.StatusReady {
 		r.p.StepFailed("Failed", fmt.Sprintf("v%d  %s", final.Version, path), took)
 		failed := r.failed(ctx, app, final)
@@ -541,16 +550,15 @@ func (r *runner) showDocker(err error, out *tail) {
 
 // failed explains a deployment that did not go live: the platform's
 // reason, the last 20 log lines, and the version still serving.
+// When kx saw why its containers weren't getting ready, the log lines are
+// the stuck replicas' and the error carries that cause.
 func (r *runner) failed(ctx context.Context, app *api.App, d *api.Deployment) *kxerr.DeployFailed {
-	if lines := r.deploymentLogs(ctx, d); len(lines) > 0 {
-		r.p.Info("The last %d log lines of v%d:", len(lines), d.Version)
-		r.showUntrusted(lines, func(l string) { r.p.Note("%s", l) })
-	}
+	r.showLogs(ctx, app, d)
 	reason := d.CustomerError
 	if reason == "" && d.Status == api.StatusRolledBack {
 		reason = "Kubernetix rolled it back"
 	}
-	return &kxerr.DeployFailed{App: app.Name, Version: d.Version, ServingVersion: r.serving(ctx, app, d), Reason: reason}
+	return &kxerr.DeployFailed{App: app.Name, Version: d.Version, ServingVersion: r.serving(ctx, app, d), Reason: reason, NotStarting: r.likely}
 }
 
 // deploymentLogs returns the last 20 lines of d's build and rollout logs.

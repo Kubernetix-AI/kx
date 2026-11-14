@@ -761,14 +761,20 @@ func TestDeploy_GitHubFailure(t *testing.T) {
 	}
 }
 
-// A new version whose container never gets ready fails the job after a
-// couple of minutes with the likely causes, instead of 15 minutes of
-// waiting and "the deploy continues".
-func TestDeploy_GitHubNeverReadyFailsEarly(t *testing.T) {
-	h := newHarness(t)
-	gh := githubJob(h)
-	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
-	h.api.statuses = []string{"pending", "deploying"}
+// statusesFor is what successive GETs of a new deployment return: pending,
+// then n times deploying, then last.
+func statusesFor(n int, last string) []string {
+	out := []string{"pending"}
+	for range n {
+		out = append(out, "deploying")
+	}
+	return append(out, last)
+}
+
+// neverReady sets the fake up with a new version whose replica runs but
+// isn't ready, and the clock moving 5 s per poll; ready, when set, is how
+// long after the start the replica gets ready.
+func neverReady(h *harness, ready time.Duration) {
 	h.api.replicas = []api.Replica{
 		{Name: "app-old", Status: "Running", Ready: true, StartedAt: "2026-11-12T08:00:00Z"},
 		{Name: "app-new", Status: "Running", Ready: false, StartedAt: "2026-11-12T09:00:30Z"},
@@ -777,19 +783,57 @@ func TestDeploy_GitHubNeverReadyFailsEarly(t *testing.T) {
 		return `{"status":"success","data":{"resultType":"streams","result":[{"stream":{"pod":"app-new"},"values":[["1762938030000000000","listening on :3000"]]}]}}`
 	}
 	start := h.now
-	h.sleepHook = func(int) error { h.now = h.now.Add(5 * time.Second); return nil }
-	h.expect(h.run("deploy", "--github"), 8)
-	// The fake doesn't say how the app is health checked, so kx allows 4
-	// minutes plus one.
-	if took := h.now.Sub(start); took < 5*time.Minute || took > 6*time.Minute {
-		t.Fatalf("waited %v", took)
+	h.sleepHook = func(int) error {
+		h.now = h.now.Add(5 * time.Second)
+		if ready > 0 && h.now.Sub(start) >= ready {
+			h.api.mu.Lock()
+			h.api.replicas[1].Ready = true
+			h.api.mu.Unlock()
+		}
+		return nil
 	}
-	if !strings.Contains(h.err.String(), "  listening on :3000\n") {
-		t.Fatalf("stderr lacks the app's log line:\n%s", h.err.String())
+}
+
+// The early signal never fails a deploy on its own: a container that gets
+// ready on a later start (here at 160 s, after the signal at about two
+// minutes) is a success with a green status. The signal is a warning
+// annotation, not an error.
+func TestDeploy_GitHubReadyAfterTheSignalIsGreen(t *testing.T) {
+	h := newHarness(t)
+	gh := githubJob(h)
+	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+	h.api.statuses = statusesFor(34, "ready") // live at about 175 s
+	neverReady(h, 160*time.Second)
+	h.expect(h.run("deploy", "--github"), 0)
+	out := h.err.String()
+	if !strings.Contains(out, "::warning title=Kubernetix deploy::shop-api v16 isn't live yet: for 2 minutes its container has kept crashing or hasn't answered health checks on / at port 8080.%0AMake your app start and answer on / at port 8080; the log lines below may say why it hasn't.\n") {
+		t.Fatalf("stderr lacks the warning annotation:\n%s", out)
+	}
+	if strings.Contains(out, "::error") || !strings.Contains(out, "  listening on :3000\n") || !strings.Contains(out, "✓ Live      v16") {
+		t.Fatalf("stderr:\n%s", out)
 	}
 	st := gh.got()
+	if last := st[len(st)-1]; last["state"] != "success" {
+		t.Fatalf("final status = %v", last)
+	}
+	if h.out.String() == "" {
+		t.Fatal("no URL on standard output")
+	}
+}
+
+// When the platform does fail the version, the job fails (exit 8) with
+// what kx saw.
+func TestDeploy_GitHubNeverReadyFailsWithTheCause(t *testing.T) {
+	h := newHarness(t)
+	gh := githubJob(h)
+	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+	h.api.statuses = statusesFor(60, "failed")
+	h.api.failReason = "Deployment failed. The platform team has been alerted; please retry, or contact support if the issue persists."
+	neverReady(h, 0)
+	h.expect(h.run("deploy", "--github"), 8)
+	st := gh.got()
 	last := st[len(st)-1]
-	if last["state"] != "failure" || !strings.HasPrefix(last["description"], "shop-api v16 didn't go live: for 5 minutes its container kept crashing or wasn't answering health checks at port 8080.") {
+	if last["state"] != "failure" || !strings.HasPrefix(last["description"], "shop-api v16 didn't go live: its container kept crashing or didn't answer health checks on / at port 8080.") {
 		t.Fatalf("final status = %v", last)
 	}
 }

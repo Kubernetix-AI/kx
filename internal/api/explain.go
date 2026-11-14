@@ -151,6 +151,9 @@ func Explain(err error) Problem {
 	case errors.As(err, &failed):
 		return deployFailed(failed)
 	case errors.As(err, &timeout):
+		if ns := timeout.NotStarting; ns != nil {
+			return Problem{"wait_timeout", fmt.Sprintf("%s v%d isn't live after %s: %s, so kx stopped waiting; the deploy continues.", timeout.App, timeout.Version, minutes(timeout.After), cause(ns, present)), stillWaitingFix(ns), ExitTimeout}
+		}
 		return Problem{"wait_timeout", fmt.Sprintf("%s v%d is still starting after %s, so kx stopped waiting; the deploy continues.", timeout.App, timeout.Version, minutes(timeout.After)), "Check on it: kx status", ExitTimeout}
 	case errors.As(err, &prevRun):
 		return Problem{"previous_deploy_running", fmt.Sprintf("%s v%d is still deploying after %s, so kx didn't start another deploy.", prevRun.App, prevRun.Version, minutes(prevRun.After)), "Check on it: kx status", ExitTimeout}
@@ -488,7 +491,9 @@ func deployFailed(e *kxerr.DeployFailed) Problem {
 	}
 	fix := fmt.Sprintf("See why: kx logs --deployment v%d", e.Version)
 	if ns := e.NotStarting; ns != nil {
-		reason, fix = notStarting(ns)
+		// What kx saw is more specific than the platform's message for a
+		// version that never got ready.
+		reason, fix = cause(ns, past), failedFix(ns)
 	}
 	what := fmt.Sprintf("%s v%d didn't go live: %s", e.App, e.Version, sentence(clean(reason, maxMessageLen)))
 	if e.ServingVersion > 0 {
@@ -497,22 +502,88 @@ func deployFailed(e *kxerr.DeployFailed) Problem {
 	return Problem{"deploy_failed", what, fix, ExitDeploy}
 }
 
-// notStarting words the likely causes of a version whose containers never
-// got ready: crashing on start, or (with an HTTP health check) not
-// answering it, which is also what listening on another port looks like.
-func notStarting(ns *kxerr.NotStarting) (reason, fix string) {
-	after := howLong(ns.After)
+// The tenses cause words a version's containers in: while kx still waits,
+// when it stops waiting, and once the platform failed the version.
+const (
+	ongoing = iota
+	present
+	past
+)
+
+// cause words what kx saw of containers that didn't get ready: crashing
+// on start, or (with an HTTP health check) not answering it, which is also
+// what listening on another port looks like.
+func cause(ns *kxerr.NotStarting, tense int) string {
 	if !ns.HealthCheck {
-		return "for " + after + " its container kept stopping right after it started",
-			"Fix what stops your app from starting (the log lines above may say), then run kx deploy again."
+		return [...]string{
+			"for " + howLong(ns.After) + " its container has kept stopping right after it started",
+			"its container keeps stopping right after it starts",
+			"its container kept stopping right after it started",
+		}[tense]
 	}
-	where, answer := fmt.Sprintf("at port %d", ns.Port), fmt.Sprintf("health checks at port %d", ns.Port)
+	where := healthWhere(ns)
+	return [...]string{
+		"for " + howLong(ns.After) + " its container has kept crashing or hasn't answered health checks" + where,
+		"its container keeps crashing or isn't answering health checks" + where,
+		"its container kept crashing or didn't answer health checks" + where,
+	}[tense]
+}
+
+// healthWhere is " on / at port 8080", with whatever parts are known.
+func healthWhere(ns *kxerr.NotStarting) string {
+	var where string
 	if path := clean(ns.Path, 100); path != "" && !strings.Contains(path, " ") {
-		where = "on " + path + " " + where
-		answer = where
+		where = " on " + path
 	}
-	return "for " + after + " its container kept crashing or wasn't answering health checks " + where,
-		"Make your app start and answer " + answer + " (the log lines above may say why it didn't), then run kx deploy again."
+	if ns.Port > 0 {
+		where += fmt.Sprintf(" at port %d", ns.Port)
+	}
+	return where
+}
+
+// passHint is what the app must do to pass: "answer on / at port 8080", or
+// "answer health checks at port 8080" when the path isn't known.
+func passHint(ns *kxerr.NotStarting) string {
+	where := healthWhere(ns)
+	if ns.Path == "" {
+		return "answer health checks" + where
+	}
+	return "answer" + where
+}
+
+// NotLiveYet words what kx saw while it keeps waiting for App vVersion:
+// the two lines it prints at once, before the log lines.
+func NotLiveYet(app string, version int, ns *kxerr.NotStarting) (what, fix string) {
+	what = fmt.Sprintf("%s v%d isn't live yet: %s.", app, version, cause(ns, ongoing))
+	switch {
+	case ns.Rollback:
+		fix = "If it doesn't go live, pick another version to roll back to: kx status"
+	case ns.HealthCheck:
+		fix = "Make your app start and " + passHint(ns) + "; the log lines below may say why it hasn't."
+	default:
+		fix = "Fix what stops your app from starting; the log lines below may say what it is."
+	}
+	return what, fix
+}
+
+func failedFix(ns *kxerr.NotStarting) string {
+	switch {
+	case ns.Rollback:
+		return "Pick another version to roll back to: kx status"
+	case ns.HealthCheck:
+		return "Make your app start and " + passHint(ns) + " (the log lines above may say why it didn't), then run kx deploy again."
+	}
+	return "Fix what stops your app from starting (the log lines above may say), then run kx deploy again."
+}
+
+func stillWaitingFix(ns *kxerr.NotStarting) string {
+	switch {
+	case ns.Rollback:
+		return "Check on it with kx status; if it doesn't go live, pick another version to roll back to."
+	case ns.HealthCheck:
+		return "Check on it with kx status; to fix it, make your app start and " + passHint(ns) + ", then run kx deploy again."
+	}
+	return "Check on it with kx status; the log lines above may say what stops your app from starting."
 }
 
 // untilText renders a wait as "3 h 12 min", "3 h" or "12 min" (at least 1 min).

@@ -29,48 +29,74 @@ func repeat(first string, n int, rest ...string) []string {
 	return append(out, rest[1:]...)
 }
 
+// warnings records the early signals kx gave and when (on the fake clock).
+type warnings struct {
+	e     *env
+	whats []string
+	fixes []string
+	at    []time.Duration
+	start time.Time
+}
+
+func (e *env) watchWarnings(o *Options) *warnings {
+	w := &warnings{e: e, start: e.clock.Now()}
+	o.OnNotLive = func(what, fix string) {
+		w.whats, w.fixes = append(w.whats, what), append(w.fixes, fix)
+		w.at = append(w.at, e.clock.Now().Sub(w.start))
+	}
+	return w
+}
+
+const platformGeneric = "Deployment failed. The platform team has been alerted; please retry, or contact support if the issue persists."
+
 // A new version whose container keeps crashing (or never answers its
-// health check) is reported after the health checks' window plus a
-// minute, not after the 15-minute wait, with the reason, the new
-// replica's own log lines and the version still serving.
-func TestRun_ContainerThatNeverGetsReadyStopsEarly(t *testing.T) {
+// health check) gets the likely cause and its own log lines after the
+// health checks' window plus a minute, but kx keeps waiting: only the
+// platform failing the version ends the deploy with exit 8, and then with
+// what kx saw rather than the platform's generic message.
+func TestRun_NeverReadyWarnsAndKeepsWaiting(t *testing.T) {
 	e := newEnv(t)
 	e.clock.step = 5 * time.Second
-	e.api.statuses = []string{"pending", "deploying"}
+	e.api.statuses = repeat("pending", 60, "deploying", "failed")
+	e.api.failReason = platformGeneric
 	e.api.health = defaultHealth()
 	e.api.replicas = func(int) []api.Replica { return []api.Replica{oldReplica, newReplica("Running", false)} }
 	e.api.runtimeLogs = streams(map[string][]string{
 		"app-shop-7d9f-old": {"GET / 200 from the old version"},
 		"app-shop-8e1a-new": {"> node server.js", "Error: Cannot find module '/app/server.js'", "::error::not a workflow command"},
 	})
-	start := e.clock.Now()
 	o := e.options()
 	o.StopCommands = true
+	w := e.watchWarnings(&o)
 	res, err := e.run(o)
 
+	if len(w.at) != 1 || w.at[0] < 2*time.Minute || w.at[0] > 3*time.Minute {
+		t.Fatalf("early signals at %v, want one after about 2 minutes", w.at)
+	}
+	if w.whats[0] != "shop-api v15 isn't live yet: for 2 minutes its container has kept crashing or hasn't answered health checks on / at port 8080." ||
+		w.fixes[0] != "Make your app start and answer on / at port 8080; the log lines below may say why it hasn't." {
+		t.Fatalf("signal = %q / %q", w.whats[0], w.fixes[0])
+	}
+	if took := e.clock.Now().Sub(w.start); took < 5*time.Minute {
+		t.Fatalf("stopped after %v: kx must keep waiting after the signal", took)
+	}
 	var df *kxerr.DeployFailed
-	if !errors.As(err, &df) || df.NotStarting == nil || df.Version != 15 || df.ServingVersion != 14 {
-		t.Fatalf("Run() = %#v, want DeployFailed for v15 that never got ready", err)
-	}
-	if took := e.clock.Now().Sub(start); took < 2*time.Minute || took > 3*time.Minute {
-		t.Fatalf("stopped after %v, want about 2 minutes (60 s of health checks plus a minute)", took)
-	}
-	if n := df.NotStarting; n.After < 2*time.Minute || n.Path != "/" || n.Port != 8080 || !n.HealthCheck {
-		t.Fatalf("NotStarting = %+v", n)
+	if !errors.As(err, &df) || df.NotStarting == nil || df.Version != 15 || df.ServingVersion != 14 || df.NotStarting.Port != 8080 || df.NotStarting.Path != "/" {
+		t.Fatalf("Run() = %#v", err)
 	}
 	if res == nil || res.Version != 15 || res.ServingVersion != 14 {
 		t.Fatalf("result = %+v", res)
 	}
-	p := api.Explain(err)
-	if p.Exit != api.ExitDeploy || p.What != "shop-api v15 didn't go live: for 2 minutes its container kept crashing or wasn't answering health checks on / at port 8080. Version 14 is still serving." {
+	if p := api.Explain(err); p.Exit != api.ExitDeploy || p.What != "shop-api v15 didn't go live: its container kept crashing or didn't answer health checks on / at port 8080. Version 14 is still serving." {
 		t.Fatalf("problem = %+v", p)
 	}
 	out := e.errOut.String()
 	for _, want := range []string{
-		"✗ Failed    v15  queued → starting",
-		"The last 3 log lines of v15:\n",
+		"! shop-api v15 isn't live yet: for 2 minutes its container has kept crashing or hasn't answered health checks on / at port 8080.\n  Make your app start and answer on / at port 8080; the log lines below may say why it hasn't.\nThe last 3 log lines of v15:\n",
 		"  Error: Cannot find module '/app/server.js'\n",
-		"Kubernetix keeps trying v15 for a few more minutes; kx status shows how it ends.\n",
+		"kx keeps waiting until v15 goes live, fails or reaches the 15m timeout; the deploy continues either way.\n",
+		"Until v15 goes live or fails, a new deploy of shop-api waits for it.\n",
+		"✗ Failed    v15  queued → starting → failed",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stderr lacks %q:\n%s", want, out)
@@ -84,8 +110,68 @@ func TestRun_ContainerThatNeverGetsReadyStopsEarly(t *testing.T) {
 	}
 }
 
+// On a terminal, kx says how to stop waiting.
+func TestRun_NeverReadySaysCtrlCOnATerminal(t *testing.T) {
+	e := newEnv(t)
+	e.p.InTTY, e.p.TTY = true, true
+	e.clock.step = 5 * time.Second
+	e.api.statuses = repeat("pending", 40, "deploying", "failed")
+	e.api.health = defaultHealth()
+	e.api.replicas = func(int) []api.Replica { return []api.Replica{newReplica("Running", false)} }
+	_, _ = e.run(e.options())
+	if !strings.Contains(e.errOut.String(), "kx keeps waiting; press Ctrl-C to stop, the deploy continues.\n") {
+		t.Fatalf("stderr:\n%s", e.errOut.String())
+	}
+}
+
+// The early signal never fails a deploy on its own: a container that gets
+// ready on a later start, after the signal, is a success.
+func TestRun_ReadyAfterTheSignalIsASuccess(t *testing.T) {
+	e := newEnv(t)
+	e.clock.step = 5 * time.Second
+	e.api.statuses = repeat("pending", 34, "deploying", "ready") // live at about 170 s
+	e.api.health = defaultHealth()
+	e.api.replicas = func(n int) []api.Replica {
+		if n < 16 {
+			return []api.Replica{oldReplica, newReplica("Running", false)}
+		}
+		return []api.Replica{oldReplica, newReplica("Running", true)}
+	}
+	o := e.options()
+	w := e.watchWarnings(&o)
+	res, err := e.run(o)
+	if err != nil || res.Status != "live" || res.Version != 15 {
+		t.Fatalf("Run() = %+v, %v", res, err)
+	}
+	if len(w.at) != 1 {
+		t.Fatalf("early signals at %v, want one before it went live", w.at)
+	}
+	if !strings.Contains(e.errOut.String(), "✓ Live      v15  queued → starting → live") {
+		t.Fatalf("stderr:\n%s", e.errOut.String())
+	}
+}
+
+// At the timeout kx exits 9 and repeats the likely cause it saw.
+func TestRun_NeverReadyUntilTheTimeout(t *testing.T) {
+	e := newEnv(t)
+	e.clock.step = 5 * time.Second
+	e.api.statuses = []string{"pending", "deploying"}
+	e.api.health = defaultHealth()
+	e.api.replicas = func(int) []api.Replica { return []api.Replica{oldReplica, newReplica("Running", false)} }
+	o := e.options()
+	o.Timeout = 5 * time.Minute
+	_, err := e.run(o)
+	var wt *kxerr.WaitTimeout
+	if !errors.As(err, &wt) || wt.NotStarting == nil {
+		t.Fatalf("Run() = %#v, want a timeout with the likely cause", err)
+	}
+	if p := api.Explain(err); p.Exit != api.ExitTimeout || p.What != "shop-api v15 isn't live after 5 minutes: its container keeps crashing or isn't answering health checks on / at port 8080, so kx stopped waiting; the deploy continues." {
+		t.Fatalf("problem = %+v", p)
+	}
+}
+
 // Pending (pulling the image, waiting for room) and a few slow seconds
-// before the first answer are a slow start, not a stall.
+// before the first answer are a slow start: no signal at all.
 func TestRun_SlowStartIsNotAStall(t *testing.T) {
 	e := newEnv(t)
 	e.clock.step = 5 * time.Second
@@ -100,39 +186,79 @@ func TestRun_SlowStartIsNotAStall(t *testing.T) {
 		}
 		return []api.Replica{oldReplica, newReplica("Running", true)}
 	}
-	res, err := e.run(e.options())
-	if err != nil || res.Status != "live" {
-		t.Fatalf("Run() = %+v, %v", res, err)
+	o := e.options()
+	w := e.watchWarnings(&o)
+	res, err := e.run(o)
+	if err != nil || res.Status != "live" || len(w.at) != 0 || strings.Contains(e.errOut.String(), "isn't live yet") {
+		t.Fatalf("Run() = %+v, %v, signals %v\n%s", res, err, w.at, e.errOut.String())
 	}
 	if e.api.replicaGets < 30 {
 		t.Fatalf("looked at replicas %d times", e.api.replicaGets)
 	}
 }
 
-// The app's own health checks set the window: a startup probe that allows
+// The app's own health checks set the window: a startup check that allows
 // five minutes means kx waits that long, plus the other checks and a
-// minute, before calling it a stall.
-func TestRun_StallWindowFollowsTheHealthChecks(t *testing.T) {
+// minute, before it says anything.
+func TestRun_SignalWindowFollowsTheHealthChecks(t *testing.T) {
 	e := newEnv(t)
 	e.clock.step = 5 * time.Second
-	e.api.statuses = []string{"deploying"}
+	e.api.statuses = repeat("deploying", 120, "deploying", "failed")
 	hc := defaultHealth()
 	hc.Startup = &api.Probe{HTTPGet: &api.HTTPGet{Path: "/started", Port: 8080}, PeriodSeconds: 10, FailureThreshold: 30}
 	e.api.health = hc
 	e.api.replicas = func(int) []api.Replica { return []api.Replica{newReplica("Running", false)} }
-	start := e.clock.Now()
-	_, err := e.run(e.options())
-	var df *kxerr.DeployFailed
-	if !errors.As(err, &df) || df.NotStarting == nil {
-		t.Fatalf("Run() = %v", err)
+	o := e.options()
+	w := e.watchWarnings(&o)
+	_, _ = e.run(o)
+	if len(w.at) != 1 || w.at[0] < 7*time.Minute || w.at[0] > 8*time.Minute {
+		t.Fatalf("signals at %v, want one after about 7 minutes (5 min startup + 1 min + 1 min)", w.at)
 	}
-	if took := e.clock.Now().Sub(start); took < 7*time.Minute || took > 8*time.Minute {
-		t.Fatalf("stopped after %v, want about 7 minutes (5 min startup + 1 min + 1 min)", took)
+}
+
+// A deployment that records no health checks is checked like a new app
+// (GET / on its port), so kx allows the same two minutes.
+func TestRun_NoRecordedHealthCheckMeansTheDefaults(t *testing.T) {
+	e := newEnv(t)
+	e.clock.step = 5 * time.Second
+	e.api.statuses = repeat("deploying", 60, "deploying", "failed")
+	e.api.replicas = func(int) []api.Replica { return []api.Replica{newReplica("Running", false)} }
+	o := e.options()
+	w := e.watchWarnings(&o)
+	_, err := e.run(o)
+	if len(w.at) != 1 || w.at[0] > 3*time.Minute {
+		t.Fatalf("signals at %v", w.at)
+	}
+	if p := api.Explain(err); !strings.Contains(p.What, "didn't answer health checks on / at port 8080") {
+		t.Fatalf("problem = %+v", p)
+	}
+}
+
+// The platform checks the deployment's port, whatever port an older health
+// check stored (for example after the app's port was changed).
+func TestRun_SignalNamesTheDeploymentsPort(t *testing.T) {
+	e := newEnv(t)
+	e.clock.step = 5 * time.Second
+	e.api.statuses = repeat("deploying", 40, "deploying", "failed")
+	hc := defaultHealth()
+	hc.Readiness.HTTPGet = &api.HTTPGet{Path: "/ready", Port: 3000}
+	hc.Liveness.HTTPGet = &api.HTTPGet{Path: "/ready", Port: 3000}
+	e.api.health = hc
+	e.api.replicas = func(int) []api.Replica { return []api.Replica{newReplica("Running", false)} }
+	o := e.options()
+	w := e.watchWarnings(&o)
+	_, err := e.run(o)
+	var df *kxerr.DeployFailed
+	if !errors.As(err, &df) || df.NotStarting == nil || df.NotStarting.Port != 8080 || df.NotStarting.Path != "/ready" {
+		t.Fatalf("Run() = %#v", err)
+	}
+	if len(w.whats) != 1 || !strings.HasSuffix(w.whats[0], "on /ready at port 8080.") || strings.Contains(e.errOut.String(), "3000") {
+		t.Fatalf("signal %q\n%s", w.whats, e.errOut.String())
 	}
 }
 
 // Without a usable answer about replicas (no read access, say) kx keeps
-// to the deploy's timeout and stops asking.
+// to the deploy's timeout, gives no cause and stops asking.
 func TestRun_ReplicasUnreadableKeepsTheTimeout(t *testing.T) {
 	e := newEnv(t)
 	e.clock.step = time.Minute
@@ -140,8 +266,8 @@ func TestRun_ReplicasUnreadableKeepsTheTimeout(t *testing.T) {
 	e.api.replicasStatus = 403
 	_, err := e.run(e.options())
 	var wt *kxerr.WaitTimeout
-	if !errors.As(err, &wt) || wt.After != 15*time.Minute {
-		t.Fatalf("Run() = %v, want the timeout", err)
+	if !errors.As(err, &wt) || wt.After != 15*time.Minute || wt.NotStarting != nil {
+		t.Fatalf("Run() = %#v, want the timeout without a cause", err)
 	}
 	if e.api.replicaGets != 1 {
 		t.Fatalf("asked for replicas %d times after a refusal", e.api.replicaGets)
@@ -151,7 +277,7 @@ func TestRun_ReplicasUnreadableKeepsTheTimeout(t *testing.T) {
 // Without the deployment's creation time kx can't tell new replicas from
 // old ones (which may be crashing: that may be why someone deploys), so it
 // doesn't judge them.
-func TestRun_NoCreationTimeNoStall(t *testing.T) {
+func TestRun_NoCreationTimeNoSignal(t *testing.T) {
 	e := newEnv(t)
 	e.clock.step = time.Minute
 	e.api.statuses = []string{"deploying"}
@@ -159,8 +285,84 @@ func TestRun_NoCreationTimeNoStall(t *testing.T) {
 	e.api.replicas = func(int) []api.Replica { return []api.Replica{newReplica("Running", false)} }
 	_, err := e.run(e.options())
 	var wt *kxerr.WaitTimeout
-	if !errors.As(err, &wt) || e.api.replicaGets != 0 {
+	if !errors.As(err, &wt) || wt.NotStarting != nil || e.api.replicaGets != 0 {
 		t.Fatalf("Run() = %v after %d replica checks, want the timeout and none", err, e.api.replicaGets)
+	}
+}
+
+// Replica data that can't be trusted gives no cause rather than a wrong
+// one: replicas of the serving version that are running but not ready
+// mean the ready condition is missing (the metrics the API reads lag or
+// lack it), and replicas without a phase or start time are skipped.
+func TestRun_UntrustworthyReplicaDataGivesNoCause(t *testing.T) {
+	for name, reps := range map[string][]api.Replica{
+		"no ready data": {{Name: "old", Status: "Running", Ready: false, StartedAt: "2026-11-12T08:00:00Z"}, newReplica("Running", false)},
+		"no phase":      {oldReplica, newReplica("Unknown", false)},
+		"no start time": {oldReplica, {Name: "new", Status: "Running", Ready: false}},
+	} {
+		e := newEnv(t)
+		e.clock.step = 5 * time.Second
+		e.api.statuses = repeat("deploying", 60, "deploying", "failed")
+		e.api.failReason = platformGeneric
+		e.api.health = defaultHealth()
+		e.api.replicas = func(int) []api.Replica { return reps }
+		o := e.options()
+		w := e.watchWarnings(&o)
+		_, err := e.run(o)
+		var df *kxerr.DeployFailed
+		if !errors.As(err, &df) || df.NotStarting != nil || len(w.at) != 0 {
+			t.Fatalf("%s: Run() = %#v, signals %v", name, err, w.at)
+		}
+	}
+}
+
+// A cause that stops being true (the replica got ready) is dropped, so a
+// later failure for another reason gets the platform's reason.
+func TestRun_CauseClearedWhenTheReplicaGetsReady(t *testing.T) {
+	e := newEnv(t)
+	e.clock.step = 5 * time.Second
+	e.api.statuses = repeat("deploying", 50, "deploying", "failed")
+	e.api.failReason = "Your pod ran out of memory."
+	e.api.health = defaultHealth()
+	e.api.replicas = func(n int) []api.Replica {
+		if n < 16 {
+			return []api.Replica{newReplica("Running", false)}
+		}
+		return []api.Replica{newReplica("Running", true)}
+	}
+	o := e.options()
+	w := e.watchWarnings(&o)
+	_, err := e.run(o)
+	var df *kxerr.DeployFailed
+	if len(w.at) != 1 || !errors.As(err, &df) || df.NotStarting != nil || df.Reason != "Your pod ran out of memory." {
+		t.Fatalf("signals %v, Run() = %#v", w.at, err)
+	}
+}
+
+// A rollback that doesn't get ready never advises kx deploy, which would
+// redeploy the folder being rolled back from.
+func TestRollback_NeverReadyAdvisesAnotherVersion(t *testing.T) {
+	e := newEnv(t)
+	e.clock.step = 5 * time.Second
+	e.setDeployments(
+		api.Deployment{ID: "dep-15", Version: 15, Status: "ready", ImageURL: img("15")},
+		api.Deployment{ID: "dep-14", Version: 14, Status: "ready", ImageURL: img("14")},
+	)
+	e.api.statuses = repeat("deploying", 40, "deploying", "failed")
+	e.api.health = defaultHealth()
+	e.api.replicas = func(int) []api.Replica { return []api.Replica{newReplica("Running", false)} }
+	_, err := Rollback(t.Context(), e.client, e.rollbackOptions(), *e.p)
+	var df *kxerr.DeployFailed
+	if !errors.As(err, &df) || df.NotStarting == nil || !df.NotStarting.Rollback {
+		t.Fatalf("Rollback() = %#v", err)
+	}
+	p := api.Explain(err)
+	out := e.errOut.String()
+	if p.Fix != "Pick another version to roll back to: kx status" || !strings.Contains(out, "  If it doesn't go live, pick another version to roll back to: kx status\n") {
+		t.Fatalf("problem %+v\n%s", p, out)
+	}
+	if strings.Contains(out+p.Fix, "kx deploy") {
+		t.Fatalf("advised kx deploy for a rollback:\n%s\n%s", out, p.Fix)
 	}
 }
 
@@ -182,28 +384,41 @@ func TestRun_SaysWhenKubernetixTriesAgain(t *testing.T) {
 }
 
 // Log lines come from the stuck replica when the log stream names pods;
-// otherwise all recent lines, and without any, the deployment's own log.
-func TestRun_NeverReadyLogLinesFallBack(t *testing.T) {
-	setup := func(t *testing.T) *env {
+// otherwise all recent lines (labelled as such when an earlier version is
+// also running), and without any, the deployment's own log.
+func TestRun_SignalLogLinesFallBack(t *testing.T) {
+	setup := func(t *testing.T, reps ...api.Replica) *env {
 		e := newEnv(t)
 		e.clock.step = 5 * time.Second
-		e.api.statuses = []string{"deploying"}
+		e.api.statuses = repeat("deploying", 30, "deploying", "failed")
 		e.api.health = &api.HealthCheck{} // no health checks: only crashing keeps it from ready
-		e.api.replicas = func(int) []api.Replica { return []api.Replica{newReplica("Running", false)} }
+		e.api.replicas = func(int) []api.Replica { return reps }
 		return e
 	}
 
-	e := setup(t)
+	e := setup(t, newReplica("Running", false))
 	e.api.runtimeLogs = streams(map[string][]string{"": {"panic: missing DATABASE_URL"}})
-	_, err := e.run(e.options())
-	if !strings.Contains(e.errOut.String(), "  panic: missing DATABASE_URL\n") {
+	o := e.options()
+	w := e.watchWarnings(&o)
+	_, err := e.run(o)
+	if !strings.Contains(e.errOut.String(), "The last 1 log lines of v15:\n  panic: missing DATABASE_URL\n") {
 		t.Fatalf("stderr:\n%s", e.errOut.String())
 	}
-	if p := api.Explain(err); p.What != "shop-api v15 didn't go live: for 90 seconds its container kept stopping right after it started. Version 14 is still serving." {
+	if len(w.whats) != 1 || w.whats[0] != "shop-api v15 isn't live yet: for 90 seconds its container has kept stopping right after it started." {
+		t.Fatalf("signal = %q", w.whats)
+	}
+	if p := api.Explain(err); p.What != "shop-api v15 didn't go live: its container kept stopping right after it started. Version 14 is still serving." {
 		t.Fatalf("problem = %+v", p)
 	}
 
-	e = setup(t)
+	e = setup(t, oldReplica, newReplica("Running", false))
+	e.api.runtimeLogs = streams(map[string][]string{"": {"panic: missing DATABASE_URL"}})
+	_, _ = e.run(e.options())
+	if !strings.Contains(e.errOut.String(), "The last 1 log lines of shop-api (from every version running):\n") {
+		t.Fatalf("stderr:\n%s", e.errOut.String())
+	}
+
+	e = setup(t, newReplica("Running", false))
 	e.api.logs["key-"+testKey] = api.DeploymentLogs{DeploymentLogs: "boot failed: port 8080 in use\n"}
 	_, _ = e.run(e.options())
 	if !strings.Contains(e.errOut.String(), "  boot failed: port 8080 in use\n") {
