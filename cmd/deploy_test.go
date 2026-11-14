@@ -452,6 +452,29 @@ func TestDeploy_CommitAlreadyPushedUnderImmutableTags(t *testing.T) {
 	}
 }
 
+// In CI nothing retries a job that hits the upload limit, so kx waits it
+// out (up to about six minutes); on a laptop it says how long to wait.
+func TestDeploy_UploadLimitWaitedOutOnlyInCI(t *testing.T) {
+	h := newHarness(t)
+	githubJob(h)
+	h.api.mintLimits = []string{"300"}
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy", "--github"), 0)
+	if !strings.Contains(h.err.String(), "This token has uploaded images too often in the last hour, so kx waits 5m 0s before uploading.\n") || h.api.mints != 1 {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+
+	h = newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.api.mintLimits = []string{"300"}
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy"), 5)
+	if !strings.Contains(h.err.String(), "This token has uploaded images too often in the last hour.\nWait 5 minutes, then run kx deploy again.\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+}
+
 func TestDeploy_LaptopCachesRegistryCredential(t *testing.T) {
 	h := newHarness(t)
 	h.loginAs("acme-corp", tokCorp, &dec11)

@@ -716,6 +716,119 @@ func TestRun_KeepsPollingThroughBriefOutages(t *testing.T) {
 	}
 }
 
+// A rate limit while waiting is not a deploy failure: kx waits as long as
+// Retry-After asks and polls again.
+func TestRun_RateLimitWhileWaitingIsWaitedOut(t *testing.T) {
+	e := newEnv(t)
+	e.api.getLimited, e.api.retryAfter = 3, "7"
+	res, err := e.run(e.options())
+	if err != nil || res.Status != "live" {
+		t.Fatalf("Run() = %+v, %v", res, err)
+	}
+	if n := countSleeps(e.clock, 7*time.Second); n != 3 {
+		t.Fatalf("slept %v, want three 7 s waits (Retry-After)", e.clock.sleeps)
+	}
+
+	// Without Retry-After kx waits 5 seconds.
+	e = newEnv(t)
+	e.api.getLimited = 8 // more than the failures kx rides out for outages
+	if res, err := e.run(e.options()); err != nil || res.Status != "live" {
+		t.Fatalf("Run() = %+v, %v", res, err)
+	}
+	if n := countSleeps(e.clock, 5*time.Second); n < 8 {
+		t.Fatalf("slept %v, want 5 s after each 429", e.clock.sleeps)
+	}
+}
+
+func TestRun_RateLimitWhileWaitingForAnEarlierDeploy(t *testing.T) {
+	e := newEnv(t)
+	inFlight := api.Deployment{ID: "dep-15", Version: 15, Status: "deploying"}
+	done := inFlight
+	done.Status = "ready"
+	e.api.lists = [][]api.Deployment{{inFlight}, {done}}
+	e.api.retryAfter = "9"
+	e.clock.hook = func(n int) error {
+		if n == 1 {
+			e.api.mu.Lock()
+			e.api.listLimited = 2
+			e.api.mu.Unlock()
+		}
+		return nil
+	}
+	if res, err := e.run(e.options()); err != nil || res.Status != "live" {
+		t.Fatalf("Run() = %+v, %v", res, err)
+	}
+	if n := countSleeps(e.clock, 9*time.Second); n != 2 {
+		t.Fatalf("slept %v, want two 9 s waits", e.clock.sleeps)
+	}
+}
+
+// In CI kx waits out the registry credential limit (up to MintWait) with a
+// progress line, instead of failing the job.
+func TestRun_CIWaitsOutTheUploadLimit(t *testing.T) {
+	e := newEnv(t)
+	e.api.mintLimits = []string{"240"}
+	o := e.options()
+	o.MintWait = 6*time.Minute + 30*time.Second
+	res, err := e.run(o)
+	if err != nil || res.Status != "live" {
+		t.Fatalf("Run() = %+v, %v", res, err)
+	}
+	if countSleeps(e.clock, 4*time.Minute) != 1 || e.api.mints != 1 {
+		t.Fatalf("slept %v, minted %d", e.clock.sleeps, e.api.mints)
+	}
+	if !strings.Contains(e.errOut.String(), "This token has uploaded images too often in the last hour, so kx waits 4m 0s before uploading.\n") {
+		t.Fatalf("stderr:\n%s", e.errOut.String())
+	}
+
+	// Two refusals still within the budget.
+	e = newEnv(t)
+	e.api.mintLimits = []string{"120", "200"}
+	o = e.options()
+	o.MintWait = 6*time.Minute + 30*time.Second
+	if _, err := e.run(o); err != nil {
+		t.Fatal(err)
+	}
+
+	// A wait past the budget fails at once with the usual message.
+	e = newEnv(t)
+	e.api.mintLimits = []string{"300", "300"}
+	o = e.options()
+	o.MintWait = 6*time.Minute + 30*time.Second
+	_, err = e.run(o)
+	if p := api.Explain(err); p.Code != "push_rate_limited" || p.Fix != "Wait 5 minutes, then run kx deploy again." {
+		t.Fatalf("Run() = %v (%+v)", err, p)
+	}
+	if countSleeps(e.clock, 5*time.Minute) != 1 || len(e.api.reqs("POST", "/apps/"+testAppID+"/deployments")) != 0 {
+		t.Fatalf("slept %v", e.clock.sleeps)
+	}
+}
+
+// On a laptop (MintWait 0) the limit fails at once and says how long to wait.
+func TestRun_LaptopDoesNotWaitForTheUploadLimit(t *testing.T) {
+	e := newEnv(t)
+	e.api.mintLimits = []string{"240"}
+	_, err := e.run(e.options())
+	if p := api.Explain(err); p.Code != "push_rate_limited" || p.Fix != "Wait 4 minutes, then run kx deploy again." {
+		t.Fatalf("Run() = %v (%+v)", err, p)
+	}
+	if len(e.clock.sleeps) != 0 {
+		t.Fatalf("slept %v", e.clock.sleeps)
+	}
+}
+
+func countSleeps(c *fakeClock, d time.Duration) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, s := range c.sleeps {
+		if s == d {
+			n++
+		}
+	}
+	return n
+}
+
 func TestRun_NoWait(t *testing.T) {
 	e := newEnv(t)
 	o := e.options()

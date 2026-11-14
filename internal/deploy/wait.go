@@ -17,6 +17,10 @@ const (
 	fastPolls       = 15 // polls 2 s apart (the first 30 s), then 5 s apart
 	maxPollFailures = 5  // consecutive failed polls kx rides out
 	recentDeploys   = 5
+
+	// A poll answered with 429 waits for Retry-After, between these.
+	minRateLimitWait = 5 * time.Second
+	maxRateLimitWait = time.Minute
 )
 
 // defaultSleep waits for d or until ctx ends. Tests replace it.
@@ -69,17 +73,23 @@ func waitForPrevious(ctx context.Context, c *api.Client, appID string, p *ui.Pri
 	spin := p.Spinner(label(cur))
 	defer spin.Stop()
 	failures := 0
+	var limited time.Duration
 	for i := 0; ; i++ {
 		if !deadline.IsZero() && !now().Before(deadline) {
 			return &kxerr.PreviousRunning{Version: cur.Version, After: now().Sub(start)}
 		}
-		if err := sleep(ctx, pollInterval(i)); err != nil {
+		if err := sleep(ctx, max(pollInterval(i), limited)); err != nil {
 			return err
 		}
+		limited = 0
 		next, err := c.ListDeployments(ctx, appID, recentDeploys)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
+			}
+			if wait, ok := rateLimited(err); ok {
+				limited = wait
+				continue
 			}
 			if transient(err) && failures < maxPollFailures {
 				failures++
@@ -120,17 +130,23 @@ func (r *runner) wait(ctx context.Context, app *api.App, dep *api.Deployment) (*
 	spin := r.p.Spinner(label(cur))
 	defer spin.Stop()
 	failures := 0
+	var limited time.Duration
 	for i := 0; !cur.Done(); i++ {
 		if o.Now().Sub(start) >= o.Timeout {
 			return cur, phases, &kxerr.WaitTimeout{App: app.Name, Version: cur.Version, After: o.Timeout}
 		}
-		if err := o.Sleep(ctx, pollInterval(i)); err != nil {
+		if err := o.Sleep(ctx, max(pollInterval(i), limited)); err != nil {
 			return cur, phases, stoppedWaiting(ctx, app, cur, err)
 		}
+		limited = 0
 		next, err := r.c.GetDeployment(ctx, dep.ID)
 		if err != nil {
 			if ctx.Err() != nil {
 				return cur, phases, stoppedWaiting(ctx, app, cur, err)
+			}
+			if wait, ok := rateLimited(err); ok {
+				limited = wait
+				continue
 			}
 			if transient(err) && failures < maxPollFailures {
 				failures++
@@ -177,6 +193,18 @@ func transient(err error) bool {
 	var netErr *api.NetworkError
 	var apiErr *api.Error
 	return errors.As(err, &netErr) || (errors.As(err, &apiErr) && apiErr.Status >= 500)
+}
+
+// rateLimited reports a 429 and how long to wait before the next poll:
+// the answer's Retry-After, at least 5 seconds and at most a minute. A
+// rate limit says nothing about the deploy, so the wait loops ride it out
+// for as long as their timeout allows.
+func rateLimited(err error) (time.Duration, bool) {
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Status != 429 {
+		return 0, false
+	}
+	return min(max(apiErr.RetryAfter, minRateLimitWait), maxRateLimitWait), true
 }
 
 // tail keeps the last n lines written to it.

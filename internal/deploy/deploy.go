@@ -78,6 +78,10 @@ type Options struct {
 
 	Builder     Builder
 	Credentials CredentialStore // nil: mint a new credential (always in CI)
+	// MintWait is how long kx may wait in all for the registry credential
+	// limit to allow a new credential (CI, where nothing would retry the
+	// job); 0 fails at once and says how long to wait (laptops).
+	MintWait time.Duration
 
 	Now   func() time.Time
 	Sleep func(ctx context.Context, d time.Duration) error
@@ -446,9 +450,21 @@ func (r *runner) credential(ctx context.Context) (*api.RegistryCredential, bool,
 }
 
 func (r *runner) mint(ctx context.Context) (*api.RegistryCredential, error) {
-	cred, err := r.c.RegistryCredentials(ctx)
-	if err != nil {
-		return nil, err
+	var cred *api.RegistryCredential
+	var waited time.Duration
+	for {
+		var err error
+		if cred, err = r.c.RegistryCredentials(ctx); err == nil {
+			break
+		}
+		wait, limited := mintLimited(err)
+		if !limited || waited+wait > r.o.MintWait {
+			return nil, err
+		}
+		if err := r.waitToMint(ctx, wait); err != nil {
+			return nil, err
+		}
+		waited += wait
 	}
 	r.o.OnCredential(*cred) // first: GitHub mode masks it before anything can print it
 	if cred.Username == "" || cred.Password == "" || cred.RegistryURL == "" {
@@ -460,6 +476,25 @@ func (r *runner) mint(ctx context.Context) (*api.RegistryCredential, error) {
 		}
 	}
 	return cred, nil
+}
+
+// mintLimited reports the registry credential limit (429) and the wait the
+// answer's Retry-After asks for; an answer without one isn't waited out.
+func mintLimited(err error) (time.Duration, bool) {
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Status != 429 || apiErr.RetryAfter <= 0 {
+		return 0, false
+	}
+	return apiErr.RetryAfter, true
+}
+
+// waitToMint waits out the registry credential limit, saying so and
+// showing progress (heartbeat lines in CI).
+func (r *runner) waitToMint(ctx context.Context, wait time.Duration) error {
+	r.p.Info("This token has uploaded images too often in the last hour, so kx waits %s before uploading.", ui.Duration(wait))
+	spin := r.p.Spinner("Waiting to upload")
+	defer spin.Stop()
+	return r.o.Sleep(ctx, wait)
 }
 
 // showDocker prints the end of Docker's output when a Docker step failed

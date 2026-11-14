@@ -256,6 +256,11 @@ kx recognises GitHub Actions, GitLab CI, Bitbucket Pipelines, and any CI that se
   one-hour registry credential for each deploy. Docker gets it through a temporary
   configuration folder that is removed afterwards; it never appears on a command line or in
   the log. On GitHub, kx also masks it before anything could print it.
+- **Rate limits are waited out.** Each token can get a new registry credential a few times in
+  a row, then one every 6 minutes. In CI nothing would run the deploy again, so when that limit
+  is reached kx says so and waits (up to about 6 minutes) instead of failing the job. While it
+  waits for a deploy to go live, kx also rides out "too many requests" answers, waiting as long
+  as Kubernetix asks.
 - **Docker settings are respected.** An existing `DOCKER_HOST`, `DOCKER_TLS_VERIFY` and
   `DOCKER_CERT_PATH` are used as they are. Without `DOCKER_HOST`, kx uses the active Docker
   context's address and TLS certificates. A buildx builder that keeps images in its own cache

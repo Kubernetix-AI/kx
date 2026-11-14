@@ -69,6 +69,7 @@ type fakeAPI struct {
 	// Deploy side.
 	regCred     api.RegistryCredential
 	mints       int
+	mintLimits  []string // successive mints answer 429 with these Retry-After values first
 	newApps     []map[string]any
 	deployPosts []deployPost
 	rollbacks   []string
@@ -211,6 +212,12 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "POST" && path == "/registry/credentials":
 		if who.Token != nil && !who.Token.Can(api.PermPush) {
 			writeJSON(w, 403, map[string]string{"error": "token_not_allowed", "message": "no"})
+			return
+		}
+		if len(f.mintLimits) > 0 {
+			w.Header().Set("Retry-After", f.mintLimits[0])
+			f.mintLimits = f.mintLimits[1:]
+			writeJSON(w, 429, map[string]string{"error": "rate_limit_exceeded", "message": "Too many registry credentials"})
 			return
 		}
 		f.mints++

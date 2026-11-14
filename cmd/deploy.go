@@ -74,6 +74,11 @@ The first run asks which app the folder deploys to and saves it in .kx.json.`,
 // termination signal about 7.5 seconds later.
 const reportBudget = 5 * time.Second
 
+// ciMintWait is how long kx waits in CI for the registry credential limit
+// (one credential every 6 minutes per token once its burst is used): in CI
+// nothing would run the deploy again, so waiting beats failing the job.
+const ciMintWait = 6*time.Minute + 30*time.Second
+
 var (
 	imageRefRe    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,511}$`)
 	environmentRe = regexp.MustCompile(`^[^\x00-\x1f\x7f]{1,100}$`)
@@ -233,6 +238,9 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 		IdempotencyKey: key, NoWait: o.noWait, Timeout: d.timeout,
 		Builder: builder, Now: a.Now, Sleep: a.Sleep,
 		StopCommands: s.CI.Provider == ci.GitHub,
+	}
+	if s.CI.IsCI {
+		opts.MintWait = ciMintWait
 	}
 	// Only a login on this computer gets a cache: a KX_TOKEN usually means
 	// CI, including systems kx doesn't recognise, where other jobs may

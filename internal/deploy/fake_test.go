@@ -57,6 +57,13 @@ type fakeAPI struct {
 	createFail []int    // statuses POST deployments answers before succeeding
 	createErr  []string // [status, code, limit_name] answered by POST deployments
 	getFail    int      // GET /deployments/{id} answers this many 503s first
+	// getLimited and listLimited answer that many GETs of a deployment, or
+	// of the deployment list, with 429 and Retry-After: retryAfter seconds.
+	getLimited, listLimited int
+	retryAfter              string
+	// mintLimits answers successive credential mints with 429 and these
+	// Retry-After values, then mints.
+	mintLimits []string
 	// rollbackStatus, when set, is how every rollback POST is answered;
 	// rollbackDelay holds the answer back.
 	rollbackStatus int
@@ -117,6 +124,9 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		port, _ := body["port"].(float64)
 		f.apps[id] = &api.App{ID: id, Name: name, Port: int(port)}
 		writeJSON(w, 201, f.apps[id])
+	case r.Method == "GET" && len(parts) == 3 && parts[0] == "apps" && parts[2] == "deployments" && f.listLimited > 0:
+		f.listLimited--
+		f.limited(w)
 	case r.Method == "GET" && len(parts) == 3 && parts[0] == "apps" && parts[2] == "deployments":
 		f.listCalls++
 		if f.listCalls <= len(f.lists) {
@@ -167,6 +177,9 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.addDeployment(w, target.AppID, "rb-"+parts[1], target.ImageURL)
+	case r.Method == "GET" && len(parts) == 2 && parts[0] == "deployments" && f.getLimited > 0:
+		f.getLimited--
+		f.limited(w)
 	case r.Method == "GET" && len(parts) == 2 && parts[0] == "deployments":
 		if f.getFail > 0 {
 			f.getFail--
@@ -187,12 +200,24 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, 200, f.usage)
+	case r.Method == "POST" && path == "/registry/credentials" && len(f.mintLimits) > 0:
+		w.Header().Set("Retry-After", f.mintLimits[0])
+		f.mintLimits = f.mintLimits[1:]
+		writeJSON(w, 429, map[string]string{"error": "rate_limit_exceeded", "message": "Too many registry credentials", "token_prefix": "kx_01234567", "token_name": "ci"})
 	case r.Method == "POST" && path == "/registry/credentials":
 		f.mints++
 		writeJSON(w, 200, f.cred)
 	default:
 		writeJSON(w, 404, map[string]string{"error": "not_found"})
 	}
+}
+
+// limited answers with the API's rate limit error.
+func (f *fakeAPI) limited(w http.ResponseWriter) {
+	if f.retryAfter != "" {
+		w.Header().Set("Retry-After", f.retryAfter)
+	}
+	writeJSON(w, 429, map[string]string{"error": "rate_limit_exceeded", "message": "Too many requests"})
 }
 
 // addDeployment stores a new pending deployment and answers with it.
