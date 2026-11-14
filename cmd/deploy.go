@@ -213,6 +213,9 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := d.checkPermissions(ctx); err != nil {
+		return nil, err
+	}
 	app, newApp, err := d.target(ctx)
 	if err != nil {
 		return nil, err
@@ -269,6 +272,37 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 		d.rememberAppID(res)
 	}
 	return res, err
+}
+
+// checkPermissions stops before building when /whoami says the token
+// can't do what this deploy needs: read the app and its deployments,
+// deploy, and, when kx builds, push the image.
+func (d *deployRun) checkPermissions(ctx context.Context) error {
+	who, err := d.s.WhoAmI(ctx)
+	if err != nil {
+		return err
+	}
+	t := who.Token
+	if t == nil {
+		return nil // not a token: Kubernetix decides
+	}
+	need := []string{api.PermDeploy, api.PermRead}
+	if d.o.image == "" {
+		need = append(need, api.PermPush)
+	}
+	var missing []string
+	for _, p := range need {
+		if !t.Can(p) {
+			missing = append(missing, p)
+		}
+	}
+	switch {
+	case len(missing) == 0:
+		return nil
+	case len(missing) == 1 && missing[0] == api.PermPush:
+		return kxerr.ErrNoPushPermission
+	}
+	return &kxerr.TokenLacks{Permissions: missing, Source: d.s.Cfg.TokenSource, Org: who.Org.ID}
 }
 
 // path resolves a --build or --dockerfile value against the working folder.

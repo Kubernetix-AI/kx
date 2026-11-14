@@ -251,6 +251,7 @@ The messages you are most likely to meet:
 | This token can only deploy shop-api, and you asked to deploy web. | Log in with a token that can deploy web: kx login | 3 |
 | This folder deploys to acme-labs, but this computer is only logged in to acme-corp. | Run: kx login --org acme-labs | 3 |
 | This token can't upload images. | Create a token with Push images on the app's Deploy tab, or deploy an image that's already pushed: kx deploy --image &lt;image&gt; | 3 |
+| The token in the KX_TOKEN secret doesn't have the Read permission, which kx deploy needs. | Create a deploy token on the app's Deploy tab (it has Deploy, Read and Push images) and replace the KX_TOKEN secret. | 3 |
 | kx builds your app with Docker, and Docker isn't installed on this computer. | Install Docker Desktop from docker.com and run kx deploy again. | 10 |
 | Docker is installed but not running. | Start Docker Desktop, then run kx deploy again. | 10 |
 | There's no Dockerfile in /Users/sam/code/shop-api. | Run kx deploy in the folder that has your Dockerfile. | 2 |

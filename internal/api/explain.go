@@ -77,6 +77,7 @@ func Explain(err error) Problem {
 		ended    *kxerr.LoginEnded
 		orgNot   *kxerr.OrgNotLoggedIn
 		mismatch *kxerr.TokenAppMismatch
+		lacks    *kxerr.TokenLacks
 		orgMis   *kxerr.TokenOrgMismatch
 		invalid  *kxerr.InvalidToken
 		insecure *kxerr.InsecureURL
@@ -131,6 +132,8 @@ func Explain(err error) Problem {
 		return explainInvalidToken(invalid)
 	case errors.Is(err, kxerr.ErrNoPushPermission):
 		return cannotPush()
+	case errors.As(err, &lacks):
+		return tokenLacks(lacks)
 	case errors.Is(err, kxerr.ErrDockerMissing):
 		return Problem{"docker_missing", "kx builds your app with Docker, and Docker isn't installed on this computer.", "Install Docker Desktop from docker.com and run kx deploy again.", ExitDocker}
 	case errors.Is(err, kxerr.ErrDockerStopped):
@@ -256,6 +259,13 @@ func explainAPI(e *Error) Problem {
 	case "token_not_allowed":
 		if e.Path == "/registry/credentials" {
 			return cannotPush()
+		}
+		if m := missingPermissionRe.FindStringSubmatch(e.Message); m != nil {
+			what := " doesn't have the " + permissionName(m[1]) + " permission."
+			if src == kxerr.SourceEnv {
+				return Problem{"token_not_allowed", "The token in the KX_TOKEN secret" + what, "Create a token with the access you need on the app's Deploy tab and replace the KX_TOKEN secret.", ExitAuth}
+			}
+			return Problem{"token_not_allowed", "This token" + what, "Log in with a token that can: " + strings.TrimPrefix(loginFix(org), "Run: "), ExitAuth}
 		}
 		if src == kxerr.SourceEnv {
 			return Problem{"token_not_allowed", "The token in the KX_TOKEN secret isn't allowed to do that.", "Create a token with the access you need on the app's Deploy tab and replace the KX_TOKEN secret.", ExitAuth}
@@ -385,6 +395,48 @@ func loginEnded(org string) Problem {
 		return Problem{"login_ended", "Your login to Kubernetix has ended.", "Run: kx login", ExitAuth}
 	}
 	return Problem{"login_ended", "Your login to " + org + " has ended.", "Run: kx login --org " + org, ExitAuth}
+}
+
+// missingPermissionRe finds the permission in the platform's refusal of a
+// token that lacks one ("This API token doesn't have the read permission.").
+var missingPermissionRe = regexp.MustCompile(`doesn't have the (deploy|read|registry:push) permission`)
+
+// permissionName is how the dashboard names a token permission.
+func permissionName(p string) string {
+	switch p {
+	case PermDeploy:
+		return "Deploy"
+	case PermRead:
+		return "Read"
+	case PermPush:
+		return "Push images"
+	}
+	return p
+}
+
+// tokenLacks explains a token that /whoami says can't do what kx deploy
+// needs, naming the missing permissions.
+func tokenLacks(e *kxerr.TokenLacks) Problem {
+	names := make([]string, 0, len(e.Permissions))
+	for _, p := range e.Permissions {
+		names = append(names, permissionName(p))
+	}
+	noun := "permission"
+	if len(names) > 1 {
+		noun = "permissions"
+	}
+	who, fix := "This token", "Log in with a token that can deploy: kx login"
+	switch e.Source {
+	case kxerr.SourceEnv:
+		who, fix = "The token in the KX_TOKEN secret", "Create a deploy token on the app's Deploy tab (it has Deploy, Read and Push images) and replace the KX_TOKEN secret."
+	case kxerr.SourceLogin:
+		who = "The token this computer uses"
+		if e.Org != "" {
+			who += " for " + e.Org
+		}
+		fix = "Log in with a token that can deploy: " + strings.TrimPrefix(loginFix(e.Org), "Run: ")
+	}
+	return Problem{"token_not_allowed", fmt.Sprintf("%s doesn't have the %s %s, which kx deploy needs.", who, joinAnd(names), noun), fix, ExitAuth}
 }
 
 func cannotPush() Problem {

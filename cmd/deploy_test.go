@@ -131,10 +131,9 @@ func TestDeploy_FirstRunWithNoAppsAndNoUsableFolderName(t *testing.T) {
 		t.Fatalf("stderr:\n%s", h.err.String())
 	}
 
-	h.env["KX_TOKEN"] = tokRead // can't create apps
+	h.env["KX_TOKEN"] = tokRead // can't create apps (or deploy: kx link asks)
 	h.inFolder("billing-worker")
-	h.dockerfile("FROM scratch\n")
-	h.expect(h.run("deploy"), 2)
+	h.expect(h.run("link"), 2)
 	if !strings.Contains(h.err.String(), "There are no apps to link to yet.\nCreate an app in the dashboard, or log in with a token that can deploy: kx login\n") {
 		t.Fatalf("stderr:\n%s", h.err.String())
 	}
@@ -372,7 +371,7 @@ func TestDeploy_LinkedNewAppIsCreated(t *testing.T) {
 
 func TestDeploy_AppTokenCannotCreateApps(t *testing.T) {
 	h := newHarness(t)
-	h.env["KX_TOKEN"] = tokApp
+	h.env["KX_TOKEN"] = tokDeploy
 	h.inFolder("billing-worker")
 	h.link("billing-worker", "", "acme-corp")
 	h.dockerfile("FROM scratch\n")
@@ -391,8 +390,13 @@ func TestDeploy_TokenWithoutDeployDoesNotCreateApps(t *testing.T) {
 	h.inFolder("billing-worker")
 	h.link("billing-worker", "", "acme-corp")
 	h.dockerfile("FROM scratch\n")
-	h.expect(h.run("deploy"), 4)
-	if !strings.Contains(h.err.String(), "There's no app called billing-worker") || len(h.api.newApps) != 0 {
+	h.expect(h.run("deploy"), 3)
+	if !strings.Contains(h.err.String(), "doesn't have the Deploy and Push images permissions") || len(h.api.newApps) != 0 {
+		t.Fatalf("stderr = %q, POST /apps %d", h.err.String(), len(h.api.newApps))
+	}
+	// With --image, Push images isn't needed and Deploy is still missing.
+	h.expect(h.run("deploy", "--image", "registry.kubernetix.ai/acme-corp/billing-worker@"+testDigest), 3)
+	if !strings.Contains(h.err.String(), "doesn't have the Deploy permission, which kx deploy needs.") || len(h.api.newApps) != 0 {
 		t.Fatalf("stderr = %q, POST /apps %d", h.err.String(), len(h.api.newApps))
 	}
 }
@@ -403,7 +407,7 @@ func TestDeploy_PickerOffersNewAppOnlyToTokensThatCanDeploy(t *testing.T) {
 	h.inFolder("billing-worker")
 	h.dockerfile("FROM scratch\n")
 	h.tty, h.stdin = true, "\n"
-	h.run("deploy")
+	h.run("link")
 	if strings.Contains(h.err.String(), "(new app") || !strings.Contains(h.err.String(), "Which app should this folder deploy to?") {
 		t.Fatalf("picker:\n%s", h.err.String())
 	}
@@ -431,6 +435,46 @@ func TestDeploy_TokenWithoutPushImages(t *testing.T) {
 	if len(h.api.deployPosts) != 0 {
 		t.Fatal("deployed without an image")
 	}
+	// /whoami already says the token can't push, so kx stops before building.
+	if calls := h.docker.got(); len(calls) != 1 || calls[0] != "check" {
+		t.Fatalf("docker calls %v, want only the check", calls)
+	}
+}
+
+// kx checks the token's permissions (from /whoami) before building and
+// names the one that is missing.
+func TestDeploy_MissingPermissionNamedBeforeBuilding(t *testing.T) {
+	h := newHarness(t)
+	h.env["KX_TOKEN"] = tokNoRead
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy"), 3)
+	if !strings.Contains(h.err.String(), "The token in the KX_TOKEN secret doesn't have the Read permission, which kx deploy needs.\nCreate a deploy token on the app's Deploy tab (it has Deploy, Read and Push images) and replace the KX_TOKEN secret.\n") {
+		t.Fatalf("stderr = %q", h.err.String())
+	}
+	if reqs := h.api.got(); len(reqs) != 1 || reqs[0] != "GET /api/v1/whoami" {
+		t.Fatalf("requests %v, want only /whoami", reqs)
+	}
+	if calls := h.docker.got(); len(calls) != 1 {
+		t.Fatalf("docker calls %v", calls)
+	}
+
+	// A login without Deploy.
+	h = newHarness(t)
+	h.loginAs("acme-corp", tokRead, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy"), 3)
+	if !strings.Contains(h.err.String(), "The token this computer uses for acme-corp doesn't have the Deploy and Push images permissions, which kx deploy needs.\nLog in with a token that can deploy: kx login --org acme-corp\n") {
+		t.Fatalf("stderr = %q", h.err.String())
+	}
+}
+
+// Deploying an image that's already pushed needs no Push images.
+func TestDeploy_ImageNeedsNoPushPermission(t *testing.T) {
+	h := newHarness(t)
+	h.env["KX_TOKEN"] = tokApp // Deploy and Read
+	img := "registry.kubernetix.ai/acme-corp/shop-api@" + testDigest
+	h.expect(h.run("deploy", "--image", img), 0)
 }
 
 func TestDeploy_CommitAlreadyPushedUnderImmutableTags(t *testing.T) {

@@ -37,6 +37,8 @@ const (
 	tokRead = "kx_readonlyreadonlyreadonlyreadonlyreadonly0CJuiU" // org-wide, read only
 	// tokDeploy is the dashboard's deploy token: one app, Deploy, Push images, Read.
 	tokDeploy = "kx_000000000000000000000000000000000000035600U3y3"
+	// tokNoRead is a one-app token with Deploy and Push images but not Read.
+	tokNoRead = "kx_noreadnoreadnoreadnoreadnoreadnoreadnore4CdaMH"
 
 	regPassword = "test-only-registry-password"
 	testDigest  = "sha256:4d3c2b1a00112233445566778899aabbccddeeff00112233445566778899aabb"
@@ -110,6 +112,9 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 			tokDeploy: {Kind: "token", Org: api.Org{ID: "acme-corp"}, User: api.Principal{Email: "sam@acme.dev"}, Token: &api.Token{
 				ID: "tok-deploy", OrgID: "acme-corp", Name: "shop-api deploy", Prefix: "kx_00000000", Scope: "app", AppID: appShopID, AppName: "shop-api",
 				Permissions: []string{"deploy", "registry:push", "read"}, ExpiresAt: &dec11, Status: "active"}},
+			tokNoRead: {Kind: "token", Org: api.Org{ID: "acme-corp"}, User: api.Principal{Email: "sam@acme.dev"}, Token: &api.Token{
+				ID: "tok-noread", OrgID: "acme-corp", Name: "ci", Prefix: "kx_noreadno", Scope: "app", AppID: appShopID, AppName: "shop-api",
+				Permissions: []string{"deploy", "registry:push"}, ExpiresAt: &dec11, Status: "active"}},
 			tokRead: {Kind: "token", Org: api.Org{ID: "acme-corp"}, User: api.Principal{Email: "sam@acme.dev"}, Token: &api.Token{
 				ID: "tok-read", OrgID: "acme-corp", Name: "viewer", Prefix: "kx_readonly", Scope: "org",
 				Permissions: []string{"read"}, ExpiresAt: &dec11, Status: "active"}},
@@ -364,7 +369,7 @@ func (h *harness) runCtx(ctx context.Context, args ...string) int {
 	}
 	code := app.Run(ctx, args)
 	all := h.out.String() + h.err.String()
-	for _, tok := range []string{tokCorp, tokLabs, tokApp, tokCorp2, tokRead, tokDeploy} {
+	for _, tok := range []string{tokCorp, tokLabs, tokApp, tokCorp2, tokRead, tokDeploy, tokNoRead} {
 		if strings.Contains(all, tok) {
 			h.t.Errorf("kx %v printed a whole token", args)
 		}

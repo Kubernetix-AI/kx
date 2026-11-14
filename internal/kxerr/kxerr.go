@@ -79,6 +79,18 @@ func (e *TokenOrgMismatch) Error() string {
 // tokens, so only people signed in to the dashboard create them.
 var ErrTokenCreateMoved = errors.New("tokens are created in the dashboard")
 
+// TokenLacks means the token in use (from Source, for Org) doesn't have
+// Permissions ("deploy", "read", "registry:push"), which the command needs.
+type TokenLacks struct {
+	Permissions []string
+	Source      TokenSource
+	Org         string
+}
+
+func (e *TokenLacks) Error() string {
+	return fmt.Sprintf("token lacks the %v permissions", e.Permissions)
+}
+
 // TokenAppMismatch means an app-scoped token for TokenApp was asked to act on App.
 type TokenAppMismatch struct{ TokenApp, App string }
 
