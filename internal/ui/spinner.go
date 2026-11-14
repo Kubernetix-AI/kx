@@ -8,9 +8,10 @@ import (
 
 var frames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// Spinner shows that kx is still working. On a terminal it animates on
-// one line; elsewhere it prints "<label>… <elapsed>" every HeartbeatEvery
-// (10 s), so CI logs never go quiet for longer than that.
+// Spinner shows that kx is still working. On a terminal that can redraw a
+// line it animates on one line; elsewhere (CI logs, TERM=dumb, Windows
+// consoles without virtual terminal output) it prints "<label>… <elapsed>"
+// every HeartbeatEvery (10 s), so output never goes quiet for longer.
 type Spinner struct {
 	p     *Printer
 	start time.Time
@@ -41,7 +42,7 @@ func (s *Spinner) Update(label string) {
 // below it.
 func (s *Spinner) Println(format string, args ...any) {
 	line := fmt.Sprintf(format, cleanArgs(args)...) + "\n"
-	if s.p.TTY {
+	if s.p.Animate {
 		line = "\r\x1b[2K" + line
 	}
 	s.p.writeErr(line)
@@ -56,7 +57,7 @@ func (s *Spinner) Stop() {
 	s.once.Do(func() {
 		close(s.stop)
 		<-s.done
-		if s.p.TTY {
+		if s.p.Animate {
 			s.p.writeErr("\r\x1b[2K")
 		}
 	})
@@ -65,7 +66,7 @@ func (s *Spinner) Stop() {
 func (s *Spinner) run() {
 	defer close(s.done)
 	every := s.p.HeartbeatEvery
-	if s.p.TTY {
+	if s.p.Animate {
 		every = s.p.SpinEvery
 	}
 	t := time.NewTicker(every)
@@ -80,7 +81,7 @@ func (s *Spinner) run() {
 		label := s.label
 		s.mu.Unlock()
 		elapsed := Duration(time.Since(s.start))
-		if s.p.TTY {
+		if s.p.Animate {
 			s.p.writeErr(fmt.Sprintf("\r\x1b[2K%s %s  %s", s.p.paint(green, frames[i%len(frames)]), label, s.p.Dim(elapsed)))
 		} else {
 			s.p.writeErr(fmt.Sprintf("  %s… %s\n", label, elapsed))

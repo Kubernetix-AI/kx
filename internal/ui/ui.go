@@ -39,8 +39,13 @@ type Printer struct {
 	JSON     bool // --json: results and errors as JSON on stdout
 	Color    bool // colour on stderr
 	OutColor bool // colour on stdout (stdout is a terminal)
-	TTY      bool // stderr is a terminal: spinner, redraws
-	InTTY    bool // stdin is a terminal: prompts
+	TTY      bool // stderr is a terminal
+	// Animate means stderr is a terminal that can move the cursor: the
+	// spinner redraws one line and the picker takes arrow keys. Not with
+	// TERM=dumb, or on a Windows console without virtual terminal output;
+	// those get the plain progress lines and a numbered picker.
+	Animate bool
+	InTTY   bool // stdin is a terminal: prompts
 
 	SpinEvery      time.Duration // spinner frame interval on a TTY
 	HeartbeatEvery time.Duration // progress line interval without a TTY
@@ -72,8 +77,8 @@ func New(stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string, 
 		in:             &lineReader{},
 		mu:             &sync.Mutex{},
 	}
-	p.Color = colorEnabled(p.TTY, getenv)
-	p.OutColor = colorEnabled(isTerminal(stdout), getenv)
+	p.Animate, p.Color = terminalCaps(p.TTY, func() bool { return vtFor(stderr) }, getenv)
+	_, p.OutColor = terminalCaps(isTerminal(stdout), func() bool { return vtFor(stdout) }, getenv)
 	if f, ok := stdin.(*os.File); ok {
 		fd := int(f.Fd())
 		p.ReadPassword = func() (string, error) {
@@ -101,6 +106,21 @@ func New(stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string, 
 func isTerminal(v any) bool {
 	f, ok := v.(*os.File)
 	return ok && term.IsTerminal(int(f.Fd()))
+}
+
+func vtFor(v any) bool {
+	f, ok := v.(*os.File)
+	return ok && enableVT(f)
+}
+
+// terminalCaps says what a stream can show. Animation (redrawing a line,
+// moving the cursor) needs a terminal that interprets escape sequences
+// (vt) and isn't TERM=dumb; colour needs one too, and no NO_COLOR.
+func terminalCaps(tty bool, vt func() bool, getenv func(string) string) (animate, color bool) {
+	if !tty || !vt() {
+		return false, false
+	}
+	return getenv("TERM") != "dumb", colorEnabled(true, getenv)
 }
 
 func colorEnabled(tty bool, getenv func(string) string) bool {

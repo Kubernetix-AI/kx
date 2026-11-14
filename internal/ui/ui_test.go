@@ -243,7 +243,7 @@ func TestSpinner_HeartbeatWithoutTTY(t *testing.T) {
 
 func TestSpinner_TTYRedrawsAndClears(t *testing.T) {
 	p, _, errw := newTest("")
-	p.TTY = true
+	p.TTY, p.Animate = true, true
 	p.SpinEvery = 5 * time.Millisecond
 	s := p.Spinner("Building")
 	time.Sleep(40 * time.Millisecond)
@@ -251,6 +251,56 @@ func TestSpinner_TTYRedrawsAndClears(t *testing.T) {
 	got := errw.String()
 	if !strings.Contains(got, "\r") || !strings.HasSuffix(got, "\r\x1b[2K") {
 		t.Fatalf("TTY spinner output = %q", got)
+	}
+}
+
+// A terminal that can't move the cursor (TERM=dumb, or a Windows console
+// without virtual terminal output) gets the plain heartbeat lines, and
+// lines printed during a spinner don't start with a line erase.
+func TestSpinner_PlainOnATerminalThatCantAnimate(t *testing.T) {
+	p, _, errw := newTest("")
+	p.TTY, p.Animate = true, false
+	p.SpinEvery, p.HeartbeatEvery = time.Millisecond, 15*time.Millisecond
+	s := p.Spinner("Deploying v15: starting")
+	time.Sleep(50 * time.Millisecond)
+	s.Println("v15 didn't go live on attempt 1; Kubernetix is trying again (attempt 2).")
+	s.Stop()
+	got := errw.String()
+	if strings.ContainsAny(got, "\r\x1b") || !strings.Contains(got, "  Deploying v15: starting… ") || !strings.Contains(got, "\nv15 didn't go live on attempt 1") {
+		t.Fatalf("output = %q", got)
+	}
+}
+
+func TestTerminalCaps(t *testing.T) {
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	tests := []struct {
+		name          string
+		tty, vt       bool
+		env           map[string]string
+		animate, colr bool
+	}{
+		{"terminal", true, true, nil, true, true},
+		{"not a terminal", false, true, nil, false, false},
+		{"TERM=dumb", true, true, map[string]string{"TERM": "dumb"}, false, false},
+		{"NO_COLOR", true, true, map[string]string{"NO_COLOR": "1"}, true, false},
+		{"console without VT", true, false, nil, false, false},
+	}
+	for _, tt := range tests {
+		animate, colr := terminalCaps(tt.tty, func() bool { return tt.vt }, env(tt.env))
+		if animate != tt.animate || colr != tt.colr {
+			t.Errorf("%s: animate %v colour %v, want %v %v", tt.name, animate, colr, tt.animate, tt.colr)
+		}
+	}
+}
+
+// Without cursor movement the picker is the numbered list.
+func TestChoose_NumberedWhenTheTerminalCantAnimate(t *testing.T) {
+	p, _, errw := newTest("2\n")
+	p.InTTY, p.TTY, p.Animate = true, true, false
+	p.rawMode = func() (func(), error) { t.Fatal("entered raw mode"); return nil, nil }
+	got, err := p.Choose(context.Background(), "Pick", []string{"a", "b"}, 0)
+	if err != nil || got != 1 || !strings.Contains(errw.String(), "  1) a\n  2) b\nChoose [1]: ") {
+		t.Fatalf("Choose = %d, %v; stderr %q", got, err, errw.String())
 	}
 }
 
@@ -303,7 +353,7 @@ func TestChoose(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p, out, errw := newTest(tt.keys)
-			p.InTTY, p.TTY = true, true
+			p.InTTY, p.TTY, p.Animate = true, true, true
 			p.rawMode = func() (func(), error) { return func() {}, nil }
 			got, err := p.Choose(context.Background(), "Which app should this folder deploy to?", opts, tt.def)
 			if got != tt.want || !errors.Is(err, tt.cause) {
@@ -352,7 +402,7 @@ func TestChoose_NoDefaultNeedsAnExplicitPick(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p, _, errw := newTest(tt.keys)
-			p.InTTY, p.TTY = true, true
+			p.InTTY, p.TTY, p.Animate = true, true, true
 			p.rawMode = func() (func(), error) { return func() {}, nil }
 			got, err := p.Choose(context.Background(), "Which app should this folder deploy to?", opts, -1)
 			if got != tt.want || !errors.Is(err, tt.cause) {

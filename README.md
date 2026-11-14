@@ -223,8 +223,9 @@ Set `KX_CONFIG_DIR` to keep it somewhere else. In CI kx never reads or writes it
 `KX_TOKEN`.
 
 **Output.** Progress and prompts go to standard error, results to standard output. On a
-terminal kx shows a spinner and colour; set `NO_COLOR=1` to turn colour off. Elsewhere it
-prints a progress line at least every 10 seconds. With `--json`, a failure is printed on
+terminal kx shows a spinner and colour; set `NO_COLOR=1` to turn colour off. Elsewhere,
+including terminals with `TERM=dumb` and Windows consoles that can't show colour, it prints
+plain progress lines, at least one every 10 seconds, and numbers the choices when it asks. With `--json`, a failure is printed on
 standard output as:
 
 ```json

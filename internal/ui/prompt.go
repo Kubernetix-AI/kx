@@ -111,8 +111,9 @@ var ErrNoChoice = errors.New("nothing was chosen")
 // and a def of -1 preselects nothing, so Enter alone picks nothing and
 // an option must be chosen by moving to it or typing its number. On a
 // terminal it is an arrow-key picker (digits and j/k work too, and Ctrl-C
-// cancels); if the terminal cannot enter raw mode it falls back to a
-// numbered list, which returns ctx's error as soon as ctx ends.
+// cancels); if the terminal cannot enter raw mode or move the cursor it
+// falls back to a numbered list, which returns ctx's error as soon as ctx
+// ends.
 func (p *Printer) Choose(ctx context.Context, question string, options []string, def int) (int, error) {
 	if !p.InTTY || !p.TTY || len(options) == 0 {
 		return -1, ErrNoTTY
@@ -120,7 +121,7 @@ func (p *Printer) Choose(ctx context.Context, question string, options []string,
 	if def < -1 || def >= len(options) {
 		def = 0
 	}
-	if p.rawMode == nil {
+	if p.rawMode == nil || !p.Animate {
 		return p.chooseByNumber(ctx, question, options, def)
 	}
 	restore, err := p.rawMode()
