@@ -154,7 +154,11 @@ func (c *Client) CreateDeployment(ctx context.Context, appID string, req CreateD
 		return nil, errors.New("api: CreateDeployment needs an idempotency key")
 	}
 	var out Deployment
-	return &out, c.do(ctx, http.MethodPost, "/apps/"+url.PathEscape(appID)+"/deployments", nil, req, idempotencyKey, &out)
+	ans, err := c.send(ctx, http.MethodPost, "/apps/"+url.PathEscape(appID)+"/deployments", nil, req, idempotencyKey, &out)
+	// 202 is a new deployment and 200 one made earlier with this key. After
+	// a retry, a 200 may be this request's own first try that got through.
+	out.Replayed = err == nil && ans.status == http.StatusOK && !ans.retried
+	return &out, err
 }
 
 // DeploymentLogs returns a deployment's build and rollout logs.
@@ -267,14 +271,27 @@ func (c *Client) RuntimeLogs(ctx context.Context, appID string, q LogQuery) ([]L
 // or anything with an Idempotency-Key) on 502, 503, 504 and connection
 // failures.
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body any, idempotencyKey string, out any) error {
+	_, err := c.send(ctx, method, path, query, body, idempotencyKey, out)
+	return err
+}
+
+// answer is what send saw of the response that ended a request: its
+// status, and whether the request had been sent more than once.
+type answer struct {
+	status  int
+	retried bool
+}
+
+// send is do, also reporting the answer.
+func (c *Client) send(ctx context.Context, method, path string, query url.Values, body any, idempotencyKey string, out any) (answer, error) {
 	if c.baseErr != nil {
-		return c.baseErr
+		return answer{}, c.baseErr
 	}
 	var payload []byte
 	if body != nil {
 		var err error
 		if payload, err = json.Marshal(body); err != nil {
-			return err
+			return answer{}, err
 		}
 	}
 	target := c.base + path
@@ -286,7 +303,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	for attempt := 0; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(payload))
 		if err != nil {
-			return err
+			return answer{}, err
 		}
 		if c.token != "" {
 			req.Header.Set("Authorization", "Bearer "+c.token)
@@ -303,26 +320,26 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		resp, err := c.HTTPClient.Do(req)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return ctxErr
+				return answer{}, ctxErr
 			}
 			if idempotent && attempt < c.MaxRetries && !isTimeout(err) {
 				if serr := c.Sleep(ctx, backoff(attempt, 0)); serr != nil {
-					return serr
+					return answer{}, serr
 				}
 				continue
 			}
-			return &NetworkError{Err: unwrapURLError(err)}
+			return answer{}, &NetworkError{Err: unwrapURLError(err)}
 		}
 
 		if retryable(resp.StatusCode) && idempotent && attempt < c.MaxRetries {
 			wait := backoff(attempt, parseRetryAfter(resp.Header.Get("Retry-After")))
 			drain(resp)
 			if serr := c.Sleep(ctx, wait); serr != nil {
-				return serr
+				return answer{}, serr
 			}
 			continue
 		}
-		return c.finish(resp, method, path, out)
+		return answer{status: resp.StatusCode, retried: attempt > 0}, c.finish(resp, method, path, out)
 	}
 }
 

@@ -173,6 +173,37 @@ func TestClient_RetriesPOSTWithIdempotencyKeyReusingIt(t *testing.T) {
 	}
 }
 
+// The API answers 202 for a new deployment and 200 when the idempotency
+// key was used before. After a retry, a 200 may be kx's own first request
+// that got through, so only a first-try 200 counts as a replay.
+func TestClient_CreateDeploymentReportsAReplay(t *testing.T) {
+	tests := []struct {
+		name    string
+		answers []int
+		want    bool
+	}{
+		{"new deployment", []int{202}, false},
+		{"key used before", []int{200}, true},
+		{"own request after a gateway error", []int{502, 200}, false},
+	}
+	for _, tt := range tests {
+		n := 0
+		c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			status := tt.answers[min(n, len(tt.answers)-1)]
+			n++
+			if status >= 500 {
+				w.WriteHeader(status)
+				return
+			}
+			writeJSON(w, status, map[string]any{"id": "dep-1", "version": 15, "status": "pending"})
+		})
+		d, err := c.CreateDeployment(context.Background(), "app-1", CreateDeploymentRequest{ImageURL: "x"}, "f1498b64-ba27-5f9a-8704-8b6910db9ac2")
+		if err != nil || d.Replayed != tt.want {
+			t.Errorf("%s: Replayed = %v, %v; want %v", tt.name, d.Replayed, err, tt.want)
+		}
+	}
+}
+
 func TestClient_CreateDeploymentRequiresKey(t *testing.T) {
 	c := New("https://platform.kubernetix.ai/api/v1", testToken)
 	if _, err := c.CreateDeployment(context.Background(), "app-1", CreateDeploymentRequest{}, ""); err == nil {

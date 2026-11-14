@@ -249,8 +249,9 @@ kx recognises GitHub Actions, GitLab CI, Bitbucket Pipelines, and any CI that se
   kx retries a request after a network or server hiccup it sends the same key, so Kubernetix
   returns the deploy it already started. On GitHub Actions and GitLab CI the key is made from
   the repository, the run, the attempt (GitHub's run attempt, GitLab's job ID) and the app,
-  so even a step that runs kx twice within one attempt deploys once, while re-running a
-  workflow or retrying a job is a new attempt and deploys again. On Bitbucket Pipelines and
+  so even a step that runs kx twice within one attempt deploys once (the second run says "This
+  run already deployed v15, so nothing new was started" and reports that deploy, image and
+  all), while re-running a workflow or retrying a job is a new attempt and deploys again. On Bitbucket Pipelines and
   other CI systems each kx run gets a fresh key, so a re-run always deploys again.
 - **Credentials stay in the job.** kx uses `KX_TOKEN`, never a settings file, and mints a new
   one-hour registry credential for each deploy. Docker gets it through a temporary

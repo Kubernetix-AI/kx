@@ -81,6 +81,9 @@ type Deployment struct {
 	CreatedAt   time.Time    `json:"created_at"`
 	UpdatedAt   time.Time    `json:"updated_at"`
 	CompletedAt *time.Time   `json:"completed_at,omitempty"`
+	// Replayed is set by CreateDeployment when Kubernetix handed back a
+	// deployment made earlier with the same idempotency key.
+	Replayed bool `json:"-"`
 }
 
 // HealthCheck is how Kubernetix checks an app's containers: liveness

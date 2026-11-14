@@ -110,6 +110,9 @@ type Result struct {
 	Image           string // what was deployed; by digest when kx built it
 	CreatedApp      bool
 	ServingVersion  int // after a failed deploy: the version still serving, 0 if none
+	// Replayed means Kubernetix handed back a deployment this CI run had
+	// already started (same idempotency key); Image is that one's.
+	Replayed bool
 }
 
 var tagRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
@@ -228,6 +231,14 @@ func (r *runner) deploy(ctx context.Context) (*Result, error) {
 		return res, r.deployLimit(ctx, err)
 	}
 	res.DeploymentID, res.Version, res.Status = dep.ID, dep.Version, dep.Status
+	if same, known := sameDigest(dep.ImageURL, image); dep.Replayed || (known && !same) {
+		// Same key, earlier deployment: say so, and report what it deployed.
+		r.p.Info("This run already deployed v%d, so nothing new was started; kx reports that deploy.", dep.Version)
+		res.Replayed = true
+		if dep.ImageURL != "" {
+			res.Image = dep.ImageURL
+		}
+	}
 	o.OnDeploy(app, dep)
 	if o.NoWait {
 		r.p.Step("Started", fmt.Sprintf("v%d; kx isn't waiting for it to go live", dep.Version), 0)
@@ -269,6 +280,18 @@ func (r *runner) finish(ctx context.Context, app *api.App, dep *api.Deployment, 
 		res.URL = fresh.URL
 	}
 	return res, nil
+}
+
+// sameDigest compares two image references by digest; known is false when
+// either has none. The API may show an image under another registry host
+// than the one kx sent, but never with another digest.
+func sameDigest(a, b string) (same, known bool) {
+	_, da, okA := strings.Cut(a, "@")
+	_, db, okB := strings.Cut(b, "@")
+	if !okA || !okB || !strings.HasPrefix(da, "sha256:") || !strings.HasPrefix(db, "sha256:") {
+		return false, false
+	}
+	return da == db, true
 }
 
 // check prints the Checked line and port warnings, and returns the port a

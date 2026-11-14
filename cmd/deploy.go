@@ -465,6 +465,9 @@ func (d *deployRun) report(ctx context.Context, res *deploy.Result, err error) {
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reportBudget)
 	defer cancel()
 
+	if res != nil && res.Replayed {
+		sum.Note = fmt.Sprintf("This run already deployed v%d, so nothing new was started.", res.Version)
+	}
 	if err == nil {
 		desc, target := "Live in "+ui.Duration(took), res.URL
 		if took < time.Second {

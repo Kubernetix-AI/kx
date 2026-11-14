@@ -829,6 +829,51 @@ func countSleeps(c *fakeClock, d time.Duration) int {
 	return n
 }
 
+// A second kx deploy of the app inside one CI run attempt sends the same
+// idempotency key, and Kubernetix hands back the deployment that run
+// already started. kx says so and reports that deployment's image, not
+// the one it just pushed.
+func TestRun_ReplayOfAnEarlierDeploymentIsReported(t *testing.T) {
+	e := newEnv(t)
+	earlier := "registry.example.test/acme-corp/shop-api@sha256:" + strings.Repeat("00", 32)
+	e.api.deployments[testAppID] = append([]api.Deployment{{ID: "key-" + testKey, AppID: testAppID, Version: 15, Status: "ready", ImageURL: earlier}}, e.api.deployments[testAppID]...)
+	res, err := e.run(e.options())
+	if err != nil || res.Version != 15 || res.Image != earlier || !res.Replayed {
+		t.Fatalf("Run() = %+v, %v", res, err)
+	}
+	if !strings.Contains(e.errOut.String(), "This run already deployed v15, so nothing new was started; kx reports that deploy.\n") {
+		t.Fatalf("stderr:\n%s", e.errOut.String())
+	}
+
+	// A new deployment is not a replay.
+	e = newEnv(t)
+	res, err = e.run(e.options())
+	if err != nil || res.Replayed || !strings.HasSuffix(res.Image, testDigest) || strings.Contains(e.errOut.String(), "already deployed") {
+		t.Fatalf("Run() = %+v, %v\n%s", res, err, e.errOut.String())
+	}
+}
+
+func TestSameDigest(t *testing.T) {
+	a := "registry.kubernetix.ai/acme-corp/shop-api@" + testDigest
+	tests := []struct {
+		x, y  string
+		known bool
+		same  bool
+	}{
+		{a, a, true, true},
+		{a, "registry.example.test/acme-corp/shop-api@" + testDigest, true, true}, // shown under another host
+		{a, "registry.kubernetix.ai/acme-corp/shop-api@sha256:" + strings.Repeat("00", 32), true, false},
+		{a, "nginx:latest", false, false},
+		{"", a, false, false},
+	}
+	for _, tt := range tests {
+		same, known := sameDigest(tt.x, tt.y)
+		if same != tt.same || known != tt.known {
+			t.Errorf("sameDigest(%q, %q) = %v, %v; want %v, %v", tt.x, tt.y, same, known, tt.same, tt.known)
+		}
+	}
+}
+
 func TestRun_NoWait(t *testing.T) {
 	e := newEnv(t)
 	o := e.options()

@@ -340,7 +340,8 @@ type Summary struct {
 
 	Failed    bool
 	What, Fix string
-	// Note says what is serving after a failure, when What doesn't.
+	// Note says what is serving after a failure, when What doesn't, or
+	// that the run had already deployed this version.
 	Note string
 }
 
@@ -364,9 +365,9 @@ func (r *Reporter) WriteSummary(s Summary) error {
 	}
 	if s.Failed {
 		fmt.Fprintf(&b, "**%s**\n\n%s\n\n", md(s.What), md(s.Fix))
-		if s.Note != "" {
-			fmt.Fprintf(&b, "%s\n\n", md(s.Note))
-		}
+	}
+	if s.Note != "" {
+		fmt.Fprintf(&b, "%s\n\n", md(s.Note))
 	}
 	rows := [][2]string{}
 	if u := safeURL(s.URL); u != "" {

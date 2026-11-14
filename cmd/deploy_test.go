@@ -713,6 +713,12 @@ func TestDeploy_GitHubReRunOfSameAttemptDeploysOnce(t *testing.T) {
 	if len(h.api.deployPosts) != 2 || h.api.deployPosts[0].Key != h.api.deployPosts[1].Key {
 		t.Fatalf("posts = %+v", h.api.deployPosts)
 	}
+	if !strings.Contains(h.err.String(), "This run already deployed v16, so nothing new was started; kx reports that deploy.\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	if sum, _ := os.ReadFile(h.env["GITHUB_STEP_SUMMARY"]); !strings.Contains(string(sum), "This run already deployed v16, so nothing new was started.") {
+		t.Fatalf("summary:\n%s", sum)
+	}
 	n := 0
 	for _, d := range h.api.deployments[appShopID] {
 		if strings.HasPrefix(d.ID, "new-") {
