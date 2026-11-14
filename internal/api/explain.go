@@ -501,7 +501,7 @@ func deployFailed(e *kxerr.DeployFailed) Problem {
 // got ready: crashing on start, or (with an HTTP health check) not
 // answering it, which is also what listening on another port looks like.
 func notStarting(ns *kxerr.NotStarting) (reason, fix string) {
-	after := minutes(ns.After)
+	after := howLong(ns.After)
 	if !ns.HealthCheck {
 		return "for " + after + " its container kept stopping right after it started",
 			"Fix what stops your app from starting (the log lines above may say), then run kx deploy again."
@@ -529,6 +529,15 @@ func untilText(d time.Duration) string {
 		return fmt.Sprintf("%d h", h)
 	}
 	return fmt.Sprintf("%d h %d min", h, m)
+}
+
+// howLong says how long something lasted without overstating it: seconds
+// under two minutes, otherwise whole minutes, rounded down.
+func howLong(d time.Duration) string {
+	if d < 2*time.Minute {
+		return fmt.Sprintf("%d seconds", int(d.Round(time.Second)/time.Second))
+	}
+	return fmt.Sprintf("%d minutes", int(d/time.Minute))
 }
 
 func minutes(d time.Duration) string {

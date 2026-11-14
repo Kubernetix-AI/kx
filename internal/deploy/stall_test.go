@@ -199,7 +199,7 @@ func TestRun_NeverReadyLogLinesFallBack(t *testing.T) {
 	if !strings.Contains(e.errOut.String(), "  panic: missing DATABASE_URL\n") {
 		t.Fatalf("stderr:\n%s", e.errOut.String())
 	}
-	if p := api.Explain(err); p.What != "shop-api v15 didn't go live: for 2 minutes its container kept stopping right after it started. Version 14 is still serving." {
+	if p := api.Explain(err); p.What != "shop-api v15 didn't go live: for 90 seconds its container kept stopping right after it started. Version 14 is still serving." {
 		t.Fatalf("problem = %+v", p)
 	}
 
