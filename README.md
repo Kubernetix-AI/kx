@@ -63,9 +63,11 @@ sha256sum --ignore-missing -c checksums.txt     # macOS: shasum -a 256 --ignore-
 
 ## Quickstart
 
+If the installer printed a line to add kx to your `PATH`, run that first (see Install).
+
 ```console
 $ curl -fsSL https://platform.kubernetix.ai/install.sh | sh
-kx is ready. Next: kx login                       (or the PATH line first; see Install)
+kx is ready. Next: kx login
 
 $ kx login
 Opening platform.kubernetix.ai so you can create a token for this computer.
