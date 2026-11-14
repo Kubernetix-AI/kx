@@ -184,7 +184,7 @@ func (r *runner) wait(ctx context.Context, app *api.App, dep *api.Deployment) (*
 		if !ok {
 			continue
 		}
-		r.stuck, r.likely, r.olderRunning = st, nil, watch.older
+		r.stuck, r.likely = st, nil
 		if st == nil {
 			continue // nothing stuck now: no cause to report
 		}

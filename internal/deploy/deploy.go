@@ -166,11 +166,10 @@ type runner struct {
 
 	rollback bool // the deployment is a rollback (changes the advice)
 	// What the replicas said at the last look while waiting: the stuck
-	// ones, the likely cause kx tells the person (nil when nothing is
-	// stuck), and whether an earlier version was running too.
-	stuck        *stalled
-	likely       *kxerr.NotStarting
-	olderRunning bool
+	// ones, and the likely cause kx tells the person (nil when nothing is
+	// stuck).
+	stuck  *stalled
+	likely *kxerr.NotStarting
 }
 
 // Run deploys and waits (unless NoWait) until the deployment is live,

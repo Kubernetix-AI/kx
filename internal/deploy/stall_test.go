@@ -383,9 +383,10 @@ func TestRun_SaysWhenKubernetixTriesAgain(t *testing.T) {
 	}
 }
 
-// Log lines come from the stuck replica when the log stream names pods;
-// otherwise all recent lines (labelled as such when an earlier version is
-// also running), and without any, the deployment's own log.
+// Log lines come from the stuck replica when the log stream names pods.
+// When it doesn't, kx can't tell the new version's lines from an earlier
+// one's, so it calls them recent lines from the app, whether or not an
+// earlier version is seen running. Without any, the deployment's own log.
 func TestRun_SignalLogLinesFallBack(t *testing.T) {
 	setup := func(t *testing.T, reps ...api.Replica) *env {
 		e := newEnv(t)
@@ -395,14 +396,16 @@ func TestRun_SignalLogLinesFallBack(t *testing.T) {
 		e.api.replicas = func(int) []api.Replica { return reps }
 		return e
 	}
+	const unnamed = "Recent log lines from shop-api (kx can't tell which version printed them):\n  panic: missing DATABASE_URL\n"
 
-	e := setup(t, newReplica("Running", false))
-	e.api.runtimeLogs = streams(map[string][]string{"": {"panic: missing DATABASE_URL"}})
+	// Named: only the stuck replica's lines, as the new version's.
+	e := setup(t, oldReplica, newReplica("Running", false))
+	e.api.runtimeLogs = streams(map[string][]string{"app-shop-8e1a-new": {"panic: missing DATABASE_URL"}, "app-shop-7d9f-old": {"GET / 200"}})
 	o := e.options()
 	w := e.watchWarnings(&o)
 	_, err := e.run(o)
-	if !strings.Contains(e.errOut.String(), "The last 1 log lines of v15:\n  panic: missing DATABASE_URL\n") {
-		t.Fatalf("stderr:\n%s", e.errOut.String())
+	if out := e.errOut.String(); !strings.Contains(out, "The last 1 log lines of v15:\n  panic: missing DATABASE_URL\n") || strings.Contains(out, "GET / 200") || strings.Contains(out, "Recent log lines") {
+		t.Fatalf("named streams:\n%s", out)
 	}
 	if len(w.whats) != 1 || w.whats[0] != "shop-api v15 isn't live yet: for 90 seconds its container has kept stopping right after it started." {
 		t.Fatalf("signal = %q", w.whats)
@@ -411,17 +414,21 @@ func TestRun_SignalLogLinesFallBack(t *testing.T) {
 		t.Fatalf("problem = %+v", p)
 	}
 
-	e = setup(t, oldReplica, newReplica("Running", false))
-	e.api.runtimeLogs = streams(map[string][]string{"": {"panic: missing DATABASE_URL"}})
-	_, _ = e.run(e.options())
-	if !strings.Contains(e.errOut.String(), "The last 1 log lines of shop-api (from every version running):\n") {
-		t.Fatalf("stderr:\n%s", e.errOut.String())
+	// Unnamed, with and without an earlier version seen running.
+	for _, reps := range [][]api.Replica{{oldReplica, newReplica("Running", false)}, {newReplica("Running", false)}} {
+		e = setup(t, reps...)
+		e.api.runtimeLogs = streams(map[string][]string{"": {"panic: missing DATABASE_URL"}})
+		_, _ = e.run(e.options())
+		if out := e.errOut.String(); !strings.Contains(out, unnamed) || strings.Contains(out, "log lines of v15") {
+			t.Fatalf("unnamed streams, %d replicas:\n%s", len(reps), out)
+		}
 	}
 
+	// No runtime logs: the deployment's own log.
 	e = setup(t, newReplica("Running", false))
 	e.api.logs["key-"+testKey] = api.DeploymentLogs{DeploymentLogs: "boot failed: port 8080 in use\n"}
 	_, _ = e.run(e.options())
-	if !strings.Contains(e.errOut.String(), "  boot failed: port 8080 in use\n") {
+	if !strings.Contains(e.errOut.String(), "The last 1 log lines of v15:\n  boot failed: port 8080 in use\n") {
 		t.Fatalf("stderr:\n%s", e.errOut.String())
 	}
 }

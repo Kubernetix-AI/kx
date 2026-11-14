@@ -55,10 +55,7 @@ type stallWatch struct {
 	// running is when kx first saw each replica of the new version
 	// running but not ready (kx's clock).
 	running map[string]time.Time
-	// older is set when replicas of an earlier version were running at
-	// the last look.
-	older bool
-	off   bool // replicas can't be read: only the timeout applies
+	off     bool // replicas can't be read: only the timeout applies
 }
 
 func newStallWatch(c *api.Client, appID string, d *api.Deployment) *stallWatch {
@@ -116,7 +113,6 @@ func (w *stallWatch) check(ctx context.Context, now time.Time, d *api.Deployment
 	if older && !olderReady {
 		return nil, false
 	}
-	w.older = older
 	seen := map[string]bool{}
 	var s stalled
 	for _, rep := range reps {
@@ -187,31 +183,33 @@ func (r *runner) signalNotLive(ctx context.Context, app *api.App, d *api.Deploym
 }
 
 // showLogs prints the last log lines of the stuck replicas, when kx saw
-// any, else of the deployment.
+// any, else of the deployment. Lines from a log stream that doesn't name
+// replicas could be any version's, so they are headed as the app's recent
+// lines, never as the new version's.
 func (r *runner) showLogs(ctx context.Context, app *api.App, d *api.Deployment) {
-	heading := fmt.Sprintf("v%d", d.Version)
 	var lines []string
+	named := true
 	if r.stuck != nil {
-		var mixed bool
-		lines, mixed = r.replicaLogs(ctx, app, d, r.stuck.pods)
-		if mixed {
-			heading = app.Name + " (from every version running)"
-		}
+		lines, named = r.replicaLogs(ctx, app, d, r.stuck.pods)
 	}
 	if len(lines) == 0 {
-		heading, lines = fmt.Sprintf("v%d", d.Version), r.deploymentLogs(ctx, d)
+		lines, named = r.deploymentLogs(ctx, d), true
 	}
-	if len(lines) > 0 {
-		r.p.Info("The last %d log lines of %s:", len(lines), heading)
-		r.showUntrusted(lines, func(l string) { r.p.Note("%s", l) })
+	switch {
+	case len(lines) == 0:
+		return
+	case named:
+		r.p.Info("The last %d log lines of v%d:", len(lines), d.Version)
+	default:
+		r.p.Info("Recent log lines from %s (kx can't tell which version printed them):", app.Name)
 	}
+	r.showUntrusted(lines, func(l string) { r.p.Note("%s", l) })
 }
 
 // replicaLogs returns the last log lines the stuck replicas printed since
-// the deployment started. When the log stream doesn't name replicas, every
-// line since then counts, and mixed reports that an earlier version was
-// running too, so some lines may be its.
-func (r *runner) replicaLogs(ctx context.Context, app *api.App, d *api.Deployment, pods []string) (lines []string, mixed bool) {
+// the deployment started, and whether the log stream names replicas. When
+// it doesn't, every line since then counts, whichever version printed it.
+func (r *runner) replicaLogs(ctx context.Context, app *api.App, d *api.Deployment, pods []string) (lines []string, named bool) {
 	logs, err := r.c.RuntimeLogs(ctx, app.ID, api.LogQuery{Limit: 500, Start: d.CreatedAt})
 	if err != nil {
 		return nil, false
@@ -220,7 +218,6 @@ func (r *runner) replicaLogs(ctx context.Context, app *api.App, d *api.Deploymen
 	for _, p := range pods {
 		stuck[p] = true
 	}
-	named := false
 	for _, l := range logs {
 		named = named || l.Pod != ""
 	}
@@ -230,7 +227,7 @@ func (r *runner) replicaLogs(ctx context.Context, app *api.App, d *api.Deploymen
 			text = append(text, l.Line)
 		}
 	}
-	return lastLines(joinLines(text), shownLogLines), !named && r.olderRunning
+	return lastLines(joinLines(text), shownLogLines), named
 }
 
 // shortDuration writes 15m, 1h or 90s.
