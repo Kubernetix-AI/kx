@@ -101,12 +101,16 @@ Find the SHA for a release on the Action's releases page, or with
 `git ls-remote https://github.com/Kubernetix-AI/deploy refs/tags/v1.0.0`. Dependabot can keep
 pinned SHAs up to date.
 
-### Pull requests
+### Which events deploy
 
-kx never deploys a pull request. On any event other than `push` and `workflow_dispatch` it
-prints "Pull request previews aren't available yet; this workflow only deploys on push." and
-exits 0, so a workflow that also runs on pull requests stays green and production never gets
-unmerged code.
+kx never deploys a pull request. On `pull_request`, `pull_request_target`,
+`pull_request_review`, `pull_request_review_comment` and `merge_group` it prints "Pull request
+previews aren't available yet, so kx skips pull and merge request runs." and exits 0, so a
+workflow that also runs on pull requests stays green and production never gets unmerged code.
+
+Every other event deploys the commit the workflow checked out: `push`, `workflow_dispatch`,
+`release`, `schedule`, `workflow_run`, `repository_dispatch` and the rest. Only add the events
+you want to deploy from to the workflow's `on:`.
 
 ## GitLab CI
 
@@ -235,9 +239,10 @@ kx recognises GitHub Actions, GitLab CI, Bitbucket Pipelines, and any CI that se
 
 - **It never asks.** Prompts would hang a pipeline, so kx needs the app from `--app`,
   `KX_APP`, a committed `.kx.json`, or a token made for one app.
-- **Pull and merge requests are skipped** with exit 0 (GitHub: any event other than `push` and
-  `workflow_dispatch`; GitLab: merge request and external pull request pipelines; Bitbucket:
-  `BITBUCKET_PR_ID` set).
+- **Pull and merge requests are skipped** with exit 0 (GitHub: `pull_request`,
+  `pull_request_target`, the two pull request review events and `merge_group`; GitLab: merge
+  request and external pull request pipelines; Bitbucket: `BITBUCKET_PR_ID` set). Every other
+  run deploys the commit it checked out.
 - **Images are tagged with the commit**: the first 12 characters of the commit the CI system
   is building.
 - **Retries never deploy twice.** Every deploy request carries an idempotency key, and when

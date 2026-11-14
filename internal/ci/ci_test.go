@@ -127,8 +127,17 @@ func TestSkipsDeploy(t *testing.T) {
 		{map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "push"}, false},
 		{map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_dispatch"}, false},
 		{map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "pull_request"}, true},
-		{map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "schedule"}, true},
-		{map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "release"}, true},
+		{map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "pull_request_target"}, true},
+		{map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "merge_group"}, true},
+		// Review events check out the pull request's merge commit too.
+		{map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "pull_request_review"}, true},
+		{map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "pull_request_review_comment"}, true},
+		// Every other event deploys the commit the workflow checked out.
+		{map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "schedule"}, false},
+		{map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "release"}, false},
+		{map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_run"}, false},
+		{map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "repository_dispatch"}, false},
+		{map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_call"}, false},
 		{map[string]string{"GITLAB_CI": "true", "CI_PIPELINE_SOURCE": "merge_request_event"}, true},
 		{map[string]string{"GITLAB_CI": "true", "CI_PIPELINE_SOURCE": "push"}, false},
 		{map[string]string{"GITLAB_CI": "true", "CI_PIPELINE_SOURCE": "web"}, false},
@@ -202,15 +211,16 @@ func TestIdempotencyKey_PerPlatform(t *testing.T) {
 	}
 }
 
-// No pull or merge request may ever deploy, and an Actions run that
-// doesn't say why it runs doesn't either.
+// No pull or merge request may ever deploy. An Actions run that doesn't
+// say why it runs isn't skipped (exit 0 would look like a deploy); kx
+// refuses it instead (EventUnknown).
 func TestSkipsDeploy_Edges(t *testing.T) {
 	tests := []struct {
 		name string
 		env  map[string]string
 		skip bool
 	}{
-		{"GitHub without an event name", map[string]string{"GITHUB_ACTIONS": "true"}, true},
+		{"GitHub without an event name", map[string]string{"GITHUB_ACTIONS": "true"}, false},
 		{"GitHub push", map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "push"}, false},
 		{"GitLab external pull request", map[string]string{"GITLAB_CI": "true", "CI_PIPELINE_SOURCE": "external_pull_request_event"}, true},
 		{"GitLab merge request IID", map[string]string{"GITLAB_CI": "true", "CI_PIPELINE_SOURCE": "push", "CI_MERGE_REQUEST_IID": "12"}, true},
@@ -221,6 +231,23 @@ func TestSkipsDeploy_Edges(t *testing.T) {
 	for _, tt := range tests {
 		if got := Detect(envOf(tt.env)).SkipsDeploy(); got != tt.skip {
 			t.Errorf("%s: SkipsDeploy = %v, want %v", tt.name, got, tt.skip)
+		}
+	}
+}
+
+func TestEventUnknown(t *testing.T) {
+	for _, tt := range []struct {
+		env  map[string]string
+		want bool
+	}{
+		{map[string]string{"GITHUB_ACTIONS": "true"}, true},
+		{map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "push"}, false},
+		{map[string]string{"GITLAB_CI": "true"}, false},
+		{map[string]string{"CI": "true"}, false},
+		{map[string]string{}, false},
+	} {
+		if got := Detect(envOf(tt.env)).EventUnknown(); got != tt.want {
+			t.Errorf("EventUnknown(%v) = %v, want %v", tt.env, got, tt.want)
 		}
 	}
 }

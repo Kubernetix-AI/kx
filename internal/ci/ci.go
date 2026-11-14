@@ -1,7 +1,8 @@
 // Package ci recognises the CI system kx runs in and reads the facts kx
 // needs from it: the commit, the run identity (for idempotency keys), the
-// name for the User-Agent, and whether the pipeline is for a pull or merge
-// request, which kx never deploys.
+// name for the User-Agent, and whether the run is for a pull or merge
+// request, which kx never deploys. Every other run deploys the commit it
+// checked out.
 package ci
 
 import (
@@ -25,9 +26,20 @@ const (
 	Generic
 )
 
-// SkipMessage is what kx prints, before exiting 0, in a pipeline it does
-// not deploy from.
-const SkipMessage = "Pull request previews aren't available yet; this workflow only deploys on push."
+// SkipMessage is what kx prints, before exiting 0, in a pull or merge
+// request run, which it never deploys from.
+const SkipMessage = "Pull request previews aren't available yet, so kx skips pull and merge request runs."
+
+// githubPullRequestEvents are the GitHub events whose runs build a pull
+// request's code (its head or merge commit, or a merge queue's), which must
+// never reach production.
+var githubPullRequestEvents = map[string]bool{
+	"pull_request":                true,
+	"pull_request_target":         true,
+	"pull_request_review":         true,
+	"pull_request_review_comment": true,
+	"merge_group":                 true,
+}
 
 // Env describes the CI run kx is part of. The zero value means "not CI".
 type Env struct {
@@ -63,7 +75,7 @@ func Detect(getenv func(string) string) Env {
 			RunID:         getenv("GITHUB_RUN_ID"),
 			RunAttempt:    getenv("GITHUB_RUN_ATTEMPT"),
 			Event:         event,
-			IsPullRequest: event == "pull_request" || event == "pull_request_target",
+			IsPullRequest: githubPullRequestEvents[event],
 		}
 	case getenv("GITLAB_CI") == "true":
 		source := getenv("CI_PIPELINE_SOURCE")
@@ -102,18 +114,17 @@ func Detect(getenv func(string) string) Env {
 	return Env{}
 }
 
-// SkipsDeploy reports whether kx must not deploy in this pipeline: any pull
-// or merge request, and on GitHub every event other than push and
-// workflow_dispatch, including a run that names no event (fail closed).
-func (e Env) SkipsDeploy() bool {
-	if e.IsPullRequest {
-		return true
-	}
-	if e.Provider == GitHub && e.Event != "push" && e.Event != "workflow_dispatch" {
-		return true
-	}
-	return false
-}
+// SkipsDeploy reports whether kx must not deploy in this run because it is
+// for a pull or merge request (GitHub: pull_request, pull_request_target,
+// the review events and merge_group; GitLab: merge request and external
+// pull request pipelines; Bitbucket: pull request pipelines). Every other
+// run, such as a push, a release, a schedule or a manual run, deploys.
+func (e Env) SkipsDeploy() bool { return e.IsPullRequest }
+
+// EventUnknown reports a GitHub Actions run that names no event, so kx
+// can't tell whether it is for a pull request. kx refuses to deploy from
+// it rather than skip it, since a skip exits 0 and looks like a deploy.
+func (e Env) EventUnknown() bool { return e.Provider == GitHub && e.Event == "" }
 
 // IdempotencyKey returns a UUIDv5 of repository, run ID, attempt and app,
 // so retries inside one CI attempt reuse the same key and a re-run deploys

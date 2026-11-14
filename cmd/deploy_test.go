@@ -807,7 +807,7 @@ func TestDeploy_GitHubMissingPermissionWarnsAndDeploys(t *testing.T) {
 }
 
 func TestPullRequest_Skips(t *testing.T) {
-	for _, event := range []string{"pull_request", "pull_request_target", "schedule"} {
+	for _, event := range []string{"pull_request", "pull_request_target", "merge_group", "pull_request_review"} {
 		h := newHarness(t)
 		githubJob(h)
 		h.env["GITHUB_EVENT_NAME"] = event
@@ -822,6 +822,38 @@ func TestPullRequest_Skips(t *testing.T) {
 		if _, err := os.Stat(h.env["GITHUB_OUTPUT"]); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("%s: wrote outputs", event)
 		}
+	}
+}
+
+// Only pull request runs are skipped: a release, a schedule or another
+// workflow deploys the commit the workflow checked out, rather than
+// succeeding without deploying.
+func TestDeploy_OtherGitHubEventsDeploy(t *testing.T) {
+	for _, event := range []string{"release", "schedule", "workflow_run", "repository_dispatch"} {
+		h := newHarness(t)
+		githubJob(h)
+		h.env["GITHUB_EVENT_NAME"] = event
+		h.dockerfile("FROM scratch\n")
+		h.expect(h.run("deploy", "--github"), 0)
+		if len(h.api.deployPosts) != 1 || strings.Contains(h.err.String(), ci.SkipMessage) {
+			t.Fatalf("%s: deploys %d\n%s", event, len(h.api.deployPosts), h.err.String())
+		}
+	}
+}
+
+// A GitHub run that names no event is refused (exit 2), neither skipped as
+// a success nor deployed.
+func TestDeploy_GitHubWithoutAnEventIsRefused(t *testing.T) {
+	h := newHarness(t)
+	gh := githubJob(h)
+	h.env["GITHUB_EVENT_NAME"] = ""
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy", "--github"), 2)
+	if !strings.Contains(h.err.String(), "GITHUB_EVENT_NAME is empty, so kx can't tell whether this run is for a pull request, and it doesn't deploy.") || len(h.api.deployPosts) != 0 {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	if st := gh.got(); len(st) != 1 || st[0]["state"] != "failure" {
+		t.Fatalf("commit statuses %v", gh.got())
 	}
 }
 

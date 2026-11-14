@@ -262,7 +262,7 @@ The messages you are most likely to meet:
 
 | Code | Meaning |
 |---|---|
-| 0 | Success (including a pull-request pipeline that kx skips on purpose) |
+| 0 | Success (including a pull or merge request run that kx skips on purpose) |
 | 1 | Something unexpected (network, server) |
 | 2 | Usage: a flag, argument, `.kx.json` or missing Dockerfile |
 | 3 | Login, token or permission |
@@ -279,8 +279,9 @@ The messages you are most likely to meet:
 Create a deploy token on the app's Deploy tab in the dashboard, save it as a secret named
 `KX_TOKEN`, and run `kx deploy`. On GitHub, the `Kubernetix-AI/deploy@v1` Action does this
 for you. kx recognises GitHub Actions, GitLab CI and Bitbucket Pipelines, retries safely
-without deploying twice, and skips pull and merge request pipelines (exit 0), so unmerged
-code never reaches production.
+without deploying twice, and skips pull and merge request runs (exit 0), so unmerged code
+never reaches production. Every other run (a push, a release, a schedule, a manual run)
+deploys the commit it checked out.
 
 See [docs/ci.md](docs/ci.md) for copy-ready GitHub Actions, GitLab CI and Bitbucket
 Pipelines setups.

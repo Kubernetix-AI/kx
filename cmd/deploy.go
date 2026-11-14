@@ -118,8 +118,14 @@ func runDeploy(ctx context.Context, a *App, cmd *cobra.Command, o deployOpts) er
 		}
 	}
 
-	// Pull and merge request pipelines never deploy; say so before
-	// needing a token, since forks get no secrets.
+	// Pull and merge request runs never deploy; say so before needing a
+	// token, since forks get no secrets. Every other run deploys.
+	if env.EventUnknown() {
+		return fail(&kxerr.Usage{
+			What: "GITHUB_EVENT_NAME is empty, so kx can't tell whether this run is for a pull request, and it doesn't deploy.",
+			Fix:  "Run kx deploy in a workflow step, where GitHub sets GITHUB_EVENT_NAME.",
+		})
+	}
 	if env.SkipsDeploy() {
 		p := a.printer()
 		if a.jsonOut {
