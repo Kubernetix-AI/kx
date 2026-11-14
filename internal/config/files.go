@@ -60,6 +60,36 @@ func validOrg(s string) bool   { return orgRe.MatchString(s) && s != "." && s !=
 // ValidAppName reports whether s can be an app name.
 func ValidAppName(s string) bool { return validApp(s) }
 
+// maxAppName is the platform's limit on an app name's length.
+const maxAppName = 63
+
+// AppNameFrom makes an app name from s, a folder's name: lowercase, every
+// run of other characters as one hyphen, no hyphen at either end and at
+// most 63 characters. It returns "" when nothing usable is left.
+func AppNameFrom(s string) string {
+	var b strings.Builder
+	gap := false
+	for _, r := range strings.ToLower(s) {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			gap = true
+			continue
+		}
+		if gap && b.Len() > 0 {
+			b.WriteByte('-')
+		}
+		gap = false
+		b.WriteRune(r)
+	}
+	name := b.String()
+	if len(name) > maxAppName {
+		name = strings.TrimRight(name[:maxAppName], "-")
+	}
+	if !validApp(name) {
+		return ""
+	}
+	return name
+}
+
 // ValidOrgName reports whether s can be an organization name.
 func ValidOrgName(s string) bool { return validOrg(s) }
 

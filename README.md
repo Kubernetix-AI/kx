@@ -72,7 +72,7 @@ Next: open your project folder and run kx deploy
 $ cd ~/code/shop-api
 $ kx deploy
 Which app should this folder deploy to?
-> shop-api (new app)
+> (new app: shop-api)
   billing-worker
 Saved in .kx.json. Next time, just run kx deploy.
 
@@ -85,7 +85,10 @@ Saved in .kx.json. Next time, just run kx deploy.
 https://<your app's address>
 ```
 
-The next `kx deploy` in that folder asks nothing. Run `kx` on its own at any time to see
+The first choice is always a new app named after the folder (in lowercase, with other
+characters turned into hyphens), so pressing Enter never deploys over an app you already
+have; to deploy to an existing app, move to it with the arrow keys or type its number. The
+next `kx deploy` in that folder asks nothing. Run `kx` on its own at any time to see
 these steps again, and `kx <command> --help` for examples of any command.
 
 ## Commands
@@ -116,8 +119,8 @@ kx deploy --build ./api --dockerfile ./api/Dockerfile.prod
 kx deploy --no-wait              # start the deploy and return
 kx deploy --timeout 20m          # wait longer than the default 15 minutes
 
-kx link                          # pick from your apps; the folder's name comes first
-kx link shop-api
+kx link                          # pick an app, or a new one named after the folder
+kx link shop-api                 # a new app if there's none by that name
 ```
 
 `URL=$(kx deploy)` works: progress goes to standard error and the URL alone to standard

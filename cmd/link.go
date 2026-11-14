@@ -24,8 +24,8 @@ func newLinkCmd(a *App) *cobra.Command {
 		GroupID: groupStart,
 		Long: `Save the app this folder deploys to in .kx.json, so later commands need no --app.
 .kx.json holds no secret, so you can commit it for your team and CI.`,
-		Example: `  kx link              pick from your apps (the folder's name comes first)
-  kx link shop-api     link to shop-api`,
+		Example: `  kx link              pick an app, or a new one named after the folder
+  kx link shop-api     link to shop-api (a new app if there's none by that name)`,
 		Args: usageArgs(0, 1, "an app name"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := ""
@@ -52,7 +52,7 @@ func runLink(ctx context.Context, a *App, cmd *cobra.Command, name string) error
 	if err != nil {
 		return err
 	}
-	choice, err := chooseApp(ctx, s, name)
+	choice, err := chooseApp(ctx, s, name, "link")
 	if err != nil {
 		return err
 	}
@@ -86,9 +86,13 @@ func runLink(ctx context.Context, a *App, cmd *cobra.Command, name string) error
 
 // chooseApp picks the app for this folder. An app-scoped token decides by
 // itself. Otherwise name (if given) must exist, or, for a token that can
-// deploy every app, becomes a new app. With no name, kx asks, putting the
-// folder's name first (as "(new app)" when it does not exist yet).
-func chooseApp(ctx context.Context, s *Session, name string) (linkChoice, error) {
+// deploy every app, becomes a new app. With no name, kx asks. For a token
+// that can create apps, the first choice, and the preselected one, is a
+// new app named after the folder ("(new app: my-app)"). An existing app is
+// never preselected, even one with the folder's name (it is listed first):
+// deploying a folder over an app takes an explicit pick. command is the
+// command asking ("link" or "deploy"), for the fix lines.
+func chooseApp(ctx context.Context, s *Session, name, command string) (linkChoice, error) {
 	c, err := s.Client()
 	if err != nil {
 		return linkChoice{}, err
@@ -122,32 +126,48 @@ func chooseApp(ctx context.Context, s *Session, name string) (linkChoice, error)
 	if err != nil {
 		return linkChoice{}, err
 	}
-	folder := filepath.Base(s.Cfg.Dir)
+	suggested := config.AppNameFrom(filepath.Base(s.Cfg.Dir))
 	var labels []string
 	var choices []linkChoice
-	def := 0
-	if canCreate && config.ValidAppName(folder) && !hasApp(apps, folder) {
-		labels = append(labels, folder+" (new app)")
-		choices = append(choices, linkChoice{newApp: folder})
+	def := -1
+	if canCreate && suggested != "" && !hasApp(apps, suggested) {
+		labels = append(labels, "(new app: "+suggested+")")
+		choices = append(choices, linkChoice{newApp: suggested})
+		def = 0
 	}
-	for i := range apps {
-		if apps[i].Name == folder {
-			def = len(choices)
+	// The app named like the folder first, then the rest as listed.
+	for _, first := range []bool{true, false} {
+		for i := range apps {
+			if (apps[i].Name == suggested) == first {
+				labels = append(labels, apps[i].Name)
+				choices = append(choices, linkChoice{app: &apps[i]})
+			}
 		}
-		labels = append(labels, apps[i].Name)
-		choices = append(choices, linkChoice{app: &apps[i]})
 	}
-	if len(choices) == 0 {
+	nameIt := "Name the new app: kx link <name>"
+	if command == "deploy" {
+		nameIt += ", then run kx deploy"
+	}
+	switch {
+	case len(choices) == 0 && canCreate:
+		return linkChoice{}, &kxerr.Usage{What: "There are no apps yet, and kx can't make an app name from this folder's name.", Fix: nameIt}
+	case len(choices) == 0:
 		return linkChoice{}, &kxerr.Usage{
 			What: "There are no apps to link to yet.",
 			Fix:  "Create an app in the dashboard, or log in with a token that can deploy: kx login",
 		}
 	}
 	i, err := s.P.Choose(ctx, "Which app should this folder deploy to?", labels, def)
-	if errors.Is(err, ui.ErrNoTTY) {
+	switch {
+	case errors.Is(err, ui.ErrNoTTY):
 		return linkChoice{}, &kxerr.Usage{What: "kx link needs an app name when it can't ask.", Fix: "Run: kx link <app>"}
-	}
-	if err != nil {
+	case errors.Is(err, ui.ErrNoChoice):
+		fix := "Run kx link again and choose an app by its number, or name it: kx link <app>"
+		if command == "deploy" {
+			fix = "Run kx deploy again and choose an app by its number, or name it: kx deploy --app <app>"
+		}
+		return linkChoice{}, &kxerr.Usage{What: "No app was chosen, so this folder isn't linked yet.", Fix: fix}
+	case err != nil:
 		return linkChoice{}, err
 	}
 	return choices[i], nil

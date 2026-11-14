@@ -1,5 +1,5 @@
 Which app should this folder deploy to?
-  1) billing-worker (new app)
+  1) (new app: billing-worker)
   2) shop-api
   3) web
 Choose [1]: Saved in .kx.json. Next time, just run kx deploy.

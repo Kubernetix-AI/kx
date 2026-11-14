@@ -133,7 +133,7 @@ func TestLink_PickerDefaultsToFolderAndOffersNewApp(t *testing.T) {
 	}
 	h.tty, h.stdin = true, "\n"
 	h.expect(h.run("link"), 0)
-	if !strings.Contains(h.err.String(), "Which app should this folder deploy to?\n  1) billing-worker (new app)\n  2) shop-api\n  3) web\n") {
+	if !strings.Contains(h.err.String(), "Which app should this folder deploy to?\n  1) (new app: billing-worker)\n  2) shop-api\n  3) web\n") {
 		t.Fatalf("picker:\n%s", h.err.String())
 	}
 	_, p, err := config.FindProject(h.dir)
@@ -149,8 +149,14 @@ func TestLink_PickerExistingFolderApp(t *testing.T) {
 	h := newHarness(t) // folder is named shop-api
 	h.loginAs("acme-corp", tokCorp, &dec11)
 	h.tty, h.stdin = true, "\n"
+	// The folder's app comes first but isn't preselected: Enter alone links nothing.
+	h.expect(h.run("link"), 2)
+	if !strings.Contains(h.err.String(), "  1) shop-api\n  2) web\nChoose a number: ") || !strings.Contains(h.err.String(), "No app was chosen, so this folder isn't linked yet.\nRun kx link again and choose an app by its number, or name it: kx link <app>\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	h.stdin = "1\n"
 	h.expect(h.run("link"), 0)
-	if strings.Contains(h.err.String(), "(new app)") {
+	if strings.Contains(h.err.String(), "(new app") {
 		t.Fatalf("offered a new app when the folder's app exists:\n%s", h.err.String())
 	}
 	_, p, _ := config.FindProject(h.dir)

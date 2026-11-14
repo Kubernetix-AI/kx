@@ -103,15 +103,21 @@ func (p *Printer) Confirm(ctx context.Context, question string) (bool, error) {
 	return false, nil
 }
 
-// Choose shows options and returns the chosen index; def is preselected.
-// On a terminal it is an arrow-key picker (digits and j/k work too, and
-// Ctrl-C cancels); if the terminal cannot enter raw mode it falls back to
-// a numbered list, which returns ctx's error as soon as ctx ends.
+// ErrNoChoice means a picker without a default ended before anything was
+// chosen.
+var ErrNoChoice = errors.New("nothing was chosen")
+
+// Choose shows options and returns the chosen index; def is preselected,
+// and a def of -1 preselects nothing, so Enter alone picks nothing and
+// an option must be chosen by moving to it or typing its number. On a
+// terminal it is an arrow-key picker (digits and j/k work too, and Ctrl-C
+// cancels); if the terminal cannot enter raw mode it falls back to a
+// numbered list, which returns ctx's error as soon as ctx ends.
 func (p *Printer) Choose(ctx context.Context, question string, options []string, def int) (int, error) {
 	if !p.InTTY || !p.TTY || len(options) == 0 {
 		return -1, ErrNoTTY
 	}
-	if def < 0 || def >= len(options) {
+	if def < -1 || def >= len(options) {
 		def = 0
 	}
 	if p.rawMode == nil {
@@ -124,6 +130,16 @@ func (p *Printer) Choose(ctx context.Context, question string, options []string,
 	defer restore()
 
 	sel := def
+	up := func() {
+		if sel < 0 {
+			sel = 0
+		}
+		sel = (sel - 1 + len(options)) % len(options)
+	}
+	down := func() { sel = (sel + 1) % len(options) }
+	if def < 0 {
+		question += " (use the arrow keys or a number, then Enter)"
+	}
 	draw := func(redraw bool) {
 		var b strings.Builder
 		if redraw {
@@ -150,13 +166,15 @@ func (p *Printer) Choose(ctx context.Context, question string, options []string,
 		}
 		switch c {
 		case '\r', '\n':
-			return sel, nil
+			if sel >= 0 {
+				return sel, nil
+			}
 		case 3, 4: // Ctrl-C, Ctrl-D
 			return -1, context.Canceled
 		case 'k':
-			sel = (sel - 1 + len(options)) % len(options)
+			up()
 		case 'j':
-			sel = (sel + 1) % len(options)
+			down()
 		case 0x1b:
 			b1, err1 := r.ReadByte()
 			b2, err2 := r.ReadByte()
@@ -166,9 +184,9 @@ func (p *Printer) Choose(ctx context.Context, question string, options []string,
 			if b1 == '[' || b1 == 'O' {
 				switch b2 {
 				case 'A':
-					sel = (sel - 1 + len(options)) % len(options)
+					up()
 				case 'B':
-					sel = (sel + 1) % len(options)
+					down()
 				}
 			}
 		default:
@@ -180,27 +198,39 @@ func (p *Printer) Choose(ctx context.Context, question string, options []string,
 	}
 }
 
+// chooseByNumber is Choose as a numbered list. With a default, an empty or
+// unknown answer takes it; without one, kx asks again until it gets a
+// number, and returns ErrNoChoice when the input ends first.
 func (p *Printer) chooseByNumber(ctx context.Context, question string, options []string, def int) (int, error) {
 	var b strings.Builder
 	b.WriteString(question + "\n")
 	for i, o := range options {
 		fmt.Fprintf(&b, "  %d) %s\n", i+1, o)
 	}
-	fmt.Fprintf(&b, "Choose [%d]: ", def+1)
+	if def >= 0 {
+		fmt.Fprintf(&b, "Choose [%d]: ", def+1)
+	} else {
+		b.WriteString("Choose a number: ")
+	}
 	p.writeErr(b.String())
-	line, err := p.ReadLine(ctx)
-	if ctx.Err() != nil {
-		return -1, ctx.Err()
+	for {
+		line, err := p.ReadLine(ctx)
+		if ctx.Err() != nil {
+			return -1, ctx.Err()
+		}
+		if err != nil && !errors.Is(err, io.EOF) {
+			return -1, err
+		}
+		n, convErr := strconv.Atoi(line)
+		switch {
+		case convErr == nil && n >= 1 && n <= len(options):
+			return n - 1, nil
+		case def >= 0:
+			return def, nil
+		case err != nil: // the input ended
+			p.writeErr("\n")
+			return -1, ErrNoChoice
+		}
+		p.writeErr(fmt.Sprintf("Choose a number from 1 to %d: ", len(options)))
 	}
-	if err != nil && !errors.Is(err, io.EOF) {
-		return -1, err
-	}
-	if line == "" {
-		return def, nil
-	}
-	n, err := strconv.Atoi(line)
-	if err != nil || n < 1 || n > len(options) {
-		return def, nil
-	}
-	return n - 1, nil
 }

@@ -352,6 +352,33 @@ func TestValidAppName_MatchesThePlatform(t *testing.T) {
 	}
 }
 
+func TestAppNameFrom(t *testing.T) {
+	tests := map[string]string{
+		"shop-api":                "shop-api",
+		"My_App":                  "my-app",
+		"ShopAPI":                 "shopapi",
+		"todo.app":                "todo-app",
+		"My Project":              "my-project",
+		"  --Weird__ ":            "weird",
+		"a--b":                    "a-b",
+		"Café 2":                  "caf-2",
+		"123":                     "123",
+		"___":                     "",
+		"日本語":                     "",
+		"/":                       "",
+		strings.Repeat("ab-", 30): strings.TrimRight(strings.Repeat("ab-", 21), "-"),
+	}
+	for in, want := range tests {
+		got := AppNameFrom(in)
+		if got != want {
+			t.Errorf("AppNameFrom(%q) = %q, want %q", in, got, want)
+		}
+		if got != "" && !ValidAppName(got) {
+			t.Errorf("AppNameFrom(%q) = %q, which isn't a valid app name", in, got)
+		}
+	}
+}
+
 func TestParseProject_Rejects(t *testing.T) {
 	for _, in := range []string{
 		``, `[]`, `{"app":"../x"}`, `{"app":"Shop API"}`, `{"app_id":"a/b","app":"x"}`, `{"app":"x","org":"a b"}`,
@@ -498,6 +525,18 @@ func FuzzParseProject(f *testing.F) {
 		}
 		if !validApp(p.App) || (p.AppID != "" && !validAppID(p.AppID)) || (p.Org != "" && !validOrg(p.Org)) {
 			t.Fatalf("accepted invalid project %+v", p)
+		}
+	})
+}
+
+func FuzzAppNameFrom(f *testing.F) {
+	for _, s := range []string{"My_App", "ShopAPI", "--a--b--", "日本語", strings.Repeat("x", 100)} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, folder string) {
+		name := AppNameFrom(folder)
+		if name != "" && !ValidAppName(name) {
+			t.Fatalf("AppNameFrom(%q) = %q, not a valid app name", folder, name)
 		}
 	})
 }

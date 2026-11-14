@@ -330,7 +330,7 @@ func (d *deployRun) firstRun(ctx context.Context) (*api.App, string, error) {
 		}
 		return nil, "", &kxerr.Usage{What: "This folder isn't linked to an app yet, and kx can't ask which one here.", Fix: fix}
 	}
-	choice, err := chooseApp(ctx, s, "")
+	choice, err := chooseApp(ctx, s, "", "deploy")
 	if err != nil {
 		return nil, "", err
 	}

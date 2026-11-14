@@ -66,6 +66,80 @@ func TestDeploy_FirstRunPickerSavesKxJSON_Golden(t *testing.T) {
 	}
 }
 
+// The first run offers a new app named after the folder even when the
+// folder's name isn't an app name, and preselects it.
+func TestDeploy_FirstRunOffersNewAppFromAnyFolderName(t *testing.T) {
+	for folder, app := range map[string]string{"My_App": "my-app", "ShopAPI": "shopapi", "todo.app": "todo-app", "My Project": "my-project"} {
+		h := newHarness(t)
+		h.loginAs("acme-corp", tokCorp, &dec11)
+		h.inFolder(folder)
+		h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+		h.tty, h.stdin = true, "\n"
+		h.expect(h.run("deploy"), 0)
+		if !strings.Contains(h.err.String(), "Which app should this folder deploy to?\n  1) (new app: "+app+")\n  2) shop-api\n  3) web\nChoose [1]: ") {
+			t.Fatalf("%s: picker:\n%s", folder, h.err.String())
+		}
+		if len(h.api.newApps) != 1 || h.api.newApps[0]["name"] != app {
+			t.Fatalf("%s: POST /apps = %v", folder, h.api.newApps)
+		}
+	}
+}
+
+// An existing app is never preselected: Enter alone deploys nothing, even
+// when the app has the folder's name.
+func TestDeploy_FirstRunNeverPreselectsAnExistingApp(t *testing.T) {
+	for _, folder := range []string{"shop-api", "web"} {
+		h := newHarness(t)
+		h.loginAs("acme-corp", tokCorp, &dec11)
+		h.inFolder(folder)
+		h.dockerfile("FROM scratch\n")
+		h.tty, h.stdin = true, "\n"
+		h.expect(h.run("deploy"), 2)
+		if strings.Contains(h.err.String(), "(new app") || !strings.Contains(h.err.String(), "\n  1) "+folder+"\n") || !strings.Contains(h.err.String(), "Choose a number: ") {
+			t.Fatalf("%s: picker:\n%s", folder, h.err.String())
+		}
+		if !strings.Contains(h.err.String(), "No app was chosen, so this folder isn't linked yet.\nRun kx deploy again and choose an app by its number, or name it: kx deploy --app <app>\n") {
+			t.Fatalf("%s: stderr:\n%s", folder, h.err.String())
+		}
+		if len(h.api.deployPosts) != 0 || len(h.docker.got()) > 1 {
+			t.Fatalf("%s: deployed without an explicit pick", folder)
+		}
+		if _, p, _ := config.FindProject(h.dir); p != nil {
+			t.Fatalf("%s: saved .kx.json %+v", folder, p)
+		}
+
+		// Choosing it by its number deploys to it.
+		h.stdin = "1\n"
+		h.expect(h.run("deploy"), 0)
+		if len(h.api.deployPosts) != 1 || len(h.api.newApps) != 0 {
+			t.Fatalf("%s: deploys %v, new apps %v", folder, h.api.deployPosts, h.api.newApps)
+		}
+	}
+}
+
+// With no apps and a folder name kx can't turn into an app name, the fix
+// says how to name one.
+func TestDeploy_FirstRunWithNoAppsAndNoUsableFolderName(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.api.apps = nil
+	h.inFolder("___")
+	h.dockerfile("FROM scratch\n")
+	h.tty, h.stdin = true, "\n"
+	h.expect(h.run("deploy"), 2)
+	if !strings.Contains(h.err.String(), "There are no apps yet, and kx can't make an app name from this folder's name.\nName the new app: kx link <name>, then run kx deploy\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+
+	h.env["KX_TOKEN"] = tokRead // can't create apps
+	h.inFolder("billing-worker")
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy"), 2)
+	if !strings.Contains(h.err.String(), "There are no apps to link to yet.\nCreate an app in the dashboard, or log in with a token that can deploy: kx login\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+}
+
 func TestDeploy_StdoutIsOnlyTheURL(t *testing.T) {
 	h := newHarness(t)
 	h.loginAs("acme-corp", tokCorp, &dec11)
@@ -330,7 +404,7 @@ func TestDeploy_PickerOffersNewAppOnlyToTokensThatCanDeploy(t *testing.T) {
 	h.dockerfile("FROM scratch\n")
 	h.tty, h.stdin = true, "\n"
 	h.run("deploy")
-	if strings.Contains(h.err.String(), "(new app)") || !strings.Contains(h.err.String(), "Which app should this folder deploy to?") {
+	if strings.Contains(h.err.String(), "(new app") || !strings.Contains(h.err.String(), "Which app should this folder deploy to?") {
 		t.Fatalf("picker:\n%s", h.err.String())
 	}
 }

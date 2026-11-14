@@ -340,6 +340,57 @@ func TestChoose_NumberFallback(t *testing.T) {
 	}
 }
 
+// With no default (-1), Enter alone picks nothing: an option is chosen only
+// after an arrow key, j/k or its number.
+func TestChoose_NoDefaultNeedsAnExplicitPick(t *testing.T) {
+	opts := []string{"shop-api", "billing-worker", "web"}
+	tests := []struct {
+		name  string
+		keys  string
+		want  int
+		cause error
+	}{
+		{"enter alone picks nothing", "\r\r\x1b[B\r", 0, nil},
+		{"up from nothing is the last", "\x1b[A\r", 2, nil},
+		{"k from nothing is the last", "k\r", 2, nil},
+		{"j from nothing is the first", "j\r", 0, nil},
+		{"digit", "2\r", 1, nil},
+		{"enter then end of input", "\r", -1, context.Canceled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, _, errw := newTest(tt.keys)
+			p.InTTY, p.TTY = true, true
+			p.rawMode = func() (func(), error) { return func() {}, nil }
+			got, err := p.Choose(context.Background(), "Which app should this folder deploy to?", opts, -1)
+			if got != tt.want || !errors.Is(err, tt.cause) {
+				t.Fatalf("Choose = %d, %v; want %d, %v", got, err, tt.want, tt.cause)
+			}
+			if strings.Contains(strings.SplitN(errw.String(), "\r\n", 3)[1], ">") {
+				t.Fatalf("an option was preselected: %q", errw.String())
+			}
+		})
+	}
+}
+
+func TestChoose_NumberFallbackWithoutDefault(t *testing.T) {
+	p, _, errw := newTest("\n9\n2\n")
+	p.InTTY, p.TTY = true, true
+	got, err := p.Choose(context.Background(), "Pick", []string{"a", "b"}, -1)
+	if err != nil || got != 1 {
+		t.Fatalf("Choose = %d, %v", got, err)
+	}
+	if !strings.Contains(errw.String(), "  1) a\n  2) b\nChoose a number: ") || strings.Count(errw.String(), "Choose a number from 1 to 2: ") != 2 {
+		t.Fatalf("stderr = %q", errw.String())
+	}
+
+	p, _, _ = newTest("\n")
+	p.InTTY, p.TTY = true, true
+	if got, err := p.Choose(context.Background(), "Pick", []string{"a", "b"}, -1); !errors.Is(err, ErrNoChoice) || got != -1 {
+		t.Fatalf("Choose with only Enter = %d, %v; want ErrNoChoice", got, err)
+	}
+}
+
 func TestChoose_NeedsTTY(t *testing.T) {
 	p, _, _ := newTest("\r")
 	if _, err := p.Choose(context.Background(), "Pick", []string{"a"}, 0); !errors.Is(err, ErrNoTTY) {
