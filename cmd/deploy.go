@@ -63,7 +63,7 @@ The first run asks which app the folder deploys to and saves it in .kx.json.`,
 	f.StringVar(&o.build, "build", ".", "the `folder` to build")
 	f.StringVar(&o.dockerfile, "dockerfile", "", "the `Dockerfile` to build with (default: the one in the build folder)")
 	f.BoolVar(&o.noWait, "no-wait", false, "start the deploy and return without waiting for it to go live")
-	f.StringVar(&o.timeout, "timeout", "15m", "how long to wait for the deploy to go live, like 15m or `1h`")
+	f.StringVar(&o.timeout, "timeout", defaultTimeout, "how long to wait for the deploy to go live, like 18m or `1h`")
 	f.BoolVar(&o.github, "github", false, "report to GitHub: commit status, job summary and step outputs (the Action uses this)")
 	f.StringVar(&o.environment, "environment", "production", "with --github, the `name` in the commit status \"Kubernetix / <name>\"")
 	return cmd
@@ -73,6 +73,9 @@ The first run asks which app the folder deploys to and saves it in .kx.json.`,
 // the job was cancelled: the runner follows its interrupt with a
 // termination signal about 7.5 seconds later.
 const reportBudget = 5 * time.Second
+
+// defaultTimeout is --timeout's default, deploy.DefaultTimeout in minutes.
+var defaultTimeout = fmt.Sprintf("%dm", deploy.DefaultTimeout/time.Minute)
 
 // ciMintWait is how long kx waits in CI for the registry credential limit
 // (one credential every 6 minutes per token once its burst is used): in CI
@@ -178,7 +181,7 @@ func reportEarly(ctx context.Context, gh *github.Reporter, env ci.Env, err error
 func parseTimeout(s string) (time.Duration, error) {
 	d, err := time.ParseDuration(strings.TrimSpace(s))
 	if err != nil || d < 10*time.Second || d > 24*time.Hour {
-		return 0, &kxerr.Usage{What: "kx deploy --timeout takes a length of time from 10s to 24h, like 15m or 1h.", Fix: "Run: kx deploy --timeout 20m"}
+		return 0, &kxerr.Usage{What: "kx deploy --timeout takes a length of time from 10s to 24h, like 18m or 1h.", Fix: "Run: kx deploy --timeout 20m"}
 	}
 	return d, nil
 }

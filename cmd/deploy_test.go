@@ -213,13 +213,19 @@ func TestDeploy_TimeoutOutput(t *testing.T) {
 	h.expect(h.run("deploy"), 9)
 	lines := strings.Split(strings.TrimRight(h.err.String(), "\n"), "\n")
 	got := strings.Join(lines[len(lines)-2:], "\n")
-	want := "shop-api v16 is still starting after 15 minutes, so kx stopped waiting; the deploy continues.\nCheck on it: kx status"
+	want := "shop-api v16 is still starting after 18 minutes, so kx stopped waiting; the deploy continues.\nCheck on it: kx status"
 	if got != want || h.out.String() != "" {
 		t.Fatalf("last lines =\n%s\nwant\n%s\nstdout %q", got, want, h.out.String())
 	}
 	h.expect(h.run("deploy", "--timeout", "3m"), 9)
 	if !strings.Contains(h.err.String(), "after 3 minutes") {
 		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	// The default outlasts the platform's own retries, so its verdict
+	// comes first; --help says what it is.
+	h.expect(h.run("deploy", "--help"), 0)
+	if !strings.Contains(h.out.String(), `how long to wait for the deploy to go live, like 18m or 1h (default "18m")`) {
+		t.Fatalf("help:\n%s", h.out.String())
 	}
 }
 
@@ -657,7 +663,7 @@ func TestDeploy_GitHubMode(t *testing.T) {
 	h := newHarness(t)
 	gh := githubJob(h)
 	h.dockerfile("FROM scratch\n")
-	h.expect(h.run("deploy", "--github", "--environment", "staging", "--build", ".", "--timeout", "15m"), 0)
+	h.expect(h.run("deploy", "--github", "--environment", "staging", "--build", ".", "--timeout", "18m"), 0)
 
 	if h.out.String() != "https://"+appShopID+"--acme-corp.apps.example.test\n" {
 		t.Fatalf("stdout = %q", h.out.String())

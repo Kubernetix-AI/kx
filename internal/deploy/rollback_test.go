@@ -213,3 +213,19 @@ func TestRollback_ClearRefusalIsNotUnconfirmed(t *testing.T) {
 		t.Fatalf("Rollback() = %v, want the API's own error", err)
 	}
 }
+
+// kx rollback waits as long as kx deploy by default.
+func TestRollback_DefaultTimeout(t *testing.T) {
+	e := newEnv(t)
+	e.clock.step = time.Minute
+	e.setDeployments(
+		api.Deployment{ID: "dep-15", Version: 15, Status: "ready", ImageURL: img("15")},
+		api.Deployment{ID: "dep-14", Version: 14, Status: "ready", ImageURL: img("14")},
+	)
+	e.api.statuses = []string{"deploying"}
+	_, err := Rollback(t.Context(), e.client, e.rollbackOptions(), *e.p)
+	var wt *kxerr.WaitTimeout
+	if !errors.As(err, &wt) || wt.After != 18*time.Minute {
+		t.Fatalf("Rollback() = %v, want a timeout after 18m", err)
+	}
+}

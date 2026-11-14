@@ -82,8 +82,8 @@ func TestRun_GivesUpOnAStuckPreviousDeploy(t *testing.T) {
 	}
 	_, err := e.run(e.options())
 	var pr *kxerr.PreviousRunning
-	if !errors.As(err, &pr) || pr.App != "shop-api" || pr.Version != 15 || pr.After != 15*time.Minute {
-		t.Fatalf("Run() = %v, want PreviousRunning for shop-api v15 after 15m", err)
+	if !errors.As(err, &pr) || pr.App != "shop-api" || pr.Version != 15 || pr.After != 18*time.Minute {
+		t.Fatalf("Run() = %v, want PreviousRunning for shop-api v15 after 18m", err)
 	}
 	if calls := e.builder.got(); len(calls) != 0 {
 		t.Fatalf("built while v15 was still deploying: %v", calls)
@@ -663,15 +663,24 @@ func TestRun_Timeout(t *testing.T) {
 	o := e.options()
 	res, err := e.run(o)
 	var wt *kxerr.WaitTimeout
-	if !errors.As(err, &wt) || wt.App != "shop-api" || wt.Version != 15 || wt.After != 15*time.Minute {
+	if !errors.As(err, &wt) || wt.App != "shop-api" || wt.Version != 15 || wt.After != 18*time.Minute {
 		t.Fatalf("Run() = %#v", err)
 	}
 	if res == nil || res.Version != 15 {
 		t.Fatalf("result = %+v", res)
 	}
 	p := api.Explain(err)
-	if p.What != "shop-api v15 is still starting after 15 minutes, so kx stopped waiting; the deploy continues." || p.Fix != "Check on it: kx status" || p.Exit != 9 {
+	if p.What != "shop-api v15 is still starting after 18 minutes, so kx stopped waiting; the deploy continues." || p.Fix != "Check on it: kx status" || p.Exit != 9 {
 		t.Fatalf("problem = %+v", p)
+	}
+}
+
+// The default wait outlasts the platform's own verdict on a version that
+// never gets ready (up to 3 attempts of 5 minutes each), so kx reports
+// that verdict instead of giving up first.
+func TestDefaultTimeout_OutlastsThePlatformsRetries(t *testing.T) {
+	if DefaultTimeout != 18*time.Minute || DefaultTimeout <= 3*5*time.Minute {
+		t.Fatalf("DefaultTimeout = %v, want 18m", DefaultTimeout)
 	}
 }
 

@@ -94,7 +94,7 @@ func TestRun_NeverReadyWarnsAndKeepsWaiting(t *testing.T) {
 	for _, want := range []string{
 		"! shop-api v15 isn't live yet: for 2 minutes its container has kept crashing or hasn't answered health checks on / at port 8080.\n  Make your app start and answer on / at port 8080; the log lines below may say why it hasn't.\nThe last 3 log lines of v15:\n",
 		"  Error: Cannot find module '/app/server.js'\n",
-		"kx keeps waiting until v15 goes live, fails or reaches the 15m timeout; the deploy continues either way.\n",
+		"kx keeps waiting until v15 goes live, fails or reaches the 18m timeout; the deploy continues either way.\n",
 		"Until v15 goes live or fails, a new deploy of shop-api waits for it.\n",
 		"✗ Failed    v15  queued → starting → failed",
 	} {
@@ -266,7 +266,7 @@ func TestRun_ReplicasUnreadableKeepsTheTimeout(t *testing.T) {
 	e.api.replicasStatus = 403
 	_, err := e.run(e.options())
 	var wt *kxerr.WaitTimeout
-	if !errors.As(err, &wt) || wt.After != 15*time.Minute || wt.NotStarting != nil {
+	if !errors.As(err, &wt) || wt.After != 18*time.Minute || wt.NotStarting != nil {
 		t.Fatalf("Run() = %#v, want the timeout without a cause", err)
 	}
 	if e.api.replicaGets != 1 {

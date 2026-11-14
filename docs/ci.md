@@ -84,7 +84,7 @@ Use `runs-on: ubuntu-latest`. Windows runners can't build Linux images.
 | `image` | | Deploy an image that's already pushed instead of building one. |
 | `environment` | `production` | The name in the commit status, "Kubernetix / production". Use your job's environment name. |
 | `wait` | `true` | `false` stops once the deploy has started. |
-| `timeout` | `15m` | How long to wait for the deploy to go live. |
+| `timeout` | `18m` | How long to wait for the deploy to go live. |
 | `github-token` | `${{ github.token }}` | The token kx sets the commit status with. |
 | `kx-version` | pinned per Action release | The kx version to run. |
 
@@ -288,7 +288,9 @@ started from the dashboard or another computer in the same moment can still race
   (set `EXPOSE` in the Dockerfile to the port it listens on), or doesn't answer on `/`. The
   version before it keeps serving, and a new deploy of the app waits until this one ends.
 - **Exit code 9.** kx stopped waiting after `--timeout`, but the deploy continues. Run
-  `kx status` to see whether it went live, or raise the Action's `timeout`.
+  `kx status` to see whether it went live, or raise the Action's `timeout`. kx waits 18 minutes
+  by default because Kubernetix tries a version that doesn't get ready up to 3 times, 5 minutes
+  each, so its own verdict (exit 8, with the reason) arrives first.
 - **"kx couldn't confirm the rollback…"** Kubernetix didn't answer the rollback request. Run
   `kx status` before trying again, because the rollback may already be running.
 - **Workflow command lines in your GitHub log.** kx prints `::add-mask::`, `::warning::` and `::error::` on standard error so standard output carries only the URL; GitHub Actions reads both, though this release hasn't yet been checked on a live run, so tell us if such a line ever shows up as plain text.

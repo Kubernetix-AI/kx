@@ -28,8 +28,10 @@ import (
 	"github.com/kubernetix-ai/kx/internal/ui"
 )
 
-// DefaultTimeout is how long kx waits for a deploy to go live.
-const DefaultTimeout = 15 * time.Minute
+// DefaultTimeout is how long kx waits for a deploy (or rollback) to go
+// live. Kubernetix tries a version that doesn't get ready up to 3 times, 5
+// minutes each, so its own verdict arrives before kx would give up.
+const DefaultTimeout = 18 * time.Minute
 
 // defaultPort is the port kx gives a new app when nothing says otherwise.
 const defaultPort = 8080

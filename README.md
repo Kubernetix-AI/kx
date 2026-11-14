@@ -134,7 +134,7 @@ kx deploy --app web              # deploy this folder to another app
 kx deploy --image registry.kubernetix.ai/acme-corp/shop-api:3f9c2a1b7d4e   # skip the build
 kx deploy --build ./api --dockerfile ./api/Dockerfile.prod
 kx deploy --no-wait              # start the deploy and return
-kx deploy --timeout 20m          # wait longer than the default 15 minutes
+kx deploy --timeout 20m          # wait longer than the default 18 minutes
 
 kx link                          # pick an app, or a new one named after the folder
 kx link shop-api                 # a new app if there's none by that name

@@ -230,7 +230,7 @@ func (r *runner) replicaLogs(ctx context.Context, app *api.App, d *api.Deploymen
 	return lastLines(joinLines(text), shownLogLines), named
 }
 
-// shortDuration writes 15m, 1h or 90s.
+// shortDuration writes 18m, 1h or 90s.
 func shortDuration(d time.Duration) string {
 	switch {
 	case d%time.Hour == 0:
