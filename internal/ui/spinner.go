@@ -31,6 +31,18 @@ func (p *Printer) Spinner(label string) *Spinner {
 	return s
 }
 
+// Resume starts a stopped spinner again with its label and its start
+// time, so lines can be printed in between without the elapsed time
+// starting over.
+func (s *Spinner) Resume() *Spinner {
+	s.mu.Lock()
+	label := s.label
+	s.mu.Unlock()
+	n := &Spinner{p: s.p, label: label, start: s.start, stop: make(chan struct{}), done: make(chan struct{})}
+	go n.run()
+	return n
+}
+
 // Update changes the label.
 func (s *Spinner) Update(label string) {
 	s.mu.Lock()

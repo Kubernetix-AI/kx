@@ -193,7 +193,7 @@ func (r *runner) wait(ctx context.Context, app *api.App, dep *api.Deployment) (*
 			signalled = true
 			spin.Stop()
 			r.signalNotLive(ctx, app, cur, r.likely)
-			spin = r.p.Spinner(label(cur))
+			spin = spin.Resume()
 		}
 	}
 	return cur, phases, nil

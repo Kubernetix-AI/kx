@@ -272,6 +272,20 @@ func TestSpinner_PlainOnATerminalThatCantAnimate(t *testing.T) {
 	}
 }
 
+// A spinner resumed after lines were printed keeps counting from its
+// first start.
+func TestSpinner_ResumeKeepsTheStart(t *testing.T) {
+	p, _, _ := newTest("")
+	s := p.Spinner("Deploying v15: starting")
+	s.Update("Deploying v15: starting (attempt 2)")
+	s.Stop()
+	r := s.Resume()
+	defer r.Stop()
+	if !r.start.Equal(s.start) || r.label != "Deploying v15: starting (attempt 2)" {
+		t.Fatalf("resumed spinner start %v label %q, want %v and the last label", r.start, r.label, s.start)
+	}
+}
+
 func TestTerminalCaps(t *testing.T) {
 	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
 	tests := []struct {
