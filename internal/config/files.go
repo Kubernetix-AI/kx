@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/kubernetix-ai/kx/internal/kxerr"
@@ -49,7 +50,10 @@ var (
 	orgRe   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$`)
 )
 
-func validApp(s string) bool   { return appRe.MatchString(s) }
+// validApp matches the platform's rule for app names: lowercase letters,
+// digits and single hyphens, at most 63 characters ("--" separates parts
+// of an app's address, so the platform refuses it).
+func validApp(s string) bool   { return appRe.MatchString(s) && !strings.Contains(s, "--") }
 func validAppID(s string) bool { return appIDRe.MatchString(s) }
 func validOrg(s string) bool   { return orgRe.MatchString(s) && s != "." && s != ".." }
 

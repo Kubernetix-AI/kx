@@ -175,6 +175,11 @@ func TestLink_Arg(t *testing.T) {
 		t.Fatalf("json = %s", h.out.String())
 	}
 	h.expect(h.run("link", "Not An App"), 2)
+	// The platform refuses "--" in app names, so kx does before building.
+	h.expect(h.run("link", "my--app"), 2)
+	if !strings.Contains(h.err.String(), `"my--app" isn't an app name; app names look like shop-api.`) {
+		t.Fatalf("stderr = %q", h.err.String())
+	}
 }
 
 func TestLink_AppToken(t *testing.T) {

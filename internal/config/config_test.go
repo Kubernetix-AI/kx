@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -326,6 +327,28 @@ func TestFindProject_OutsideGitOnlyChecksTheFolder(t *testing.T) {
 	}
 	if _, p, err := FindProject(root); err != nil || p == nil || p.App != "up" {
 		t.Fatalf("FindProject(root) = %+v, %v", p, err)
+	}
+}
+
+// The platform refuses app names with "--" (it separates parts of an app's
+// address), whatever their length: kx refuses them before building.
+func TestValidAppName_MatchesThePlatform(t *testing.T) {
+	long := strings.Repeat("a", 63)
+	tests := []struct {
+		name string
+		ok   bool
+	}{
+		{"shop-api", true}, {"a", true}, {"a1-b2-c3", true}, {long, true},
+		{"my--app", false}, {"a---b", false}, {"-shop", false}, {"shop-", false},
+		{"Shop", false}, {"shop_api", false}, {"", false}, {long + "a", false},
+	}
+	for _, tt := range tests {
+		if got := ValidAppName(tt.name); got != tt.ok {
+			t.Errorf("ValidAppName(%q) = %v, want %v", tt.name, got, tt.ok)
+		}
+	}
+	if _, err := ParseProject([]byte(`{"app":"my--app"}`)); err == nil {
+		t.Error(`ParseProject accepted "my--app"`)
 	}
 }
 
