@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -441,6 +442,36 @@ func TestChoose_NumberedDefaultOnlyOnAnEmptyLine(t *testing.T) {
 		if n := strings.Count(errw.String(), "Choose a number from 1 to 3 [1]: "); n != tt.asked {
 			t.Errorf("%q: asked again %d times, want %d: %q", tt.in, n, tt.asked, errw.String())
 		}
+	}
+}
+
+// A termination signal (the context ends) leaves the arrow-key picker at
+// once, with the terminal restored, although no key ever comes.
+func TestChoose_ContextEndsTheArrowPicker(t *testing.T) {
+	stdin, _ := io.Pipe() // never written: a read blocks forever
+	p := New(stdin, &syncBuffer{}, &syncBuffer{}, func(string) string { return "" }, false)
+	p.InTTY, p.TTY, p.Animate = true, true, true
+	restored := make(chan struct{}, 1)
+	p.rawMode = func() (func(), error) { return func() { restored <- struct{}{} }, nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.Choose(ctx, "Pick", []string{"a", "b"}, -1)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Choose = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Choose kept waiting for a key after the context ended")
+	}
+	select {
+	case <-restored:
+	default:
+		t.Fatal("the terminal wasn't restored")
 	}
 }
 

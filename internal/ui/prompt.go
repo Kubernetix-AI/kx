@@ -159,10 +159,33 @@ func (p *Printer) Choose(ctx context.Context, question string, options []string,
 	p.writeErr(question + "\r\n")
 	draw(false)
 
+	// Each key is read in the background, so a signal (ctx ending) leaves
+	// at once; the deferred restore puts the terminal back.
 	r := p.reader()
+	readKey := func() (byte, error) {
+		type key struct {
+			c   byte
+			err error
+		}
+		got := make(chan key, 1)
+		go func() {
+			c, err := r.ReadByte()
+			got <- key{c, err}
+		}()
+		select {
+		case k := <-got:
+			return k.c, k.err
+		case <-ctx.Done():
+			p.writeErr("\r\n")
+			return 0, ctx.Err()
+		}
+	}
 	for {
-		c, err := r.ReadByte()
+		c, err := readKey()
 		if err != nil {
+			if ctx.Err() != nil {
+				return -1, ctx.Err()
+			}
 			return -1, context.Canceled
 		}
 		switch c {
@@ -177,9 +200,12 @@ func (p *Printer) Choose(ctx context.Context, question string, options []string,
 		case 'j':
 			down()
 		case 0x1b:
-			b1, err1 := r.ReadByte()
-			b2, err2 := r.ReadByte()
-			if err1 != nil || err2 != nil {
+			b1, err1 := readKey()
+			if err1 != nil {
+				return -1, context.Canceled
+			}
+			b2, err2 := readKey()
+			if err2 != nil {
 				return -1, context.Canceled
 			}
 			if b1 == '[' || b1 == 'O' {
