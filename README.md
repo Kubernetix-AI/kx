@@ -33,7 +33,13 @@ irm https://platform.kubernetix.ai/install.ps1 | iex
 
 The installer downloads the release for your computer, checks its SHA-256 checksum and
 installs `kx` to `/usr/local/bin` or `~/.local/bin` (Windows: `%LOCALAPPDATA%\Programs\kx`).
-Open a new terminal afterwards if `kx` isn't found.
+
+Installing can take a second step. On most Macs and Linux machines `/usr/local/bin` needs
+administrator rights, so kx goes to `~/.local/bin`, which often isn't on your `PATH` yet.
+The installer then says so and prints one line to run: it adds the folder for this terminal
+and to your shell's startup file for new ones. Until you run it, start kx by its full path
+(`~/.local/bin/kx login`), as the installer's last line shows. On Windows the installer adds
+its folder to your `PATH` itself; other terminals see it once you open a new one.
 
 To install a particular version, set `KX_VERSION`:
 
@@ -59,7 +65,7 @@ sha256sum --ignore-missing -c checksums.txt     # macOS: shasum -a 256 --ignore-
 
 ```console
 $ curl -fsSL https://platform.kubernetix.ai/install.sh | sh
-kx is ready. Next: kx login
+kx is ready. Next: kx login                       (or the PATH line first; see Install)
 
 $ kx login
 Opening platform.kubernetix.ai so you can create a token for this computer.
