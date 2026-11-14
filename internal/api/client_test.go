@@ -521,3 +521,40 @@ func FuzzParseErrorBody(f *testing.F) {
 		_ = Explain(e)
 	})
 }
+
+// The log stream is untrusted JSON: whatever it holds, RuntimeLogs returns
+// lines in time order and replica names without control characters.
+func FuzzRuntimeLogs(f *testing.F) {
+	f.Add([]byte(`{"data":{"result":[{"stream":{"pod":"a"},"values":[["1762855203000000000","x"],["1","y"]]}]}}`))
+	f.Add([]byte(`{"data":{"result":[{"stream":{"pod":"\u001b[2Jx\u202e"},"values":[["9","z",{}]]},{"values":[[1,2]]}]}}`))
+	f.Add([]byte(`{"data":{"result":[{"stream":null,"values":null}]}}`))
+	f.Add([]byte(`not json`))
+	var body atomic.Value
+	body.Store([]byte{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body.Load().([]byte))
+	}))
+	defer srv.Close()
+	c := New(srv.URL+"/api/v1", testToken)
+	f.Fuzz(func(t *testing.T, data []byte) {
+		body.Store(data)
+		lines, err := c.RuntimeLogs(context.Background(), "app-1", LogQuery{Limit: 10})
+		if err != nil {
+			return
+		}
+		for i, l := range lines {
+			if i > 0 && lines[i-1].NS > l.NS {
+				t.Fatal("lines out of order")
+			}
+			if len(l.Pod) > 3*maxNameLen+4 {
+				t.Fatalf("replica name not bounded: %d bytes", len(l.Pod))
+			}
+			for _, r := range l.Pod {
+				if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+					t.Fatalf("control or format character %q in a replica name", r)
+				}
+			}
+		}
+	})
+}
