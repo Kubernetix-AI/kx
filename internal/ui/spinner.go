@@ -37,6 +37,16 @@ func (s *Spinner) Update(label string) {
 	s.mu.Unlock()
 }
 
+// Println prints a progress line above the spinner, which carries on
+// below it.
+func (s *Spinner) Println(format string, args ...any) {
+	line := fmt.Sprintf(format, cleanArgs(args)...) + "\n"
+	if s.p.TTY {
+		line = "\r\x1b[2K" + line
+	}
+	s.p.writeErr(line)
+}
+
 // Elapsed is the time since the spinner started.
 func (s *Spinner) Elapsed() time.Duration { return time.Since(s.start) }
 

@@ -70,6 +70,19 @@ type fakeAPI struct {
 	rollbackDelay  time.Duration
 	failReason     string
 
+	// created is the server's clock for new deployments' created_at;
+	// health is the health check they carry; retries scripts retry_count
+	// along successive GETs, like statuses (the last entry repeats).
+	created time.Time
+	health  *api.HealthCheck
+	retries []int
+	// replicas answers GET /apps/{id}/replicas (n counts from 0), or
+	// replicasStatus when set; runtimeLogs is the log stream JSON.
+	replicas       func(n int) []api.Replica
+	replicaGets    int
+	replicasStatus int
+	runtimeLogs    string
+
 	requests []request
 }
 
@@ -88,6 +101,7 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 		usage:    &api.Usage{OrgID: "acme-corp", Plan: "free", Usage: map[string]api.UsageItem{"deployments_today": {Current: 1, Limit: 5}}},
 		cred:     api.RegistryCredential{RegistryURL: "registry.example.test/acme-corp", Username: "kx-push", Password: testPassword, ExpiresAt: time.Now().Add(time.Hour)},
 		logs:     map[string]api.DeploymentLogs{},
+		created:  time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC),
 	}
 }
 
@@ -194,6 +208,24 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, d)
 	case r.Method == "GET" && len(parts) == 3 && parts[0] == "deployments" && parts[2] == "logs":
 		writeJSON(w, 200, f.logs[parts[1]])
+	case r.Method == "GET" && len(parts) == 3 && parts[0] == "apps" && parts[2] == "replicas":
+		n := f.replicaGets
+		f.replicaGets++
+		switch {
+		case f.replicasStatus != 0:
+			writeJSON(w, f.replicasStatus, map[string]string{"error": "token_not_allowed"})
+		case f.replicas != nil:
+			writeJSON(w, 200, f.replicas(n))
+		default:
+			writeJSON(w, 200, []api.Replica{})
+		}
+	case r.Method == "GET" && len(parts) == 4 && parts[0] == "apps" && parts[3] == "runtime":
+		body := f.runtimeLogs
+		if body == "" {
+			body = `{"status":"success","data":{"resultType":"streams","result":[]}}`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
 	case r.Method == "GET" && len(parts) == 3 && parts[0] == "orgs" && parts[2] == "usage":
 		if f.usage == nil {
 			writeJSON(w, 403, map[string]string{"error": "token_not_allowed"})
@@ -226,7 +258,7 @@ func (f *fakeAPI) addDeployment(w http.ResponseWriter, appID, id, image string) 
 	if ds := f.deployments[appID]; len(ds) > 0 {
 		v = ds[0].Version + 1
 	}
-	d := api.Deployment{ID: id, AppID: appID, Version: v, Status: "pending", ImageURL: image}
+	d := api.Deployment{ID: id, AppID: appID, Version: v, Status: "pending", ImageURL: image, Port: 8080, HealthCheck: f.health, CreatedAt: f.created}
 	f.deployments[appID] = append([]api.Deployment{d}, f.deployments[appID]...)
 	writeJSON(w, 201, d)
 }
@@ -248,6 +280,9 @@ func (f *fakeAPI) find(id string) *api.Deployment {
 				d.Status = f.statuses[n]
 				if d.Status == "failed" {
 					d.CustomerError = f.failReason
+				}
+				if len(f.retries) > 0 {
+					d.RetryCount = f.retries[min(n, len(f.retries)-1)]
 				}
 			}
 			return d
@@ -272,6 +307,37 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// defaultHealth is the health check new apps get: GET / on the app's port,
+// readiness after 10 s every 5 s, liveness after 30 s every 10 s, three
+// failures each.
+func defaultHealth() *api.HealthCheck {
+	get := &api.HTTPGet{Path: "/", Port: 8080}
+	return &api.HealthCheck{
+		Liveness:  &api.Probe{HTTPGet: get, InitialDelaySeconds: 30, PeriodSeconds: 10, TimeoutSeconds: 5, FailureThreshold: 3},
+		Readiness: &api.Probe{HTTPGet: get, InitialDelaySeconds: 10, PeriodSeconds: 5, TimeoutSeconds: 3, FailureThreshold: 3},
+	}
+}
+
+// streams is the API's runtime log JSON: one stream per pod, lines in order.
+func streams(byPod map[string][]string) string {
+	var res []string
+	ns := int64(1762938000000000000)
+	for pod, lines := range byPod {
+		var vals []string
+		for _, l := range lines {
+			ns += 1000
+			b, _ := json.Marshal(l)
+			vals = append(vals, fmt.Sprintf(`["%d",%s]`, ns, b))
+		}
+		label := `{}`
+		if pod != "" {
+			label = fmt.Sprintf(`{"pod":%q,"app":"x"}`, pod)
+		}
+		res = append(res, fmt.Sprintf(`{"stream":%s,"values":[%s]}`, label, strings.Join(vals, ",")))
+	}
+	return `{"status":"success","data":{"resultType":"streams","result":[` + strings.Join(res, ",") + `]}}`
 }
 
 // fakeBuilder records Docker calls.

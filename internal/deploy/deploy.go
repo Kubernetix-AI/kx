@@ -244,11 +244,18 @@ func (r *runner) finish(ctx context.Context, app *api.App, dep *api.Deployment, 
 	if final != nil {
 		res.Status = final.Status
 	}
-	if err != nil {
+	var st *stalled
+	if err != nil && !errors.As(err, &st) {
 		return res, err
 	}
 	took := r.o.Now().Sub(start)
 	path := strings.Join(phases, " → ")
+	if st != nil {
+		r.p.StepFailed("Failed", fmt.Sprintf("v%d  %s", final.Version, path), took)
+		failed := r.notStarting(ctx, app, final, st)
+		res.ServingVersion = failed.ServingVersion
+		return res, failed
+	}
 	if final.Status != api.StatusReady {
 		r.p.StepFailed("Failed", fmt.Sprintf("v%d  %s", final.Version, path), took)
 		failed := r.failed(ctx, app, final)
@@ -289,6 +296,7 @@ func (r *runner) check(app *api.App) int {
 		port = defaultPort
 		if app == nil {
 			r.p.Warn("Your Dockerfile has no EXPOSE line, so kx assumes your app listens on port %d.", defaultPort)
+			r.p.Note("Kubernetix checks that it answers on / there; if it listens on another port, add EXPOSE <port> to your Dockerfile.")
 		}
 	}
 	if app != nil && exposed > 0 && app.Port > 0 && exposed != app.Port {
@@ -511,28 +519,41 @@ func (r *runner) showDocker(err error, out *tail) {
 // failed explains a deployment that did not go live: the platform's
 // reason, the last 20 log lines, and the version still serving.
 func (r *runner) failed(ctx context.Context, app *api.App, d *api.Deployment) *kxerr.DeployFailed {
-	if logs, err := r.c.DeploymentLogs(ctx, d.ID); err == nil {
-		lines := lastLines(logs.BuildLogs+"\n"+logs.DeploymentLogs, shownLogLines)
-		if len(lines) > 0 {
-			r.p.Info("The last %d log lines of v%d:", len(lines), d.Version)
-			r.showUntrusted(lines, func(l string) { r.p.Note("%s", l) })
-		}
-	}
-	serving := 0
-	if deps, err := r.c.ListDeployments(ctx, app.ID, 20); err == nil {
-		for _, other := range deps {
-			if other.Status == api.StatusReady && other.ID != d.ID {
-				serving = other.Version
-				break
-			}
-		}
+	if lines := r.deploymentLogs(ctx, d); len(lines) > 0 {
+		r.p.Info("The last %d log lines of v%d:", len(lines), d.Version)
+		r.showUntrusted(lines, func(l string) { r.p.Note("%s", l) })
 	}
 	reason := d.CustomerError
 	if reason == "" && d.Status == api.StatusRolledBack {
 		reason = "Kubernetix rolled it back"
 	}
-	return &kxerr.DeployFailed{App: app.Name, Version: d.Version, ServingVersion: serving, Reason: reason}
+	return &kxerr.DeployFailed{App: app.Name, Version: d.Version, ServingVersion: r.serving(ctx, app, d), Reason: reason}
 }
+
+// deploymentLogs returns the last 20 lines of d's build and rollout logs.
+func (r *runner) deploymentLogs(ctx context.Context, d *api.Deployment) []string {
+	logs, err := r.c.DeploymentLogs(ctx, d.ID)
+	if err != nil {
+		return nil
+	}
+	return lastLines(logs.BuildLogs+"\n"+logs.DeploymentLogs, shownLogLines)
+}
+
+// serving returns the version still serving after d failed, 0 if none.
+func (r *runner) serving(ctx context.Context, app *api.App, d *api.Deployment) int {
+	deps, err := r.c.ListDeployments(ctx, app.ID, 20)
+	if err != nil {
+		return 0
+	}
+	for _, other := range deps {
+		if other.Status == api.StatusReady && other.ID != d.ID {
+			return other.Version
+		}
+	}
+	return 0
+}
+
+func joinLines(lines []string) string { return strings.Join(lines, "\n") }
 
 func lastLines(s string, n int) []string {
 	var lines []string

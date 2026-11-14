@@ -88,7 +88,15 @@ https://<your app's address>
 The first choice is always a new app named after the folder (in lowercase, with other
 characters turned into hyphens), so pressing Enter never deploys over an app you already
 have; to deploy to an existing app, move to it with the arrow keys or type its number. The
-next `kx deploy` in that folder asks nothing. Run `kx` on its own at any time to see
+next `kx deploy` in that folder asks nothing.
+
+**Ports and health checks.** A new app gets the port in your Dockerfile's first `EXPOSE` line
+(8080 if there is none). Kubernetix sends traffic to that port, and a version is live once
+your app answers HTTP requests on `/` there (any status below 400). If a new version's
+container keeps crashing or doesn't answer, kx stops waiting after about two minutes (longer
+if the app's health checks allow more time), shows the container's last log lines and exits
+with code 8. Kubernetix keeps trying it for a few more minutes; the version before it keeps
+serving. Run `kx` on its own at any time to see
 these steps again, and `kx <command> --help` for examples of any command.
 
 ## Commands
@@ -257,6 +265,7 @@ The messages you are most likely to meet:
 | acme-corp has used all 5 deploys the Free plan includes today; more are available at 00:00 UTC (in 3 h 12 min). | Upgrade for more deploys a day: platform.kubernetix.ai/plans | 5 |
 | This token has uploaded images too often in the last hour. | Wait 6 minutes, then run kx deploy again. | 5 |
 | shop-api v15 didn't go live: your container is crashing on start. Version 14 is still serving. | See why: kx logs --deployment v15 | 8 |
+| shop-api v15 didn't go live: for 2 minutes its container kept crashing or wasn't answering health checks on / at port 8080. Version 14 is still serving. | Make your app start and answer on / at port 8080 (the log lines above may say why it didn't), then run kx deploy again. | 8 |
 
 ### Exit codes
 
@@ -270,7 +279,7 @@ The messages you are most likely to meet:
 | 5 | A plan limit or rate limit |
 | 6 | The Docker build failed |
 | 7 | The image upload failed |
-| 8 | The deploy failed |
+| 8 | The deploy failed, or its container never got ready |
 | 9 | kx stopped waiting; the deploy continues |
 | 10 | Docker isn't installed or isn't running |
 

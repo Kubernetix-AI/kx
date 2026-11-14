@@ -431,8 +431,34 @@ func TestRuntimeLogs_MergesStreamsOldestFirst(t *testing.T) {
 	if lines[0].NS != 1762855201000000000 || !lines[0].Time.Equal(time.Unix(0, 1762855201000000000)) {
 		t.Fatalf("first line = %+v", lines[0])
 	}
+	if lines[0].Pod != "a" || lines[1].Pod != "b" || lines[2].Pod != "a" {
+		t.Fatalf("pods = %q %q %q, want each line's stream pod", lines[0].Pod, lines[1].Pod, lines[2].Pod)
+	}
 	if q["limit"] != "100" || q["start"] != "1762855200000000000" || q["direction"] != "forward" {
 		t.Fatalf("query = %v", q)
+	}
+}
+
+// A deployment's attempt count, port and health checks are what kx uses
+// to tell a slow start from a container that won't start.
+func TestDeployment_DecodesRetriesPortAndHealthChecks(t *testing.T) {
+	var d Deployment
+	body := `{"id":"d1","version":3,"status":"deploying","retry_count":1,"port":3000,"created_at":"2026-11-12T09:00:00.123Z",
+		"health_check":{"liveness_probe":{"http_get":{"path":"/healthz","port":3000},"initial_delay_seconds":30,"period_seconds":10,"timeout_seconds":5,"failure_threshold":3},
+		"readiness_probe":{"http_get":{"path":"/ready","port":3000},"initial_delay_seconds":10,"period_seconds":5,"timeout_seconds":3,"failure_threshold":3}}}`
+	if err := json.Unmarshal([]byte(body), &d); err != nil {
+		t.Fatal(err)
+	}
+	hc := d.HealthCheck
+	if d.RetryCount != 1 || d.Port != 3000 || hc == nil || hc.Readiness == nil || hc.Readiness.HTTPGet == nil ||
+		hc.Readiness.HTTPGet.Path != "/ready" || hc.Liveness.FailureThreshold != 3 || hc.Startup != nil {
+		t.Fatalf("decoded %+v", d)
+	}
+	if got := hc.Liveness.Window(); got != 60*time.Second {
+		t.Fatalf("liveness window = %v, want 60s (30 s delay + 3 × 10 s)", got)
+	}
+	if got := (*Probe)(nil).Window(); got != 0 {
+		t.Fatalf("nil probe window = %v", got)
 	}
 }
 

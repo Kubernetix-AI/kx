@@ -465,11 +465,33 @@ func deployFailed(e *kxerr.DeployFailed) Problem {
 	if reason == "" {
 		reason = "your container is crashing on start"
 	}
+	fix := fmt.Sprintf("See why: kx logs --deployment v%d", e.Version)
+	if ns := e.NotStarting; ns != nil {
+		reason, fix = notStarting(ns)
+	}
 	what := fmt.Sprintf("%s v%d didn't go live: %s", e.App, e.Version, sentence(clean(reason, maxMessageLen)))
 	if e.ServingVersion > 0 {
 		what += fmt.Sprintf(" Version %d is still serving.", e.ServingVersion)
 	}
-	return Problem{"deploy_failed", what, fmt.Sprintf("See why: kx logs --deployment v%d", e.Version), ExitDeploy}
+	return Problem{"deploy_failed", what, fix, ExitDeploy}
+}
+
+// notStarting words the likely causes of a version whose containers never
+// got ready: crashing on start, or (with an HTTP health check) not
+// answering it, which is also what listening on another port looks like.
+func notStarting(ns *kxerr.NotStarting) (reason, fix string) {
+	after := minutes(ns.After)
+	if !ns.HealthCheck {
+		return "for " + after + " its container kept stopping right after it started",
+			"Fix what stops your app from starting (the log lines above may say), then run kx deploy again."
+	}
+	where, answer := fmt.Sprintf("at port %d", ns.Port), fmt.Sprintf("health checks at port %d", ns.Port)
+	if path := clean(ns.Path, 100); path != "" && !strings.Contains(path, " ") {
+		where = "on " + path + " " + where
+		answer = where
+	}
+	return "for " + after + " its container kept crashing or wasn't answering health checks " + where,
+		"Make your app start and answer " + answer + " (the log lines above may say why it didn't), then run kx deploy again."
 }
 
 // untilText renders a wait as "3 h 12 min", "3 h" or "12 min" (at least 1 min).

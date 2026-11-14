@@ -580,7 +580,7 @@ func (f *fakeAPI) addDeployment(appID, id, image string) api.Deployment {
 	if ds := f.deployments[appID]; len(ds) > 0 {
 		v = ds[0].Version + 1
 	}
-	d := api.Deployment{ID: id, AppID: appID, Version: v, Status: "pending", ImageURL: image}
+	d := api.Deployment{ID: id, AppID: appID, Version: v, Status: "pending", ImageURL: image, CreatedAt: f.now}
 	f.deployments[appID] = append([]api.Deployment{d}, f.deployments[appID]...)
 	return d
 }

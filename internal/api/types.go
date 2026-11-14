@@ -65,17 +65,55 @@ type CreateAppRequest struct {
 
 // Deployment is one deploy of an app.
 type Deployment struct {
-	ID            string     `json:"id"`
-	AppID         string     `json:"app_id,omitempty"`
-	AppName       string     `json:"app_name,omitempty"`
-	Version       int        `json:"version"`
-	Status        string     `json:"status"`
-	Kind          string     `json:"kind,omitempty"`
-	ImageURL      string     `json:"image_url,omitempty"`
-	CustomerError string     `json:"error_message_customer,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	CompletedAt   *time.Time `json:"completed_at,omitempty"`
+	ID            string `json:"id"`
+	AppID         string `json:"app_id,omitempty"`
+	AppName       string `json:"app_name,omitempty"`
+	Version       int    `json:"version"`
+	Status        string `json:"status"`
+	Kind          string `json:"kind,omitempty"`
+	ImageURL      string `json:"image_url,omitempty"`
+	CustomerError string `json:"error_message_customer,omitempty"`
+	// RetryCount is how many times Kubernetix has started this deployment
+	// again after an attempt that didn't go live.
+	RetryCount  int          `json:"retry_count,omitempty"`
+	Port        int          `json:"port,omitempty"`
+	HealthCheck *HealthCheck `json:"health_check,omitempty"`
+	CreatedAt   time.Time    `json:"created_at"`
+	UpdatedAt   time.Time    `json:"updated_at"`
+	CompletedAt *time.Time   `json:"completed_at,omitempty"`
+}
+
+// HealthCheck is how Kubernetix checks an app's containers: liveness
+// (restart it when failing), readiness (send it traffic when passing) and
+// startup (wait this long before the others count).
+type HealthCheck struct {
+	Liveness  *Probe `json:"liveness_probe,omitempty"`
+	Readiness *Probe `json:"readiness_probe,omitempty"`
+	Startup   *Probe `json:"startup_probe,omitempty"`
+}
+
+// Probe is one health check.
+type Probe struct {
+	HTTPGet             *HTTPGet `json:"http_get,omitempty"`
+	InitialDelaySeconds int      `json:"initial_delay_seconds"`
+	PeriodSeconds       int      `json:"period_seconds"`
+	TimeoutSeconds      int      `json:"timeout_seconds"`
+	FailureThreshold    int      `json:"failure_threshold"`
+}
+
+// HTTPGet is a health check that requests Path on Port.
+type HTTPGet struct {
+	Path string `json:"path"`
+	Port int    `json:"port"`
+}
+
+// Window is how long the probe gives a container before it counts as
+// failing: the initial delay plus the allowed failures. Nil is 0.
+func (p *Probe) Window() time.Duration {
+	if p == nil {
+		return 0
+	}
+	return time.Duration(max(p.InitialDelaySeconds, 0)+max(p.FailureThreshold, 1)*max(p.PeriodSeconds, 1)) * time.Second
 }
 
 // Done reports whether the deployment has stopped changing.
@@ -317,4 +355,5 @@ type LogLine struct {
 	Time time.Time `json:"time"`
 	NS   int64     `json:"-"` // Unix nanoseconds, exact, for resuming
 	Line string    `json:"line"`
+	Pod  string    `json:"-"` // the replica that printed it, when the API says
 }

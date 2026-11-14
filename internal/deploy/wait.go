@@ -121,12 +121,22 @@ func (r *runner) waitForPrevious(ctx context.Context, app *api.App) error {
 
 // wait polls dep until it is done or the timeout passes. It returns the
 // last state seen and the phases it went through (queued, starting, …).
+// It stops early with *stalled when the new version's replicas run but
+// never get ready (see stallWatch), and says when Kubernetix starts the
+// deployment again after an attempt that didn't go live.
 func (r *runner) wait(ctx context.Context, app *api.App, dep *api.Deployment) (*api.Deployment, []string, error) {
 	o := r.o
 	start := o.Now()
 	cur := dep
 	phases := []string{cur.Phase()}
-	label := func(d *api.Deployment) string { return fmt.Sprintf("Deploying v%d: %s", d.Version, d.Phase()) }
+	watch := newStallWatch(r.c, app.ID, dep)
+	attempt := dep.RetryCount + 1
+	label := func(d *api.Deployment) string {
+		if attempt > 1 {
+			return fmt.Sprintf("Deploying v%d: %s (attempt %d)", d.Version, d.Phase(), attempt)
+		}
+		return fmt.Sprintf("Deploying v%d: %s", d.Version, d.Phase())
+	}
 	spin := r.p.Spinner(label(cur))
 	defer spin.Stop()
 	failures := 0
@@ -162,7 +172,14 @@ func (r *runner) wait(ctx context.Context, app *api.App, dep *api.Deployment) (*
 		if ph := cur.Phase(); ph != phases[len(phases)-1] {
 			phases = append(phases, ph)
 		}
+		if n := cur.RetryCount + 1; n > attempt && !cur.Done() {
+			spin.Println("v%d didn't go live on attempt %d; Kubernetix is trying again (attempt %d).", cur.Version, n-1, n)
+			attempt = n
+		}
 		spin.Update(label(cur))
+		if st := watch.check(ctx, o.Now(), cur); st != nil {
+			return cur, phases, st
+		}
 	}
 	return cur, phases, nil
 }

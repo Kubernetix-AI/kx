@@ -711,6 +711,39 @@ func TestDeploy_GitHubFailure(t *testing.T) {
 	}
 }
 
+// A new version whose container never gets ready fails the job after a
+// couple of minutes with the likely causes, instead of 15 minutes of
+// waiting and "the deploy continues".
+func TestDeploy_GitHubNeverReadyFailsEarly(t *testing.T) {
+	h := newHarness(t)
+	gh := githubJob(h)
+	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+	h.api.statuses = []string{"pending", "deploying"}
+	h.api.replicas = []api.Replica{
+		{Name: "app-old", Status: "Running", Ready: true, StartedAt: "2026-11-12T08:00:00Z"},
+		{Name: "app-new", Status: "Running", Ready: false, StartedAt: "2026-11-12T09:00:30Z"},
+	}
+	h.api.runtimeLogs = func(map[string]string) string {
+		return `{"status":"success","data":{"resultType":"streams","result":[{"stream":{"pod":"app-new"},"values":[["1762938030000000000","listening on :3000"]]}]}}`
+	}
+	start := h.now
+	h.sleepHook = func(int) error { h.now = h.now.Add(5 * time.Second); return nil }
+	h.expect(h.run("deploy", "--github"), 8)
+	// The fake doesn't say how the app is health checked, so kx allows 4
+	// minutes plus one.
+	if took := h.now.Sub(start); took < 5*time.Minute || took > 6*time.Minute {
+		t.Fatalf("waited %v", took)
+	}
+	if !strings.Contains(h.err.String(), "  listening on :3000\n") {
+		t.Fatalf("stderr lacks the app's log line:\n%s", h.err.String())
+	}
+	st := gh.got()
+	last := st[len(st)-1]
+	if last["state"] != "failure" || !strings.HasPrefix(last["description"], "shop-api v16 didn't go live: for 5 minutes its container kept crashing or wasn't answering health checks at port 8080.") {
+		t.Fatalf("final status = %v", last)
+	}
+}
+
 func TestDeploy_OwnErrorStillWorksAfterAnUntrustedBlock(t *testing.T) {
 	for _, github := range []bool{true, false} {
 		h := newHarness(t)

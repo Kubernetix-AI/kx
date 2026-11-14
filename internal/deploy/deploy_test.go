@@ -271,7 +271,7 @@ func TestRun_NewAppWithoutExposeUses8080(t *testing.T) {
 	if e.api.reqs("POST", "/apps")[0].Body["port"] != float64(8080) {
 		t.Fatalf("port = %v", e.api.reqs("POST", "/apps")[0].Body["port"])
 	}
-	if !strings.Contains(e.errOut.String(), "has no EXPOSE line, so kx assumes your app listens on port 8080") {
+	if !strings.Contains(e.errOut.String(), "has no EXPOSE line, so kx assumes your app listens on port 8080.\n  Kubernetix checks that it answers on / there; if it listens on another port, add EXPOSE <port> to your Dockerfile.\n") {
 		t.Fatalf("stderr:\n%s", e.errOut.String())
 	}
 }

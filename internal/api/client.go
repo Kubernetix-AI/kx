@@ -239,6 +239,7 @@ func (c *Client) RuntimeLogs(ctx context.Context, appID string, q LogQuery) ([]L
 	var out struct {
 		Data struct {
 			Result []struct {
+				Stream map[string]string   `json:"stream"`
 				Values [][]json.RawMessage `json:"values"`
 			} `json:"result"`
 		} `json:"data"`
@@ -248,6 +249,7 @@ func (c *Client) RuntimeLogs(ctx context.Context, appID string, q LogQuery) ([]L
 	}
 	var lines []LogLine
 	for _, stream := range out.Data.Result {
+		pod := clean(stream.Stream["pod"], maxNameLen)
 		for _, val := range stream.Values {
 			if len(val) < 2 {
 				continue
@@ -260,7 +262,7 @@ func (c *Client) RuntimeLogs(ctx context.Context, appID string, q LogQuery) ([]L
 			if err != nil {
 				continue
 			}
-			lines = append(lines, LogLine{Time: time.Unix(0, ns), NS: ns, Line: line})
+			lines = append(lines, LogLine{Time: time.Unix(0, ns), NS: ns, Line: line, Pod: pod})
 		}
 	}
 	sort.SliceStable(lines, func(i, j int) bool { return lines[i].NS < lines[j].NS })

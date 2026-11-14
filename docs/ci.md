@@ -278,6 +278,11 @@ started from the dashboard or another computer in the same moment can still race
 - **"This commit was already pushed; uploaded it as 3f9c2a1b7d4e-20261114081530."** The
   registry keeps image tags it has seen (for example on a re-run of the same commit), so kx
   uploaded the image under a new tag. It deploys exactly the image it just uploaded.
+- **"… didn't go live: for 2 minutes its container kept crashing or wasn't answering health
+  checks on / at port 8080."** The new version's container runs but never gets ready, so kx
+  stops waiting (exit 8) and shows its last log lines above the error. Usually the app crashes
+  on start (the log lines say why), listens on another port (set `EXPOSE` in the Dockerfile to
+  the port it listens on), or doesn't answer on `/`. The version before it keeps serving.
 - **Exit code 9.** kx stopped waiting after `--timeout`, but the deploy continues. Run
   `kx status` to see whether it went live, or raise the Action's `timeout`.
 - **"kx couldn't confirm the rollback…"** Kubernetix didn't answer the rollback request. Run
