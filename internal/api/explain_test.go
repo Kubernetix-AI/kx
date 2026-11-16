@@ -404,6 +404,16 @@ const (
 	quotaFix         = "Free up room in your plan or upgrade at platform.kubernetix.ai/plans, then try again."
 )
 
+// Until the platform reports error_code, a version its plan had no room
+// for is a failed deploy like any other (README, below the error table).
+func TestExplain_NoRoomBeforeThePlatformReportsIt(t *testing.T) {
+	got := Explain(&kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Reason: quotaRestoredMsg})
+	want := Problem{"deploy_failed", "shop-api v15 didn't go live: " + quotaRestoredMsg + " Version 14 is still serving.", "See why: kx logs --deployment v15", ExitDeploy}
+	if got != want {
+		t.Fatalf("Explain() =\n  %+v\nwant\n  %+v", got, want)
+	}
+}
+
 // The platform's customer messages for a billing block (402), word for word.
 const (
 	billingOverdueMsg  = "Payment for this organization is overdue. New deployments and new resources are paused until the balance is paid. Your running apps are not affected."

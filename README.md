@@ -271,7 +271,13 @@ The messages you are most likely to meet:
 | Your subscription has ended. Your apps keep running, but new deployments are paused until you subscribe again or change your usage to fit the Free plan. | Subscribe again on acme-corp's Billing page in the dashboard: platform.kubernetix.ai/settings?tab=billing | 5 |
 | shop-api v15 didn't go live: your container is crashing on start. Version 14 is still serving. | See why: kx logs --deployment v15 | 8 |
 | shop-api v15 didn't go live: its container kept crashing or didn't answer health checks on / at port 8080. Version 14 is still serving. | Make your app start and answer on / at port 8080 (the log lines above may say why it didn't), then run kx deploy again. | 8 |
-| shop-api v15 didn't go live: Your plan's memory is full. The new version was not started; the previous one still runs. Pick a smaller size, remove an app or database, or upgrade at platform.kubernetix.ai/plans. | Free up room in your plan or upgrade at platform.kubernetix.ai/plans, then try again. | 5 |
+| shop-api v15 didn't go live: Your plan's memory is full. The new version was not started; the previous one still runs. Pick a smaller size, remove an app or database, or upgrade at platform.kubernetix.ai/plans. | Free up room in your plan or upgrade at platform.kubernetix.ai/plans, then try again. | 5 (8 for now, see below) |
+
+The last row needs Kubernetix to report that the plan had no room for the version, which it
+doesn't do yet. Until it does, kx shows such a version like any other failed deploy and exits 8:
+the platform's message (followed by "Version 14 is still serving." when an earlier version
+serves), then "See why: kx logs --deployment v15". Once it does, kx exits 5 with the lines shown
+above.
 
 ### Exit codes
 
@@ -282,7 +288,7 @@ The messages you are most likely to meet:
 | 2 | Usage: a flag, argument, `.kx.json` or missing Dockerfile |
 | 3 | Login, token or permission |
 | 4 | Not found |
-| 5 | A plan limit or rate limit (including a version your plan has no room for), or new deploys paused for billing (payment overdue or subscription ended) |
+| 5 | A plan limit or rate limit, or new deploys paused for billing (payment overdue or subscription ended); also a version your plan has no room for, once Kubernetix reports it as such (until then, 8) |
 | 6 | The Docker build failed |
 | 7 | The image upload failed |
 | 8 | The deploy failed |
