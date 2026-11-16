@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -99,6 +100,8 @@ func explainCases() []explainCase {
 		{"app deleting", apiErr(409, "app_deleting", ErrContext{Org: "acme-corp", App: "shop-api"}), Problem{"app_deleting", "shop-api is being deleted, so it can't be deployed.", "Link this folder to another app: kx link", 2}},
 		{"other plan limit", withLimit(apiErr(402, "tier_limit_exceeded", loginCtx), "max_apps"), Problem{"plan_limit_reached", "acme-corp has reached its plan's limit for apps.", "Upgrade for more: platform.kubernetix.ai/plans", 5}},
 		{"plan feature", apiErr(402, "plan_upgrade_required", loginCtx), Problem{"plan_limit_reached", "acme-corp's plan doesn't include that.", "Upgrade: platform.kubernetix.ai/plans", 5}},
+		{"billing unpaid", &Error{Status: 402, Code: "billing_unpaid", Message: billingOverdueMsg, Ctx: loginCtx}, Problem{"billing_unpaid", billingOverdueMsg, "Pay the overdue balance on acme-corp's Billing page in the dashboard: platform.kubernetix.ai/settings?tab=billing", 5}},
+		{"subscription ended", &Error{Status: 402, Code: "subscription_ended", Message: billingEndedMsg, Ctx: envCtx}, Problem{"subscription_ended", billingEndedMsg, "Subscribe again on acme-corp's Billing page in the dashboard: platform.kubernetix.ai/settings?tab=billing", 5}},
 		{"general rate limit", apiErr(429, "rate_limit_exceeded", loginCtx), Problem{"rate_limited", "Kubernetix is getting too many requests from acme-corp right now.", "Wait a minute, then try again.", 5}},
 		{"registry not ready", apiErr(503, "registry_not_ready", loginCtx), Problem{"registry_not_ready", "acme-corp's image registry isn't ready yet.", "Wait a minute, then run kx deploy again.", 7}},
 		{"rollback target not live", apiErr(400, "invalid_deployment_status", loginCtx), Problem{"invalid_deployment_status", "That version never went live, so kx can't roll back to it.", "Pick a version that went live: kx status", 2}},
@@ -217,8 +220,13 @@ func checkShape(t *testing.T, p Problem) {
 	}
 	sentences := strings.Count(strings.TrimSuffix(p.What, "."), ". ") + 1
 	maxSentences := 1
-	if p.Code == "deploy_failed" {
+	switch p.Code {
+	case "deploy_failed":
 		maxSentences = 2
+	case "billing_unpaid", "subscription_ended":
+		// Line one is the platform's own customer message, which says
+		// what is paused and that running apps are not affected.
+		maxSentences = 4
 	}
 	if sentences > maxSentences {
 		t.Errorf("line one has %d sentences: %q", sentences, p.What)
@@ -371,6 +379,108 @@ func TestExplain_RealTokenErrorBodies(t *testing.T) {
 			}
 			checkShape(t, got)
 		})
+	}
+}
+
+// The platform's customer messages for a billing block (402), word for word.
+const (
+	billingOverdueMsg  = "Payment for this organization is overdue. New deployments and new resources are paused until the balance is paid. Your running apps are not affected."
+	billingInvoiceMsg  = "This organization has an unpaid invoice from its cancelled subscription. New deployments and new resources are paused until it is paid. Your running apps are not affected."
+	billingApprovalMsg = "Your bank needs you to approve the latest payment for this organization. New deployments and new resources are paused until it is approved. Your running apps are not affected."
+	billingEndedMsg    = "Your subscription has ended. Your apps keep running, but new deployments are paused until you subscribe again or change your usage to fit the Free plan."
+	billingReduceHint  = " You can still reduce it: a smaller size, a lower quality tier, fewer replicas, autoscaling or the Security Sandbox off."
+)
+
+// TestExplain_RealBillingBodies sends the billing blocks exactly as the API
+// writes them (402 with error billing_unpaid, sometimes a reason, or
+// subscription_ended, and a customer message) through the client and
+// checks the two lines: the platform's message, then the dashboard's
+// Billing page. Every one exits 5, like the plan limits.
+func TestExplain_RealBillingBodies(t *testing.T) {
+	const billing = "platform.kubernetix.ai/settings?tab=billing"
+	body := func(code, reason, msg string) string {
+		m := map[string]string{"error": code, "message": msg}
+		if reason != "" {
+			m["reason"] = reason
+		}
+		b, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	env := ErrContext{Org: "acme-corp", App: "shop-api", TokenSource: kxerr.SourceEnv}
+	login := ErrContext{Org: "acme-corp", TokenSource: kxerr.SourceLogin}
+	tests := []struct {
+		name string
+		body string
+		ctx  ErrContext
+		want Problem
+	}{
+		{"overdue", body("billing_unpaid", "", billingOverdueMsg), env,
+			Problem{"billing_unpaid", billingOverdueMsg, "Pay the overdue balance on acme-corp's Billing page in the dashboard: " + billing, ExitLimit}},
+		{"invoice left open by a cancelled subscription", body("billing_unpaid", "outstanding_invoice", billingInvoiceMsg), login,
+			Problem{"billing_unpaid", billingInvoiceMsg, "Pay the open invoice on acme-corp's Billing page in the dashboard: " + billing, ExitLimit}},
+		{"payment awaiting approval", body("billing_unpaid", "payment_approval_required", billingApprovalMsg), env,
+			Problem{"billing_unpaid", billingApprovalMsg, "Approve the payment on acme-corp's Billing page in the dashboard: " + billing, ExitLimit}},
+		{"subscription ended", body("subscription_ended", "", billingEndedMsg), env,
+			Problem{"subscription_ended", billingEndedMsg, "Subscribe again on acme-corp's Billing page in the dashboard: " + billing, ExitLimit}},
+		{"subscription ended, with the reduce hint", body("subscription_ended", "", billingEndedMsg+billingReduceHint), login,
+			Problem{"subscription_ended", billingEndedMsg + billingReduceHint, "Subscribe again on acme-corp's Billing page in the dashboard: " + billing, ExitLimit}},
+		{"org not known", body("billing_unpaid", "", billingOverdueMsg), ErrContext{TokenSource: kxerr.SourceEnv},
+			Problem{"billing_unpaid", billingOverdueMsg, "Pay the overdue balance on the dashboard's Billing page: " + billing, ExitLimit}},
+		{"unknown reason", body("billing_unpaid", "some_new_reason", billingOverdueMsg), env,
+			Problem{"billing_unpaid", billingOverdueMsg, "Pay the overdue balance on acme-corp's Billing page in the dashboard: " + billing, ExitLimit}},
+		{"no message", `{"error":"billing_unpaid"}`, env,
+			Problem{"billing_unpaid", "Payment for acme-corp is overdue, so new deploys are paused.", "Pay the overdue balance on acme-corp's Billing page in the dashboard: " + billing, ExitLimit}},
+		{"no message, invoice", `{"error":"billing_unpaid","reason":"outstanding_invoice"}`, env,
+			Problem{"billing_unpaid", "acme-corp has an unpaid invoice, so new deploys are paused.", "Pay the open invoice on acme-corp's Billing page in the dashboard: " + billing, ExitLimit}},
+		{"no message, approval", `{"error":"billing_unpaid","reason":"payment_approval_required","message":""}`, env,
+			Problem{"billing_unpaid", "The latest payment for acme-corp needs your approval, so new deploys are paused.", "Approve the payment on acme-corp's Billing page in the dashboard: " + billing, ExitLimit}},
+		{"no message, ended, org not known", `{"error":"subscription_ended","message":"  "}`, ErrContext{},
+			Problem{"subscription_ended", "Your organization's subscription has ended, so new deploys are paused.", "Subscribe again on the dashboard's Billing page: " + billing, ExitLimit}},
+		{"message without a full stop", body("billing_unpaid", "", "Payment is overdue"), env,
+			Problem{"billing_unpaid", "Payment is overdue.", "Pay the overdue balance on acme-corp's Billing page in the dashboard: " + billing, ExitLimit}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/apps/app-1/deployments" {
+					t.Errorf("request %s %s", r.Method, r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusPaymentRequired)
+				_, _ = io.WriteString(w, tt.body+"\n")
+			})
+			c.Ctx = tt.ctx
+			_, err := c.CreateDeployment(context.Background(), "app-1", CreateDeploymentRequest{ImageURL: "registry.example.test/acme-corp/shop-api@sha256:" + strings.Repeat("ab", 32)}, "key-1")
+			got := Explain(err)
+			if got != tt.want {
+				t.Fatalf("Explain() =\n  %+v\nwant\n  %+v", got, tt.want)
+			}
+			checkShape(t, got)
+		})
+	}
+}
+
+// Server text in a billing block is cleaned like any other: no control or
+// bidi characters, no tokens, no workflow commands.
+func TestExplain_BillingMessageIsCleaned(t *testing.T) {
+	for _, msg := range []string{
+		"Payment\x1b[2J is \u202eoverdue ##[warning]y ##vso[task.setvariable]z " + testToken + "\nnext",
+		" \u3000::error::Payment is overdue",
+	} {
+		p := Explain(&Error{Status: 402, Code: "billing_unpaid", Message: msg})
+		if strings.ContainsAny(p.What, "\x1b\n\u202e") || strings.Contains(p.What, testToken) ||
+			strings.HasPrefix(strings.TrimSpace(p.What), "::") || strings.Contains(p.What, "##[") || strings.Contains(p.What, "##vso[") {
+			t.Errorf("What = %q", p.What)
+		}
+		if !strings.Contains(p.What, "Payment") || p.Exit != ExitLimit {
+			t.Errorf("Problem = %+v", p)
+		}
+	}
+	if p := Explain(&Error{Status: 402, Code: "billing_unpaid", Message: "Overdue " + testToken}); !strings.Contains(p.What, "kx_01234567…") {
+		t.Errorf("token not shortened to its prefix: %q", p.What)
 	}
 }
 

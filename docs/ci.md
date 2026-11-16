@@ -291,6 +291,11 @@ started from the dashboard or another computer in the same moment can still race
   `kx status` to see whether it went live, or raise the Action's `timeout`. kx waits 18 minutes
   by default because Kubernetix tries a version that doesn't get ready up to 3 times, 5 minutes
   each, so its own verdict (exit 8, with the reason) arrives first.
+- **"Payment for this organization is overdue…" or "Your subscription has ended…" (exit 5).**
+  Kubernetix has paused new deploys and new apps for the organization until its billing is
+  sorted out; the apps already running keep running. An owner or admin fixes it on the
+  dashboard's Billing page (Settings → Billing); re-running the job before that fails the same
+  way.
 - **"kx couldn't confirm the rollback…"** Kubernetix didn't answer the rollback request. Run
   `kx status` before trying again, because the rollback may already be running.
 - **Workflow command lines in your GitHub log.** kx prints `::add-mask::`, `::warning::` and `::error::` on standard error so standard output carries only the URL; GitHub Actions reads both, though this release hasn't yet been checked on a live run, so tell us if such a line ever shows up as plain text.

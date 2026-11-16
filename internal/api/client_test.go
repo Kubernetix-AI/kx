@@ -236,6 +236,23 @@ func TestClient_ParsesErrorEnvelope(t *testing.T) {
 	}
 }
 
+// A billing block's reason is kept when it looks like a code, and dropped
+// when it doesn't.
+func TestClient_ParsesBillingReason(t *testing.T) {
+	for reason, want := range map[string]string{
+		"outstanding_invoice":       "outstanding_invoice",
+		"payment_approval_required": "payment_approval_required",
+		"Not A Code\x1b[2J":         "",
+		"":                          "",
+	} {
+		raw, _ := json.Marshal(reason)
+		e := parseErrorBody(402, []byte(`{"error":"billing_unpaid","reason":`+string(raw)+`,"message":"m"}`), http.Header{})
+		if e.Code != "billing_unpaid" || e.Reason != want {
+			t.Errorf("reason %q: Error = %+v, want reason %q", reason, e, want)
+		}
+	}
+}
+
 func TestClient_NonJSONErrorBody(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
@@ -498,6 +515,8 @@ func TestDeploymentPhase(t *testing.T) {
 func FuzzParseErrorBody(f *testing.F) {
 	f.Add(401, []byte(`{"error":"token_expired","message":"m","token_prefix":"kx_01234567","token_name":"n","expires_at":"2027-02-09T00:00:00Z"}`))
 	f.Add(402, []byte(`{"error":"tier_limit_exceeded","message":"m","limit_name":"max_deployments_per_day"}`))
+	f.Add(402, []byte(`{"error":"billing_unpaid","message":"Payment for this organization is overdue.","reason":"outstanding_invoice"}`))
+	f.Add(402, []byte(`{"error":"subscription_ended","message":"Your subscription has ended.\u202e","reason":{"x":1}}`))
 	f.Add(400, []byte(`{"error":{"code":"x"}}`))
 	f.Add(500, []byte(`not json`))
 	f.Add(429, []byte(``))
@@ -510,12 +529,12 @@ func FuzzParseErrorBody(f *testing.F) {
 		if strings.Contains(e.Message, testToken) {
 			t.Fatal("message keeps a token")
 		}
-		for _, r := range e.Message + e.Code + e.TokenName + e.TokenPrefix {
+		for _, r := range e.Message + e.Code + e.TokenName + e.TokenPrefix + e.Reason {
 			if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 				t.Fatalf("control or format character %q survived", r)
 			}
 		}
-		if len(e.Message) > 1024 || len(e.Code) > 64 || len(e.TokenPrefix) > 11 {
+		if len(e.Message) > 1024 || len(e.Code) > 64 || len(e.Reason) > 64 || len(e.TokenPrefix) > 11 {
 			t.Fatal("field not bounded")
 		}
 		_ = Explain(e)

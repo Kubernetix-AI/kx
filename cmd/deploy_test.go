@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1122,4 +1123,84 @@ func TestDeploy_GitLabPushDeploys(t *testing.T) {
 	if strings.Contains(h.err.String(), "::") {
 		t.Fatal("printed GitHub workflow commands outside GitHub mode")
 	}
+}
+
+// billingBlocked answers the requests the platform's billing gate refuses
+// (a new deployment, a new app) with the 402 it sends for an unpaid org.
+func billingBlocked(r *http.Request, _ string) (int, string, bool) {
+	gated := r.Method == http.MethodPost && (r.URL.Path == "/api/v1/apps" || strings.HasSuffix(r.URL.Path, "/deployments"))
+	return 402, `{"error":"billing_unpaid","message":"Payment for this organization is overdue. New deployments and new resources are paused until the balance is paid. Your running apps are not affected."}`, gated
+}
+
+// A deploy refused for billing exits 5 with the platform's message and the
+// dashboard's Billing page; in GitHub mode the status and annotation say
+// the same, and the summary says nothing was deployed.
+func TestDeploy_BillingBlockExplained(t *testing.T) {
+	const (
+		what = "Payment for this organization is overdue. New deployments and new resources are paused until the balance is paid. Your running apps are not affected."
+		fix  = "Pay the overdue balance on acme-corp's Billing page in the dashboard: platform.kubernetix.ai/settings?tab=billing"
+	)
+	t.Run("laptop", func(t *testing.T) {
+		h := newHarness(t)
+		h.loginAs("acme-corp", tokCorp, &dec11)
+		h.link("shop-api", appShopID, "acme-corp")
+		h.dockerfile("FROM scratch\n")
+		h.api.override = billingBlocked
+		h.expect(h.run("deploy"), 5)
+		if !strings.HasSuffix(h.err.String(), what+"\n"+fix+"\n") {
+			t.Fatalf("stderr:\n%s", h.err.String())
+		}
+	})
+	t.Run("json", func(t *testing.T) {
+		h := newHarness(t)
+		h.loginAs("acme-corp", tokCorp, &dec11)
+		h.link("shop-api", appShopID, "acme-corp")
+		h.dockerfile("FROM scratch\n")
+		h.api.override = billingBlocked
+		h.expect(h.run("deploy", "--json"), 5)
+		var out struct {
+			Error struct{ Code, Message, Fix string } `json:"error"`
+		}
+		if err := json.Unmarshal(h.out.Bytes(), &out); err != nil {
+			t.Fatalf("stdout is not one JSON value: %v\n%s", err, h.out.String())
+		}
+		if out.Error.Code != "billing_unpaid" || out.Error.Message != what || out.Error.Fix != fix {
+			t.Fatalf("json = %+v", out)
+		}
+	})
+	t.Run("github", func(t *testing.T) {
+		h := newHarness(t)
+		gh := githubJob(h)
+		h.dockerfile("FROM scratch\n")
+		h.api.override = billingBlocked
+		h.expect(h.run("deploy", "--github"), 5)
+		if !strings.Contains(h.err.String(), "::error title=Kubernetix deploy::"+what+"%0A"+fix+"\n") {
+			t.Fatalf("stderr lacks the annotation:\n%s", h.err.String())
+		}
+		st := gh.got()
+		if last := st[len(st)-1]; last["state"] != "failure" || !strings.HasPrefix(last["description"], "Payment for this organization is overdue.") {
+			t.Fatalf("final status = %v", last)
+		}
+		sum, _ := os.ReadFile(h.env["GITHUB_STEP_SUMMARY"])
+		if !strings.Contains(string(sum), "Nothing was deployed") {
+			t.Fatalf("summary:\n%s", sum)
+		}
+	})
+	t.Run("new app", func(t *testing.T) {
+		h := newHarness(t)
+		h.loginAs("acme-corp", tokCorp, &dec11)
+		h.link("brand-new", "", "acme-corp") // kx link brand-new: an app that doesn't exist yet
+		h.dockerfile("FROM scratch\n")
+		h.api.override = billingBlocked
+		h.expect(h.run("deploy"), 5)
+		if len(h.api.newApps) != 0 {
+			t.Fatalf("created %v", h.api.newApps)
+		}
+		if !slices.Contains(h.api.requests, "POST /api/v1/apps") {
+			t.Fatalf("requests: %v", h.api.requests)
+		}
+		if !strings.HasSuffix(h.err.String(), what+"\n"+fix+"\n") {
+			t.Fatalf("stderr:\n%s", h.err.String())
+		}
+	})
 }

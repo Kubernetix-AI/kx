@@ -45,6 +45,7 @@ var allCodes = []string{
 	"app_not_found", "deployment_not_found", "org_not_found", "not_found", "not_live", "version_not_found", "token_not_found",
 	"validation_error", "request_rejected", "duplicate_app", "app_deleting", "invalid_deployment_status",
 	"deploy_limit_reached", "plan_limit_reached", "push_rate_limited", "rate_limited", "registry_not_ready",
+	"billing_unpaid", "subscription_ended",
 	"docker_missing", "docker_stopped", "docker_windows_containers", "docker_permission", "no_dockerfile",
 	"build_failed", "push_failed", "deploy_failed", "wait_timeout", "previous_deploy_running",
 	"nothing_live", "no_rollback_target", "already_live", "tag_exists", "no_digest", "rollback_unconfirmed", "docker_context_unknown",
@@ -57,6 +58,7 @@ var dockerContextNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,99}$
 
 const (
 	plansURL       = "platform.kubernetix.ai/plans"
+	billingURL     = "platform.kubernetix.ai/settings?tab=billing"
 	dashboardURL   = "platform.kubernetix.ai"
 	issuesURL      = "github.com/Kubernetix-AI/kx/issues"
 	newSecretFix   = "Create a new deploy token on the app's Deploy tab and replace the KX_TOKEN secret." //nolint:gosec // G101: advice text, not a credential
@@ -316,6 +318,8 @@ func explainAPI(e *Error) Problem {
 			return deployLimit(org, "", 0, time.Time{})
 		}
 		return Problem{"plan_limit_reached", orgOr(org, "Your organization") + " has reached its plan's limit for " + limitLabel(e.LimitName) + ".", "Upgrade for more: " + plansURL, ExitLimit}
+	case "billing_unpaid", "subscription_ended":
+		return billingBlocked(e)
 	case "plan_upgrade_required", "free_quality_limit":
 		return Problem{"plan_limit_reached", possessive(orgOr(org, "Your organization")) + " plan doesn't include that.", "Upgrade: " + plansURL, ExitLimit}
 
@@ -440,6 +444,39 @@ func tokenLacks(e *kxerr.TokenLacks) Problem {
 		fix = "Log in with a token that can deploy: " + strings.TrimPrefix(loginFix(e.Org), "Run: ")
 	}
 	return Problem{"token_not_allowed", fmt.Sprintf("%s doesn't have the %s %s, which kx deploy needs.", who, joinAnd(names), noun), fix, ExitAuth}
+}
+
+// billingBlocked explains a deploy (or new app) that Kubernetix refused
+// because the organization's payment is overdue or its subscription ended.
+// Line one is the platform's own message for the customer, which says what
+// is paused and that running apps keep running; the fix names what lifts
+// the block and the dashboard's Billing page. Exit 5, like a plan limit:
+// running kx again won't help until someone acts in the dashboard.
+func billingBlocked(e *Error) Problem {
+	org := e.Ctx.Org
+	page := "the dashboard's Billing page"
+	if org != "" {
+		page = possessive(org) + " Billing page in the dashboard"
+	}
+	var what, fix string
+	switch {
+	case e.Code == "subscription_ended":
+		what = possessive(orgOr(org, "Your organization")) + " subscription has ended, so new deploys are paused."
+		fix = "Subscribe again"
+	case e.Reason == "outstanding_invoice":
+		what = orgOr(org, "Your organization") + " has an unpaid invoice, so new deploys are paused."
+		fix = "Pay the open invoice"
+	case e.Reason == "payment_approval_required":
+		what = "The latest payment for " + orgOr(org, "your organization") + " needs your approval, so new deploys are paused."
+		fix = "Approve the payment"
+	default:
+		what = "Payment for " + orgOr(org, "your organization") + " is overdue, so new deploys are paused."
+		fix = "Pay the overdue balance"
+	}
+	if msg := clean(e.Message, maxMessageLen); msg != "" {
+		what = sentence(msg)
+	}
+	return Problem{e.Code, what, fix + " on " + page + ": " + billingURL, ExitLimit}
 }
 
 func cannotPush() Problem {

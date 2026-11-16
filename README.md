@@ -267,6 +267,8 @@ The messages you are most likely to meet:
 | There's no Dockerfile in /Users/sam/code/shop-api. | Run kx deploy in the folder that has your Dockerfile. | 2 |
 | acme-corp has used all 5 deploys the Free plan includes today; more are available at 00:00 UTC (in 3 h 12 min). | Upgrade for more deploys a day: platform.kubernetix.ai/plans | 5 |
 | This token has uploaded images too often in the last hour. | Wait 6 minutes, then run kx deploy again. | 5 |
+| Payment for this organization is overdue. New deployments and new resources are paused until the balance is paid. Your running apps are not affected. | Pay the overdue balance on acme-corp's Billing page in the dashboard: platform.kubernetix.ai/settings?tab=billing | 5 |
+| Your subscription has ended. Your apps keep running, but new deployments are paused until you subscribe again or change your usage to fit the Free plan. | Subscribe again on acme-corp's Billing page in the dashboard: platform.kubernetix.ai/settings?tab=billing | 5 |
 | shop-api v15 didn't go live: your container is crashing on start. Version 14 is still serving. | See why: kx logs --deployment v15 | 8 |
 | shop-api v15 didn't go live: its container kept crashing or didn't answer health checks on / at port 8080. Version 14 is still serving. | Make your app start and answer on / at port 8080 (the log lines above may say why it didn't), then run kx deploy again. | 8 |
 
@@ -279,7 +281,7 @@ The messages you are most likely to meet:
 | 2 | Usage: a flag, argument, `.kx.json` or missing Dockerfile |
 | 3 | Login, token or permission |
 | 4 | Not found |
-| 5 | A plan limit or rate limit |
+| 5 | A plan limit or rate limit, or new deploys paused for billing (payment overdue or subscription ended) |
 | 6 | The Docker build failed |
 | 7 | The image upload failed |
 | 8 | The deploy failed |
