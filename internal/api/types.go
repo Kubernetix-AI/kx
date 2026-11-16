@@ -119,14 +119,17 @@ func (p *Probe) Window() time.Duration {
 	return time.Duration(max(p.InitialDelaySeconds, 0)+max(p.FailureThreshold, 1)*max(p.PeriodSeconds, 1)) * time.Second
 }
 
-// Done reports whether the deployment has stopped changing.
+// Done reports whether the deployment has stopped changing: it is ready
+// or failed. A rolled_back status is not enough on its own: Kubernetix can
+// show it for a moment, with a generic message, before the version fails
+// with its real reason or is tried again. Only a rolled_back that lasts is
+// final; the deploy package decides that over several looks.
 func (d Deployment) Done() bool {
-	switch d.Status {
-	case StatusReady, StatusFailed, StatusRolledBack:
-		return true
-	}
-	return false
+	return d.Status == StatusReady || d.Status == StatusFailed
 }
+
+// RolledBack reports a rolled_back status, which may be momentary (see Done).
+func (d Deployment) RolledBack() bool { return d.Status == StatusRolledBack }
 
 // Phase is the word kx shows for the status: queued, starting, live,
 // failed or rolled back.

@@ -21,7 +21,44 @@ const (
 	// A poll answered with 429 waits for Retry-After, between these.
 	minRateLimitWait = 5 * time.Second
 	maxRateLimitWait = time.Minute
+
+	// rolledBackLasts is how long a rolled_back status must last before kx
+	// believes it (see finality).
+	rolledBackLasts = 10 * time.Second
 )
+
+// finality tells when a deployment kx keeps looking at has stopped
+// changing. Ready and failed are final at once. Kubernetix can mark a
+// version rolled_back for a moment, with a generic message, before it
+// fails it with the real reason or tries it again, so a rolled_back is
+// final only when kx sees it again on a look at least rolledBackLasts
+// after the first, with nothing else in between.
+type finality struct {
+	since time.Time // when kx first saw the current rolled_back; zero if none
+	id    string    // which deployment, and which attempt of it
+	retry int
+}
+
+// final records a look at d, taken at now, and reports whether d is final.
+func (f *finality) final(d api.Deployment, now time.Time) bool {
+	if !d.RolledBack() {
+		f.since = time.Time{}
+		return d.Done()
+	}
+	if f.since.IsZero() || d.ID != f.id || d.RetryCount != f.retry {
+		f.since, f.id, f.retry = now, d.ID, d.RetryCount
+	}
+	return now.Sub(f.since) >= rolledBackLasts
+}
+
+// confirming reports, at now, that the last look showed a rolled_back kx
+// doesn't believe yet and the looks that settle it are still due. The
+// waits let those looks run past their timeout, so a version rolled back
+// right at the timeout is reported as such: by at most rolledBackLasts
+// plus one rate-limited poll.
+func (f *finality) confirming(done bool, now time.Time) bool {
+	return !done && !f.since.IsZero() && now.Sub(f.since) < rolledBackLasts+maxRateLimitWait
+}
 
 // defaultSleep waits for d or until ctx ends. Tests replace it.
 var defaultSleep = func(ctx context.Context, d time.Duration) error {
@@ -47,7 +84,8 @@ func pollInterval(i int) time.Duration {
 // progress, printing "Waiting for v14 to finish first". Two deploys of one
 // app at the same time can finish in the wrong order, so kx never starts
 // one while another runs. It returns when the newest
-// deployment is ready, failed or rolled back, or when ctx ends.
+// deployment is ready, failed or rolled back (for at least 10 seconds, see
+// finality), or when ctx ends.
 func WaitForPrevious(ctx context.Context, c *api.Client, appID string, p ui.Printer) error {
 	return waitForPrevious(ctx, c, appID, &p, defaultSleep, time.Now, time.Time{})
 }
@@ -63,7 +101,8 @@ func waitForPrevious(ctx context.Context, c *api.Client, appID string, p *ui.Pri
 	if len(deps) > 0 && deleting(deps[0]) {
 		return appDeleting(c)
 	}
-	if len(deps) == 0 || deps[0].Done() {
+	var fin finality
+	if len(deps) == 0 || fin.final(deps[0], now()) {
 		return nil
 	}
 	cur := deps[0]
@@ -75,7 +114,7 @@ func waitForPrevious(ctx context.Context, c *api.Client, appID string, p *ui.Pri
 	failures := 0
 	var limited time.Duration
 	for i := 0; ; i++ {
-		if !deadline.IsZero() && !now().Before(deadline) {
+		if !deadline.IsZero() && !now().Before(deadline) && !fin.confirming(false, now()) {
 			return &kxerr.PreviousRunning{Version: cur.Version, After: now().Sub(start)}
 		}
 		if err := sleep(ctx, max(pollInterval(i), limited)); err != nil {
@@ -101,7 +140,7 @@ func waitForPrevious(ctx context.Context, c *api.Client, appID string, p *ui.Pri
 		if len(next) > 0 && deleting(next[0]) {
 			return appDeleting(c)
 		}
-		if len(next) == 0 || next[0].Done() {
+		if len(next) == 0 || fin.final(next[0], now()) {
 			return nil
 		}
 		cur = next[0]
@@ -144,8 +183,10 @@ func (r *runner) wait(ctx context.Context, app *api.App, dep *api.Deployment) (*
 	signalled := false
 	failures := 0
 	var limited time.Duration
-	for i := 0; !cur.Done(); i++ {
-		if o.Now().Sub(start) >= o.Timeout {
+	var fin finality
+	done := fin.final(*cur, o.Now())
+	for i := 0; !done; i++ {
+		if o.Now().Sub(start) >= o.Timeout && !fin.confirming(done, o.Now()) {
 			return cur, phases, &kxerr.WaitTimeout{App: app.Name, Version: cur.Version, After: o.Timeout, NotStarting: r.likely}
 		}
 		if err := o.Sleep(ctx, max(pollInterval(i), limited)); err != nil {
@@ -169,13 +210,19 @@ func (r *runner) wait(ctx context.Context, app *api.App, dep *api.Deployment) (*
 		}
 		failures = 0
 		cur = next
+		done = fin.final(*cur, o.Now())
 		if deleting(*cur) {
 			return cur, phases, appDeleting(r.c)
+		}
+		if fin.confirming(done, o.Now()) {
+			// It may yet fail with its real reason or start again: show
+			// nothing until it lasts.
+			continue
 		}
 		if ph := cur.Phase(); ph != phases[len(phases)-1] {
 			phases = append(phases, ph)
 		}
-		if n := cur.RetryCount + 1; n > attempt && !cur.Done() {
+		if n := cur.RetryCount + 1; n > attempt && !done {
 			spin.Println("v%d didn't go live on attempt %d; Kubernetix is trying again (attempt %d).", cur.Version, n-1, n)
 			attempt = n
 		}

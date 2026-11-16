@@ -507,8 +507,13 @@ func TestDeploymentPhase(t *testing.T) {
 			t.Errorf("Phase(%s) = %s, want %s", status, got, want)
 		}
 	}
-	if !(Deployment{Status: "ready"}).Done() || (Deployment{Status: "building"}).Done() {
+	if !(Deployment{Status: "ready"}).Done() || !(Deployment{Status: "failed"}).Done() || (Deployment{Status: "building"}).Done() {
 		t.Error("Done() wrong")
+	}
+	// rolled_back can be momentary; only one that lasts is final (the deploy
+	// package's rule), so it isn't Done on its own.
+	if d := (Deployment{Status: "rolled_back"}); d.Done() || !d.RolledBack() {
+		t.Error("rolled_back: Done() or RolledBack() wrong")
 	}
 }
 
