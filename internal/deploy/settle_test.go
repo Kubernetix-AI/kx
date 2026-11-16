@@ -53,6 +53,10 @@ func TestRun_MomentaryRolledBackThenAnotherAttempt(t *testing.T) {
 	if !strings.Contains(s, "v15 didn't go live on attempt 1; Kubernetix is trying again (attempt 2).") || strings.Contains(s, "rolled back") {
 		t.Fatalf("stderr:\n%s", s)
 	}
+	// The long path still has a space before the time.
+	if !strings.Contains(s, "✓ Live      v15  queued → starting → queued → starting → live 12s\n") {
+		t.Fatalf("stderr lacks the Live line:\n%s", s)
+	}
 }
 
 // A rolled_back that is still there on a poll at least 10 seconds after kx

@@ -97,6 +97,26 @@ func TestPrinter_StepFormat(t *testing.T) {
 	}
 }
 
+// A detail as wide as its column or wider (a deploy that went through
+// several attempts) still has a space before the time, and a short one is
+// laid out as before.
+func TestPrinter_StepLongDetailKeepsASpaceBeforeTheTime(t *testing.T) {
+	p, _, errw := newTest("")
+	long := "v16  queued → starting → queued → starting → live" // 49 characters
+	exact := strings.Repeat("x", 45)
+	p.Step("Live", long, 16*time.Second)
+	p.StepFailed("Failed", "v16  queued → starting → queued → starting → queued → starting → failed", 14*time.Minute)
+	p.Step("Live", exact, 2*time.Second)
+	p.Step("Live", strings.Repeat("x", 44), 2*time.Second)
+	want := "✓ Live      " + long + " 16s\n" +
+		"✗ Failed    v16  queued → starting → queued → starting → queued → starting → failed 14m 0s\n" +
+		"✓ Live      " + exact + " 2s\n" +
+		"✓ Live      " + strings.Repeat("x", 44) + " 2s\n"
+	if errw.String() != want {
+		t.Fatalf("steps =\n%s\nwant\n%s", errw.String(), want)
+	}
+}
+
 func TestPrinter_StepFailedFormat(t *testing.T) {
 	p, out, errw := newTest("")
 	p.StepFailed("Failed", "v15  queued → starting → failed", 62*time.Second)

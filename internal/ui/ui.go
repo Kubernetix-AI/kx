@@ -221,13 +221,15 @@ func (p *Printer) Step(label, detail string, elapsed time.Duration) {
 	p.writeErr(p.paint(green, "✓") + " " + stepLine(label, detail, elapsed) + "\n")
 }
 
-// stepLine lays out a step's label, detail and time, cleaning the label
-// and detail of terminal control text first.
+// stepLine lays out a step's label, detail and time in columns 10 and 45
+// characters wide, cleaning the label and detail of terminal control text
+// first. A label or detail that fills its column or overflows it (say a
+// deploy that went through several attempts) is still followed by a space.
 func stepLine(label, detail string, elapsed time.Duration) string {
 	label, detail = CleanField(label), CleanField(detail)
-	line := fmt.Sprintf("%-10s%s", label, detail)
+	line := fmt.Sprintf("%-9s %s", label, detail)
 	if elapsed > 0 {
-		line = fmt.Sprintf("%-10s%-45s%s", label, detail, Duration(elapsed))
+		line = fmt.Sprintf("%-9s %-44s %s", label, detail, Duration(elapsed))
 	}
 	return strings.TrimRight(line, " ")
 }
