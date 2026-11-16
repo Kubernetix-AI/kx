@@ -47,7 +47,7 @@ var allCodes = []string{
 	"deploy_limit_reached", "plan_limit_reached", "push_rate_limited", "rate_limited", "registry_not_ready",
 	"billing_unpaid", "subscription_ended",
 	"docker_missing", "docker_stopped", "docker_windows_containers", "docker_permission", "no_dockerfile",
-	"build_failed", "push_failed", "deploy_failed", "wait_timeout", "previous_deploy_running",
+	"build_failed", "push_failed", "deploy_failed", "quota_blocked", "wait_timeout", "previous_deploy_running",
 	"nothing_live", "no_rollback_target", "already_live", "tag_exists", "no_digest", "rollback_unconfirmed", "docker_context_unknown",
 	"multi_region_app", "not_linked", "usage", "login_in_ci", "insecure_api_url",
 	"bad_project_file", "bad_settings_file", "network", "server_error", "timeout", "interrupted", "unexpected",
@@ -522,6 +522,9 @@ func deployLimit(org, plan string, limit int, now time.Time) Problem {
 }
 
 func deployFailed(e *kxerr.DeployFailed) Problem {
+	if e.Code == "quota_blocked" {
+		return noRoom(e)
+	}
 	reason := e.Reason
 	if reason == "" {
 		reason = "your container is crashing on start"
@@ -537,6 +540,24 @@ func deployFailed(e *kxerr.DeployFailed) Problem {
 		what += fmt.Sprintf(" Version %d is still serving.", e.ServingVersion)
 	}
 	return Problem{"deploy_failed", what, fix, ExitDeploy}
+}
+
+// noRoom explains a version the plan had no room for (error_code
+// quota_blocked): exit 5, a plan limit, since deploying it again fails the
+// same way until room is made. The platform's message already says what is
+// full, what still runs and what to do, so kx adds no "still serving"
+// sentence of its own; and it beats any cause kx guessed from the replicas.
+func noRoom(e *kxerr.DeployFailed) Problem {
+	what := fmt.Sprintf("%s v%d didn't go live: ", e.App, e.Version)
+	if msg := clean(e.Reason, maxMessageLen); msg != "" {
+		what += sentence(msg)
+	} else {
+		what += "your plan has no room left for it."
+		if e.ServingVersion > 0 {
+			what += fmt.Sprintf(" Version %d is still serving.", e.ServingVersion)
+		}
+	}
+	return Problem{"quota_blocked", what, "Free up room in your plan or upgrade at " + plansURL + ", then try again.", ExitLimit}
 }
 
 // The tenses cause words a version's containers in: while kx still waits,

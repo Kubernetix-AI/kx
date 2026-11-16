@@ -235,3 +235,34 @@ func TestRollback_EarlierRolledBackThatLastsHasEnded(t *testing.T) {
 		t.Fatalf("stderr:\n%s", e.errOut.String())
 	}
 }
+
+// A version the plan had no room for: Kubernetix rolls it back (rolled_back
+// for a moment, with the generic message), then fails it with error_code
+// quota_blocked and a message that says what is full. kx reports that
+// failure, and Explain makes it exit 5 (a plan limit), not 8.
+func TestRun_NoRoomInThePlanExitsWithTheLimitCode(t *testing.T) {
+	const msg = "Your plan's memory is full. The new version was not started; the previous one still runs. Pick a smaller size, remove an app or database, or upgrade at platform.kubernetix.ai/plans."
+	e := newEnv(t)
+	e.clock.step = 2 * time.Second
+	e.api.statuses = []string{"pending", "deploying", "rolled_back", "failed"}
+	e.api.rolledBackReason = genericRolledBack
+	e.api.failReason, e.api.failCode = msg, "quota_blocked"
+	_, err := e.run(e.options())
+	var df *kxerr.DeployFailed
+	if !errors.As(err, &df) || df.Code != "quota_blocked" || df.Reason != msg {
+		t.Fatalf("Run() = %#v", err)
+	}
+	p := api.Explain(err)
+	if p.Code != "quota_blocked" || p.Exit != api.ExitLimit || p.What != "shop-api v15 didn't go live: "+msg {
+		t.Fatalf("problem = %+v", p)
+	}
+
+	// Any other class keeps the deploy-failed code.
+	e = newEnv(t)
+	e.api.statuses = []string{"pending", "failed"}
+	e.api.failReason, e.api.failCode = "your container is crashing on start", "crash_loop"
+	_, err = e.run(e.options())
+	if p := api.Explain(err); p.Code != "deploy_failed" || p.Exit != api.ExitDeploy {
+		t.Fatalf("problem = %+v", p)
+	}
+}

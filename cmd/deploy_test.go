@@ -1204,3 +1204,23 @@ func TestDeploy_BillingBlockExplained(t *testing.T) {
 		}
 	})
 }
+
+// A version the plan had no room for exits 5 (a plan limit) with the
+// platform's message; in GitHub mode the status says the same.
+func TestDeploy_NoRoomInThePlanExits5(t *testing.T) {
+	const msg = "Your plan's memory is full. The new version was not started; the previous one still runs. Pick a smaller size, remove an app or database, or upgrade at platform.kubernetix.ai/plans."
+	h := newHarness(t)
+	gh := githubJob(h)
+	h.dockerfile("FROM scratch\n")
+	h.api.statuses = []string{"pending", "deploying", "failed"}
+	h.api.failReason, h.api.failCode = msg, "quota_blocked"
+	h.expect(h.run("deploy", "--github"), 5)
+	want := "::error title=Kubernetix deploy::shop-api v16 didn't go live: " + msg + "%0AFree up room in your plan or upgrade at platform.kubernetix.ai/plans, then try again.\n"
+	if !strings.Contains(h.err.String(), want) {
+		t.Fatalf("stderr lacks the annotation:\n%s", h.err.String())
+	}
+	st := gh.got()
+	if last := st[len(st)-1]; last["state"] != "failure" || !strings.HasPrefix(last["description"], "shop-api v16 didn't go live: Your plan's memory is full.") {
+		t.Fatalf("final status = %v", last)
+	}
+}

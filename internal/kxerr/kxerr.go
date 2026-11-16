@@ -162,13 +162,15 @@ func (e *PushRateLimited) Error() string { return "registry credential rate limi
 
 // DeployFailed means version Version of App did not go live.
 // ServingVersion is the version still serving, 0 if none. Reason is the
-// platform's customer-facing message, if any. NotStarting is set when kx
-// saw, while it waited, why the version's containers didn't get ready.
+// platform's customer-facing message, if any, and Code its class for the
+// failure (e.g. quota_blocked), if any. NotStarting is set when kx saw,
+// while it waited, why the version's containers didn't get ready.
 type DeployFailed struct {
 	App            string
 	Version        int
 	ServingVersion int
 	Reason         string
+	Code           string
 	NotStarting    *NotStarting
 }
 

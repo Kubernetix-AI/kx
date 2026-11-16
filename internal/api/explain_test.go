@@ -123,6 +123,17 @@ func explainCases() []explainCase {
 		{"build failed", &kxerr.BuildFailed{Err: errors.New("exit status 1")}, Problem{"build_failed", "Docker couldn't build your app.", "Fix the error shown above, then run kx deploy again.", 6}},
 		{"push failed", &kxerr.PushFailed{Err: errors.New("exit status 1")}, Problem{"push_failed", "kx couldn't upload your image to Kubernetix.", "Check your internet connection, then run kx deploy again.", 7}},
 		{"wait timeout", &kxerr.WaitTimeout{App: "shop-api", Version: 15, After: 18 * time.Minute}, Problem{"wait_timeout", "shop-api v15 is still starting after 18 minutes, so kx stopped waiting; the deploy continues.", "Check on it: kx status", 9}},
+		{"no room in the plan", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Code: "quota_blocked", Reason: quotaRestoredMsg},
+			Problem{"quota_blocked", "shop-api v15 didn't go live: " + quotaRestoredMsg, quotaFix, 5}},
+		{"no room in the plan, first deploy", &kxerr.DeployFailed{App: "shop-api", Version: 1, Code: "quota_blocked", Reason: quotaFirstMsg},
+			Problem{"quota_blocked", "shop-api v1 didn't go live: " + quotaFirstMsg, quotaFix, 5}},
+		{"no room in the plan, no message", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Code: "quota_blocked"},
+			Problem{"quota_blocked", "shop-api v15 didn't go live: your plan has no room left for it. Version 14 is still serving.", quotaFix, 5}},
+		// The platform's class beats what kx guessed from the replicas.
+		{"no room in the plan, replicas looked stuck", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Code: "quota_blocked", Reason: quotaRestoredMsg, NotStarting: &kxerr.NotStarting{After: 2 * time.Minute, Path: "/", Port: 8080, HealthCheck: true}},
+			Problem{"quota_blocked", "shop-api v15 didn't go live: " + quotaRestoredMsg, quotaFix, 5}},
+		{"unknown failure class", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Code: "some_new_class", Reason: "your container is crashing on start"},
+			Problem{"deploy_failed", "shop-api v15 didn't go live: your container is crashing on start. Version 14 is still serving.", "See why: kx logs --deployment v15", 8}},
 		{"deploy failed with reason, no earlier version", &kxerr.DeployFailed{App: "shop-api", Version: 1, Reason: "the image could not be pulled."}, Problem{"deploy_failed", "shop-api v1 didn't go live: the image could not be pulled.", "See why: kx logs --deployment v1", 8}},
 		{"never ready, platform failed it", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Reason: "Deployment failed.", NotStarting: &kxerr.NotStarting{After: 2*time.Minute + 10*time.Second, Path: "/", Port: 8080, HealthCheck: true}},
 			Problem{"deploy_failed", "shop-api v15 didn't go live: its container kept crashing or didn't answer health checks on / at port 8080. Version 14 is still serving.", "Make your app start and answer on / at port 8080 (the log lines above may say why it didn't), then run kx deploy again.", 8}},
@@ -226,6 +237,9 @@ func checkShape(t *testing.T, p Problem) {
 	case "billing_unpaid", "subscription_ended":
 		// Line one is the platform's own customer message, which says
 		// what is paused and that running apps are not affected.
+		maxSentences = 4
+	case "quota_blocked":
+		// The platform's message: what is full, what runs, what to do.
 		maxSentences = 4
 	}
 	if sentences > maxSentences {
@@ -381,6 +395,14 @@ func TestExplain_RealTokenErrorBodies(t *testing.T) {
 		})
 	}
 }
+
+// The platform's messages for a version its plan had no room for
+// (error_code quota_blocked), word for word, and kx's fix line.
+const (
+	quotaRestoredMsg = "Your plan's memory is full. The new version was not started; the previous one still runs. Pick a smaller size, remove an app or database, or upgrade at platform.kubernetix.ai/plans."
+	quotaFirstMsg    = "Your plan's app instances are full. This version was not started, so nothing is running yet. Use fewer replicas, remove an app or database, or upgrade at platform.kubernetix.ai/plans."
+	quotaFix         = "Free up room in your plan or upgrade at platform.kubernetix.ai/plans, then try again."
+)
 
 // The platform's customer messages for a billing block (402), word for word.
 const (

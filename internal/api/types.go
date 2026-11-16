@@ -73,6 +73,9 @@ type Deployment struct {
 	Kind          string `json:"kind,omitempty"`
 	ImageURL      string `json:"image_url,omitempty"`
 	CustomerError string `json:"error_message_customer,omitempty"`
+	// ErrorCode is the platform's class for a failure, e.g. quota_blocked
+	// (the plan had no room for the version); new classes may appear.
+	ErrorCode string `json:"error_code,omitempty"`
 	// RetryCount is how many times Kubernetix has started this deployment
 	// again after an attempt that didn't go live.
 	RetryCount  int          `json:"retry_count,omitempty"`

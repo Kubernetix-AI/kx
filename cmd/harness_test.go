@@ -79,6 +79,7 @@ type fakeAPI struct {
 	rollbackErr int      // POST /deployments/{id}/rollback answers with this status
 	gets        map[string]int
 	failReason  string
+	failCode    string // the error_code a failed deployment carries
 
 	requests   []string
 	userAgents []string
@@ -551,7 +552,7 @@ func (f *fakeAPI) findDeployment(id string) *api.Deployment {
 				f.gets[id]++
 				d.Status = f.statuses[n]
 				if d.Status == "failed" {
-					d.CustomerError = f.failReason
+					d.CustomerError, d.ErrorCode = f.failReason, f.failCode
 				}
 			}
 			return d

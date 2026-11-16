@@ -559,7 +559,7 @@ func (r *runner) failed(ctx context.Context, app *api.App, d *api.Deployment) *k
 	if reason == "" && d.Status == api.StatusRolledBack {
 		reason = "Kubernetix rolled it back"
 	}
-	return &kxerr.DeployFailed{App: app.Name, Version: d.Version, ServingVersion: r.serving(ctx, app, d), Reason: reason, NotStarting: r.likely}
+	return &kxerr.DeployFailed{App: app.Name, Version: d.Version, ServingVersion: r.serving(ctx, app, d), Reason: reason, Code: d.ErrorCode, NotStarting: r.likely}
 }
 
 // deploymentLogs returns the last 20 lines of d's build and rollout logs.

@@ -481,6 +481,19 @@ func TestDeployment_DecodesRetriesPortAndHealthChecks(t *testing.T) {
 	}
 }
 
+// A failed deployment carries the platform's failure class beside its
+// message for customers.
+func TestDeployment_DecodesErrorCode(t *testing.T) {
+	var d Deployment
+	body := `{"id":"d1","version":15,"status":"failed","error_code":"quota_blocked","error_message_customer":"Your plan's memory is full."}`
+	if err := json.Unmarshal([]byte(body), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.ErrorCode != "quota_blocked" || d.CustomerError != "Your plan's memory is full." {
+		t.Fatalf("decoded %+v", d)
+	}
+}
+
 func TestUsage_DeploysToday(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/orgs/acme-corp/usage" {
