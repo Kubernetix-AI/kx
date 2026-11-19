@@ -90,9 +90,10 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: go build -trimpath -o "dist/kx-${GOOS}-${GOARCH}" .
 
-  # The only job that uses a Docker engine: it builds the Dockerfile kx
-  # deploy writes for each test app and checks that the app listens on
-  # port 8080. It pulls public base images and never logs in or pushes.
+  # The only job that uses a Docker engine: it builds the Dockerfile (and
+  # .dockerignore) kx deploy writes for each test app, runs it as an
+  # arbitrary non-root user, and checks that the app answers on port 8080.
+  # It pulls public base images and never logs in or pushes.
   templates:
     name: Generated Dockerfiles
     runs-on: ubuntu-latest
@@ -101,7 +102,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Build each test app's Dockerfile and check it listens
+      - name: Build each test app's Dockerfile and check that it answers
         run: scripts/check-dockerfiles.sh internal/scaffold/testdata
 
   release-snapshot:
