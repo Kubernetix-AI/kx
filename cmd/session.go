@@ -3,7 +3,9 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -254,6 +256,59 @@ func (s *Session) ResolveApp(ctx context.Context) (*api.App, error) {
 		return nil, err
 	}
 	return s.FindApp(ctx, s.Cfg.App, s.Cfg.AppID)
+}
+
+// ResolveAppOrOnly is ResolveApp for commands that only look (status,
+// logs, open): in a folder that isn't linked, they use the organization's
+// only app (onlyApp). command names the command, for the fix line.
+func (s *Session) ResolveAppOrOnly(ctx context.Context, command string) (*api.App, error) {
+	app, err := s.ResolveApp(ctx)
+	if errors.Is(err, kxerr.ErrNotLinked) {
+		return s.onlyApp(ctx, command)
+	}
+	return app, err
+}
+
+// shownApps is how many app names a fix line lists.
+const shownApps = 5
+
+// onlyApp is the app a command uses in a folder that isn't linked: the
+// organization's only app, which it names. With none, or several, it says
+// how to go on, listing a few of the apps.
+func (s *Session) onlyApp(ctx context.Context, command string) (*api.App, error) {
+	c, err := s.Client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	org, err := s.Org(ctx)
+	if err != nil {
+		return nil, err
+	}
+	apps, err := c.ListApps(ctx)
+	if err != nil {
+		return nil, err
+	}
+	switch len(apps) {
+	case 0:
+		return nil, &kxerr.Usage{What: "There are no apps in " + org + " yet.", Fix: "Deploy this folder: kx deploy"}
+	case 1:
+		s.P.Info("Using %s, the only app in %s.", apps[0].Name, org)
+		c.Ctx.App = apps[0].Name
+		return &apps[0], nil
+	}
+	names := make([]string, 0, len(apps))
+	for _, a := range apps {
+		names = append(names, a.Name)
+	}
+	sort.Strings(names)
+	list := strings.Join(names[:min(len(names), shownApps)], ", ")
+	if more := len(names) - shownApps; more > 0 {
+		list += fmt.Sprintf(" and %d more", more)
+	}
+	return nil, &kxerr.Usage{
+		What: "This folder isn't linked to an app, so kx doesn't know which one you mean.",
+		Fix:  "Run: kx " + command + " --app <name>. Your apps: " + list,
+	}
 }
 
 // FindApp looks an app up by name (or ID), trying the known ID first.

@@ -69,7 +69,7 @@ func runLogs(ctx context.Context, a *App, cmd *cobra.Command, o logsOpts) error 
 	if err != nil {
 		return err
 	}
-	app, err := s.ResolveApp(ctx)
+	app, err := s.ResolveAppOrOnly(ctx, "logs")
 	if err != nil {
 		return err
 	}

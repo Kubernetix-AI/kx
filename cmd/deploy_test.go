@@ -1224,3 +1224,129 @@ func TestDeploy_NoRoomInThePlanExits5(t *testing.T) {
 		t.Fatalf("final status = %v", last)
 	}
 }
+
+// kxJSON reads the folder's .kx.json, or "" if there is none.
+func (h *harness) kxJSON() string {
+	h.t.Helper()
+	b, err := os.ReadFile(filepath.Join(h.dir, ".kx.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return ""
+	}
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return strings.Join(strings.Fields(string(b)), "")
+}
+
+func TestDeploy_AppFlagNewName_AsksThenCreates(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.api.apps = h.api.apps[:1] // shop-api only
+	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+	h.tty, h.stdin = true, "\n"
+	h.expect(h.run("deploy", "--app", "web"), 0)
+	if !strings.HasPrefix(h.err.String(), "There's no app called web in acme-corp. Create it? [Y/n] Saved in .kx.json. Next time, just run kx deploy.\n\n✓ Checked ") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	if len(h.api.newApps) != 1 || h.api.newApps[0]["name"] != "web" {
+		t.Fatalf("POST /apps = %v", h.api.newApps)
+	}
+	if got := h.kxJSON(); got != `{"app":"web","app_id":"7a7a7a7a-0000-4000-8000-000000000001","org":"acme-corp"}` {
+		t.Fatalf(".kx.json = %s", got)
+	}
+}
+
+func TestDeploy_AppFlagNewName_Declined(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+	h.tty, h.stdin = true, "n\n"
+	h.expect(h.run("deploy", "--app", "admin"), 2)
+	if !strings.HasSuffix(h.err.String(), "Nothing was deployed: there's no app called admin in acme-corp.\nSee your apps: kx apps list\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	if len(h.api.newApps) != 0 || len(h.docker.builds) != 0 || h.kxJSON() != "" {
+		t.Fatalf("created %v, built %d, .kx.json %q", h.api.newApps, len(h.docker.builds), h.kxJSON())
+	}
+}
+
+func TestDeploy_AppFlagNewName_NoTerminal_SaysHow(t *testing.T) {
+	for _, flag := range []bool{true, false} {
+		h := newHarness(t)
+		h.loginAs("acme-corp", tokCorp, &dec11)
+		h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+		args := []string{"deploy", "--app", "admin"}
+		if !flag {
+			args = args[:1]
+			h.env["KX_APP"] = "admin"
+		}
+		h.expect(h.run(args...), 2)
+		if !strings.HasSuffix(h.err.String(), "There's no app called admin in acme-corp.\nCreate it: kx link admin, then kx deploy\n") || len(h.api.newApps) != 0 {
+			t.Fatalf("stderr:\n%s", h.err.String())
+		}
+	}
+}
+
+func TestDeploy_AppFlagNewName_InCI_Fails(t *testing.T) {
+	h := newHarness(t)
+	h.env["KX_TOKEN"], h.env["GITHUB_ACTIONS"], h.env["GITHUB_EVENT_NAME"] = tokCorp, "true", "push"
+	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+	h.tty, h.stdin = true, "\n"
+	h.expect(h.run("deploy", "--app", "admin"), 4)
+	if !strings.HasSuffix(h.err.String(), "There's no app called admin in acme-corp.\nSee your apps: kx apps list\n") || len(h.api.newApps) != 0 {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+}
+
+// Only tokens that can create apps are offered to create one.
+func TestDeploy_AppFlagNewName_TokenThatCantCreate(t *testing.T) {
+	h := newHarness(t)
+	h.env["KX_TOKEN"] = tokRead
+	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+	h.tty, h.stdin = true, "\n"
+	h.expect(h.run("deploy", "--app", "admin", "--image", "registry.kubernetix.ai/acme-corp/admin@"+testDigest), 3)
+	if strings.Contains(h.err.String(), "Create it?") || len(h.api.newApps) != 0 {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+}
+
+func TestDeploy_AppFlagExistingApp_SavesKxJSON(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.inFolder("checkout")
+	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+	h.expect(h.run("deploy", "--app", "shop-api"), 0)
+	if got := h.kxJSON(); got != `{"app":"shop-api","app_id":"`+appShopID+`","org":"acme-corp"}` {
+		t.Fatalf(".kx.json = %s", got)
+	}
+	if !strings.HasPrefix(h.err.String(), "Saved in .kx.json. Next time, just run kx deploy.\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+
+	// A folder that already has one keeps it.
+	h.expect(h.run("deploy", "--app", "web"), 0)
+	if got := h.kxJSON(); !strings.Contains(got, `"app":"shop-api"`) || strings.Contains(h.err.String(), "Saved in .kx.json") {
+		t.Fatalf(".kx.json = %s, stderr:\n%s", got, h.err.String())
+	}
+}
+
+// An image deploy names no project folder, so kx doesn't link this one.
+func TestDeploy_AppFlagWithImage_WritesNoKxJSON(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.expect(h.run("deploy", "--app", "shop-api", "--image", "registry.kubernetix.ai/acme-corp/shop-api@"+testDigest), 0)
+	if h.kxJSON() != "" || strings.Contains(h.err.String(), "Saved in .kx.json") {
+		t.Fatalf(".kx.json = %q, stderr:\n%s", h.kxJSON(), h.err.String())
+	}
+}
+
+// CI checkouts are thrown away: no .kx.json there either.
+func TestDeploy_AppFlagInCI_WritesNoKxJSON(t *testing.T) {
+	h := newHarness(t)
+	h.env["KX_TOKEN"], h.env["CI"] = tokCorp, "true"
+	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+	h.expect(h.run("deploy", "--app", "shop-api"), 0)
+	if h.kxJSON() != "" {
+		t.Fatalf(".kx.json = %q", h.kxJSON())
+	}
+}

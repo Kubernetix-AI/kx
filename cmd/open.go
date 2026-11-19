@@ -35,7 +35,7 @@ func runOpen(ctx context.Context, a *App, cmd *cobra.Command, appFlag string, da
 	if err != nil {
 		return err
 	}
-	app, err := s.ResolveApp(ctx)
+	app, err := s.ResolveAppOrOnly(ctx, "open")
 	if err != nil {
 		return err
 	}

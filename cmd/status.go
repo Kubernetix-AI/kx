@@ -61,7 +61,7 @@ func runStatus(ctx context.Context, a *App, cmd *cobra.Command, appFlag string) 
 	if err != nil {
 		return err
 	}
-	app, err := s.ResolveApp(ctx)
+	app, err := s.ResolveAppOrOnly(ctx, "status")
 	if err != nil {
 		return err
 	}
