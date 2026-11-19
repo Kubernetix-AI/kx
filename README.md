@@ -326,4 +326,6 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## License
 
-To be decided.
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Copyright 2026 Nandan, Inc.
+
+The kx binaries include third-party Go modules; their licenses are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

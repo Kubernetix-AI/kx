@@ -1,7 +1,8 @@
 # Contributing to kx
 
-Thanks for helping. kx doesn't have a license yet, so please open an issue to discuss a change
-before you send a large pull request.
+Thanks for helping. kx is licensed under the Apache License 2.0 (see LICENSE). By sending a pull
+request you agree that your contribution is licensed under the same terms. For a large change,
+please open an issue first so we can discuss it.
 
 ## Build and test
 
