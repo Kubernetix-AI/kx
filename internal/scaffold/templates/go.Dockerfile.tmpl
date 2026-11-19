@@ -1,0 +1,21 @@
+# Written by kx deploy for {{.Label}}.
+FROM {{.Image}} AS build
+WORKDIR /src
+{{- if .CopyFirst}}
+COPY {{join .CopyFirst}} ./
+{{- range .Install}}
+RUN {{.}}
+{{- end}}
+{{- end}}
+COPY . .
+{{- range .Build}}
+RUN {{.}}
+{{- end}}
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/app /app
+ENV PORT=8080
+EXPOSE 8080
+# Some hosts refuse containers that run as root, and can only check a numeric user.
+USER 65532:65532
+CMD {{exec .Start}}
