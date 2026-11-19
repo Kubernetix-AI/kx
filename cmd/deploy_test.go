@@ -263,7 +263,7 @@ func TestDeploy_NoDockerfile(t *testing.T) {
 	h.loginAs("acme-corp", tokCorp, &dec11)
 	h.link("shop-api", appShopID, "acme-corp")
 	h.expect(h.run("deploy"), 2)
-	if !strings.Contains(h.err.String(), "There's no Dockerfile in "+h.dir+".\nRun kx deploy in the folder that has your Dockerfile.\n") {
+	if !strings.Contains(h.err.String(), "kx needs a Dockerfile to build your app, and there isn't one in "+h.dir+".\nAdd a Dockerfile to this folder, or cd to the folder that has one. To have kx write one, run kx deploy in a terminal.\n") {
 		t.Fatalf("stderr = %q", h.err.String())
 	}
 	if len(h.api.got()) != 0 || len(h.docker.got()) != 0 {

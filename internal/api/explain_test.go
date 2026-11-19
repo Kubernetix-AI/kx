@@ -55,7 +55,7 @@ func explainCases() []explainCase {
 		{"cannot push (local)", kxerr.ErrNoPushPermission, Problem{"token_cannot_push", "This token can't upload images.", "Create a token with Push images on the app's Deploy tab, or deploy an image that's already pushed: kx deploy --image <image>", 3}},
 		{"docker missing", kxerr.ErrDockerMissing, Problem{"docker_missing", "kx builds your app with Docker, and Docker isn't installed on this computer.", "Install Docker Desktop from docker.com and run kx deploy again.", 10}},
 		{"docker stopped", kxerr.ErrDockerStopped, Problem{"docker_stopped", "Docker is installed but not running.", "Start Docker Desktop, then run kx deploy again.", 10}},
-		{"no Dockerfile", &kxerr.NoDockerfile{Dir: "/Users/sam/code/shop-api"}, Problem{"no_dockerfile", "There's no Dockerfile in /Users/sam/code/shop-api.", "Run kx deploy in the folder that has your Dockerfile.", 2}},
+		{"no Dockerfile", &kxerr.NoDockerfile{Dir: "/Users/sam/code/shop-api"}, Problem{"no_dockerfile", "kx needs a Dockerfile to build your app, and there isn't one in /Users/sam/code/shop-api.", "Add a Dockerfile to this folder, or cd to the folder that has one. To have kx write one, run kx deploy in a terminal.", 2}},
 		{"daily deploys used", &kxerr.DeployLimit{Org: "acme-corp", Plan: "free", Limit: 5, Now: evening}, Problem{"deploy_limit_reached", "acme-corp has used all 5 deploys the Free plan includes today; more are available at 00:00 UTC (in 3 h 12 min).", "Upgrade for more deploys a day: platform.kubernetix.ai/plans", 5}},
 		{"push rate limited (local)", &kxerr.PushRateLimited{Wait: 6 * time.Minute}, Problem{"push_rate_limited", "This token has uploaded images too often in the last hour.", "Wait 6 minutes, then run kx deploy again.", 5}},
 		{"deploy crashed", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14}, Problem{"deploy_failed", "shop-api v15 didn't go live: your container is crashing on start. Version 14 is still serving.", "See why: kx logs --deployment v15", 8}},
@@ -167,6 +167,10 @@ func explainCases() []explainCase {
 		{"docker context unknown, odd name", &kxerr.DockerContextUnknown{Name: "x\ny"}, Problem{"docker_context_unknown", "kx couldn't read the address of your active Docker context, so it can't upload the image from the engine that built it.", "Set DOCKER_HOST to that engine's address, then run kx deploy again.", 10}},
 		{"tag exists twice", &kxerr.PushFailed{Err: kxerr.ErrTagExists}, Problem{"tag_exists", "The registry already has an image with that tag and won't replace it.", "Wait a minute, then run kx deploy again.", 7}},
 		{"no digest", fmt.Errorf("push: %w", kxerr.ErrNoDigest), Problem{"no_digest", "Docker didn't report the digest of the image it uploaded, so kx can't be sure what it would deploy.", "Update Docker, then run kx deploy again.", 7}},
+		{"no Dockerfile in CI", &kxerr.NoDockerfile{Dir: "/home/runner/work/shop-api", Why: kxerr.NoDockerfileCI}, Problem{"no_dockerfile", "kx needs a Dockerfile to build your app, and there isn't one in /home/runner/work/shop-api.", "Add a Dockerfile to this folder and commit it; kx deploy on your computer can write one.", 2}},
+		{"no Dockerfile, app not recognised", &kxerr.NoDockerfile{Dir: "/Users/sam/code/shop-api", Why: kxerr.NoDockerfileUndetected}, Problem{"no_dockerfile", "kx needs a Dockerfile to build your app, and there isn't one in /Users/sam/code/shop-api.", "kx can write one for Node, Python, Go and static sites, but couldn't tell what this folder is. Add a Dockerfile, or cd to your app's folder.", 2}},
+		{"no Dockerfile, .env not ignored", &kxerr.NoDockerfile{Dir: "/Users/sam/code/shop-api", Why: kxerr.NoDockerfileEnvExposed}, Problem{"no_dockerfile", ".dockerignore doesn't list .env, so a .env file in this folder would be copied into the image.", "Add a line .env to .dockerignore, then run kx deploy again.", 2}},
+		{"no Dockerfile, kx can't write one", &kxerr.NoDockerfile{Dir: "/Users/sam/code/shop-api", What: "This looks like a Node app, but package.json has no start script, so kx can't tell how to run it.", Fix: `Add a "start" script to package.json, or add a Dockerfile.`}, Problem{"no_dockerfile", "This looks like a Node app, but package.json has no start script, so kx can't tell how to run it.", `Add a "start" script to package.json, or add a Dockerfile.`, 2}},
 		{"docker permission", kxerr.ErrDockerPermission, Problem{"docker_permission", "Docker is running, but this user isn't allowed to use it.", "Add yourself to the docker group (sudo usermod -aG docker $USER), then log in again and run kx deploy.", 10}},
 		{"previous deploy still running", &kxerr.PreviousRunning{App: "shop-api", Version: 14, After: 18 * time.Minute}, Problem{"previous_deploy_running", "shop-api v14 is still deploying after 18 minutes, so kx didn't start another deploy.", "Check on it: kx status", 9}},
 		{"stopped waiting", &kxerr.StoppedWaiting{App: "shop-api", Version: 15}, Problem{"interrupted", "kx stopped waiting for shop-api v15 because it was interrupted; the deploy continues.", "Check on it: kx status", 1}},
@@ -246,7 +250,13 @@ func checkShape(t *testing.T, p Problem) {
 	if sentences > maxSentences {
 		t.Errorf("line one has %d sentences: %q", sentences, p.What)
 	}
-	if strings.Count(p.Fix, ". ") > 0 {
+	maxFixSentences := 1
+	if p.Code == "no_dockerfile" {
+		// "Add a Dockerfile …, or cd to the folder that has one." is the
+		// fix; the second sentence says how kx can write one instead.
+		maxFixSentences = 2
+	}
+	if strings.Count(p.Fix, ". ")+1 > maxFixSentences {
 		t.Errorf("line two has more than one fix: %q", p.Fix)
 	}
 	if p.Exit < 1 || p.Exit > 10 {

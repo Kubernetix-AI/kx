@@ -108,6 +108,14 @@ waiting, since a container can still get ready on a later start. The deploy fail
 only if Kubernetix gives up on the version, and kx stops at `--timeout` (exit 9); either way
 it names the likely cause. The version before it keeps serving.
 
+**No Dockerfile?** On a terminal, `kx deploy` recognises Node, Python and Go apps and static
+sites, offers to write a Dockerfile for yours, shows it, and carries on with the deploy. The
+Dockerfile listens on port 8080 and runs as a non-root user; change it as you need. If the
+folder has no `.dockerignore`, kx writes one that keeps `.env` files, keys and `.git` out of
+the image; if yours doesn't exclude a `.env` file in the folder, kx asks to add it first, and
+builds nothing if you say no. When a folder looks like more than one kind of app, kx asks
+which one it is. kx never replaces a Dockerfile, and in CI it writes none: commit yours.
+
 ## Commands
 
 Every command takes `--json` (machine-readable output with stable keys) and `--org <org>`
@@ -119,7 +127,7 @@ Every command takes `--json` (machine-readable output with stable keys) and `--o
 |---|---|
 | `kx` | Prints the three-step quickstart. |
 | `kx login` | Opens the dashboard so you can create a token for this computer, then asks you to paste it. |
-| `kx deploy` | Builds the folder's Dockerfile, pushes the image, deploys it, waits until it's live and prints the URL. |
+| `kx deploy` | Builds the folder's Dockerfile (or offers to write one), pushes the image, deploys it, waits until it's live and prints the URL. |
 | `kx link [app]` | Saves which app this folder deploys to in `.kx.json`. Also called `kx init`. |
 
 ```sh
@@ -264,7 +272,7 @@ The messages you are most likely to meet:
 | The token in the KX_TOKEN secret doesn't have the Read permission, which kx deploy needs. | Create a deploy token on the app's Deploy tab (it has Deploy, Read and Push images) and replace the KX_TOKEN secret. | 3 |
 | kx builds your app with Docker, and Docker isn't installed on this computer. | Install Docker Desktop from docker.com and run kx deploy again. | 10 |
 | Docker is installed but not running. | Start Docker Desktop, then run kx deploy again. | 10 |
-| There's no Dockerfile in /Users/sam/code/shop-api. | Run kx deploy in the folder that has your Dockerfile. | 2 |
+| kx needs a Dockerfile to build your app, and there isn't one in /Users/sam/code/shop-api. | Add a Dockerfile to this folder, or cd to the folder that has one. To have kx write one, run kx deploy in a terminal. | 2 |
 | acme-corp has used all 5 deploys the Free plan includes today; more are available at 00:00 UTC (in 3 h 12 min). | Upgrade for more deploys a day: platform.kubernetix.ai/plans | 5 |
 | This token has uploaded images too often in the last hour. | Wait 6 minutes, then run kx deploy again. | 5 |
 | Payment for this organization is overdue. New deployments and new resources are paused until the balance is paid. Your running apps are not affected. | Pay the overdue balance on acme-corp's Billing page in the dashboard: platform.kubernetix.ai/settings?tab=billing | 5 |

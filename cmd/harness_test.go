@@ -566,6 +566,7 @@ func (f *fakeAPI) findDeployment(id string) *api.Deployment {
 type fakeDocker struct {
 	mu       sync.Mutex
 	calls    []string
+	builds   []docker.BuildOptions
 	checkErr error
 	buildErr error
 	pushErrs []error // returned by successive pushes, then success
@@ -582,6 +583,9 @@ func (d *fakeDocker) Check(context.Context) error { d.record("check"); return d.
 
 func (d *fakeDocker) Build(_ context.Context, o docker.BuildOptions, w io.Writer) error {
 	d.record("build " + o.Tag)
+	d.mu.Lock()
+	d.builds = append(d.builds, o)
+	d.mu.Unlock()
 	if d.buildErr != nil {
 		_, _ = io.WriteString(w, "#5 [2/3] RUN npm ci\n#5 ERROR: npm ci failed\n")
 	}

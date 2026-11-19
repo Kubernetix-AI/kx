@@ -139,8 +139,29 @@ type Usage struct{ What, Fix string }
 
 func (e *Usage) Error() string { return e.What }
 
-// NoDockerfile means Dir has no Dockerfile.
-type NoDockerfile struct{ Dir string }
+// NoDockerfile means Dir has no Dockerfile, and kx didn't write one. Why
+// (one of the NoDockerfile* reasons) changes the fix. When kx recognised
+// the app but can't write a Dockerfile for it, What and Fix say why.
+type NoDockerfile struct {
+	Dir       string
+	Why       string
+	What, Fix string
+}
+
+// Why kx didn't write a Dockerfile (NoDockerfile.Why).
+const (
+	// NoDockerfileManual: the person said no, or there was no terminal
+	// to ask on.
+	NoDockerfileManual = ""
+	// NoDockerfileCI: kx runs in CI, where nobody can see what it writes.
+	NoDockerfileCI = "ci"
+	// NoDockerfileUndetected: kx couldn't tell what kind of app it is.
+	NoDockerfileUndetected = "undetected"
+	// NoDockerfileEnvExposed: a .env file would be copied into the image,
+	// because the folder's .dockerignore doesn't list it, and the person
+	// didn't want kx to add it.
+	NoDockerfileEnvExposed = "env_exposed"
+)
 
 func (e *NoDockerfile) Error() string { return "no Dockerfile in " + e.Dir }
 

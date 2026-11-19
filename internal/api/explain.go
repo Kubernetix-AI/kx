@@ -145,7 +145,7 @@ func Explain(err error) Problem {
 	case errors.Is(err, kxerr.ErrDockerPermission):
 		return Problem{"docker_permission", "Docker is running, but this user isn't allowed to use it.", "Add yourself to the docker group (sudo usermod -aG docker $USER), then log in again and run kx deploy.", ExitDocker}
 	case errors.As(err, &noDocker):
-		return Problem{"no_dockerfile", "There's no Dockerfile in " + noDocker.Dir + ".", "Run kx deploy in the folder that has your Dockerfile.", ExitUsage}
+		return noDockerfile(noDocker)
 	case errors.As(err, &limit):
 		return deployLimit(limit.Org, limit.Plan, limit.Limit, limit.Now)
 	case errors.As(err, &pushRate):
@@ -477,6 +477,25 @@ func billingBlocked(e *Error) Problem {
 		what = sentence(msg)
 	}
 	return Problem{e.Code, what, fix + " on " + page + ": " + billingURL, ExitLimit}
+}
+
+// noDockerfile explains a folder without a Dockerfile that kx didn't
+// write one for. kx deploy prints the same first line before it offers to
+// write one.
+func noDockerfile(e *kxerr.NoDockerfile) Problem {
+	if e.What != "" {
+		return Problem{"no_dockerfile", e.What, e.Fix, ExitUsage}
+	}
+	what := "kx needs a Dockerfile to build your app, and there isn't one in " + e.Dir + "."
+	switch e.Why {
+	case kxerr.NoDockerfileCI:
+		return Problem{"no_dockerfile", what, "Add a Dockerfile to this folder and commit it; kx deploy on your computer can write one.", ExitUsage}
+	case kxerr.NoDockerfileUndetected:
+		return Problem{"no_dockerfile", what, "kx can write one for Node, Python, Go and static sites, but couldn't tell what this folder is. Add a Dockerfile, or cd to your app's folder.", ExitUsage}
+	case kxerr.NoDockerfileEnvExposed:
+		return Problem{"no_dockerfile", ".dockerignore doesn't list .env, so a .env file in this folder would be copied into the image.", "Add a line .env to .dockerignore, then run kx deploy again.", ExitUsage}
+	}
+	return Problem{"no_dockerfile", what, "Add a Dockerfile to this folder, or cd to the folder that has one. To have kx write one, run kx deploy in a terminal.", ExitUsage}
 }
 
 func cannotPush() Problem {
