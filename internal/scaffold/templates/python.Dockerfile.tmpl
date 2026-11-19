@@ -1,6 +1,9 @@
 # Written by kx deploy for {{.Label}}.
 FROM {{.Image}}
 WORKDIR /app
+{{- if .Env}}
+ENV {{join .Env}}
+{{- end}}
 {{- if .CopyFirst}}
 COPY {{join .CopyFirst}} ./
 {{- range .Install}}
@@ -16,7 +19,7 @@ RUN {{.}}
 {{- range .Build}}
 RUN {{.}}
 {{- end}}
-ENV PORT=8080 PYTHONUNBUFFERED=1
+ENV PORT=8080 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 EXPOSE 8080
 # Some hosts refuse containers that run as root, and can only check a numeric user.
 RUN useradd --uid 10001 --create-home app

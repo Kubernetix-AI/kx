@@ -1,5 +1,8 @@
 # Written by kx deploy for {{.Label}}.
-FROM {{.Image}} AS build
+# The build runs on this computer's own platform and compiles for the image's.
+FROM --platform=$BUILDPLATFORM {{.Image}} AS build
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src
 {{- if .CopyFirst}}
 COPY {{join .CopyFirst}} ./

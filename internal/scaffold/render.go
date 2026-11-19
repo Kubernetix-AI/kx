@@ -19,7 +19,7 @@ var templateFiles embed.FS
 var templates = template.Must(template.New("").Funcs(template.FuncMap{
 	"join": func(items []string) string { return strings.Join(items, " ") },
 	"exec": execForm,
-}).ParseFS(templateFiles, "templates/*.Dockerfile.tmpl"))
+}).ParseFS(templateFiles, "templates/*.tmpl"))
 
 // Render returns the Dockerfile kx writes for d, and the .dockerignore it
 // writes beside it when the folder has none.
@@ -27,15 +27,30 @@ func Render(d Detection) (dockerfile, dockerignore []byte, err error) {
 	if d.Problem != "" {
 		return nil, nil, errors.New("kx can't write a Dockerfile for this app: " + d.Problem)
 	}
-	var b bytes.Buffer
-	if err := templates.ExecuteTemplate(&b, string(d.Stack)+".Dockerfile.tmpl", d); err != nil {
+	var df, ignore bytes.Buffer
+	if err := templates.ExecuteTemplate(&df, string(d.Stack)+".Dockerfile.tmpl", d); err != nil {
 		return nil, nil, fmt.Errorf("no Dockerfile for %q: %w", d.Stack, err)
 	}
-	ignore, err := templateFiles.ReadFile("templates/dockerignore.tmpl")
-	if err != nil {
+	if err := templates.ExecuteTemplate(&ignore, "dockerignore.tmpl", d); err != nil {
 		return nil, nil, err
 	}
-	return b.Bytes(), ignore, nil
+	return df.Bytes(), ignore.Bytes(), nil
+}
+
+// UnreadableDockerfile returns the path of a Dockerfile (or dockerfile)
+// in dir that is there but can't be read as a file: a link to nothing, a
+// folder. kx can't build with it and doesn't replace it. It returns ""
+// when there is none.
+func UnreadableDockerfile(dir string) string {
+	for _, name := range []string{"Dockerfile", "dockerfile"} {
+		if _, err := os.Lstat(filepath.Join(dir, name)); err != nil {
+			continue
+		}
+		if !isFile(dir, name) {
+			return filepath.Join(dir, name)
+		}
+	}
+	return ""
 }
 
 // execForm writes a command as a JSON array (Docker's exec form), so a

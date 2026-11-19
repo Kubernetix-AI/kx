@@ -5,6 +5,7 @@
   "packageManager": "pnpm@9.15.9",
   "scripts": {
     "build": "node build.js",
-    "start": "node dist/server.js"
+    "start": "pnpm run serve",
+    "serve": "node dist/server.js"
   }
 }

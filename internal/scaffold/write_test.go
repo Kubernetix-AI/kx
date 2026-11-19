@@ -33,13 +33,21 @@ func TestScaffold_DockerignoreKeepsEnvOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, line := range []string{".env", ".env.*", ".git", "node_modules", "__pycache__", ".venv", "*.pem", "*.key", "id_rsa*", ".ssh", ".aws", ".netrc", ".pypirc", "*.tfstate", ".kx.json"} {
+	for _, line := range []string{".env", ".env.*", ".git", "node_modules", "__pycache__", ".venv", "*.pem", "*.key", "id_rsa*", ".ssh", ".aws", ".netrc", ".pypirc", "*.tfstate", ".kx.json",
+		"Dockerfile", ".dockerignore", "**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/id_rsa*"} {
 		if !hasLine(string(ignore), line) {
 			t.Errorf(".dockerignore has no line %q:\n%s", line, ignore)
 		}
 	}
 	if exposed, err := EnvExposed(dir); err != nil || len(exposed) != 0 {
 		t.Fatalf("EnvExposed() after Write = %q, %v", exposed, err)
+	}
+	// The same files in subfolders stay out too.
+	rules := parseDockerignore(ignore)
+	for _, p := range []string{".env", ".env.local", "api/.env", "api/config/.env.production", "certs/server.key", "deploy/id_rsa", "a/b/c.pem"} {
+		if !rules.excludes(p) {
+			t.Errorf("the .dockerignore kx writes lets %s into the image", p)
+		}
 	}
 	df, err := os.ReadFile(filepath.Join(dir, "Dockerfile"))
 	if err != nil {
@@ -111,18 +119,24 @@ func TestEnvExposed(t *testing.T) {
 		env    []string
 		want   []string
 	}{
-		{"no .dockerignore: kx writes one", "", []string{".env"}, nil},
+		{"no .dockerignore: kx writes one", "", []string{".env", "api/.env"}, nil},
 		{"no .env", "dist\n", nil, nil},
 		{"not listed", "node_modules\n", []string{".env", ".env.local"}, []string{".env", ".env.local"}},
 		{"listed", "node_modules\n.env\n.env.*\n", []string{".env", ".env.production"}, nil},
 		{"only .env listed", ".env\n", []string{".env", ".env.local"}, []string{".env.local"}},
 		{"a wildcard", ".env*\n", []string{".env", ".env.local"}, nil},
-		{"anywhere", "**/.env\n", []string{".env"}, nil},
+		{"anywhere", "**/.env\n", []string{".env", "api/.env"}, nil},
 		{"everything, then some back", "*\n!src\n", []string{".env"}, nil},
 		{"listed, then let back in", ".env\n!.env\n", []string{".env"}, []string{".env"}},
 		{"a leading slash", "/.env\r\n", []string{".env"}, nil},
 		{"a comment is not a pattern", "# .env\n", []string{".env"}, []string{".env"}},
 		{"*.env is not .env", "*.env\n", []string{".env.local"}, []string{".env.local"}},
+		// Patterns without **/ match only at the top of the folder.
+		{"in a subfolder", "node_modules\n.env\n.env.*\n", []string{"config/.env", "api/.env.production"}, []string{"api/.env.production", "config/.env"}},
+		{"its folder is listed", "config\n", []string{"config/.env", "config/deep/.env"}, nil},
+		{"its folder is listed, the file let back in", "config\n!config/.env\n", []string{"config/.env"}, []string{"config/.env"}},
+		{"its folder is listed, something else let back in", "config\n!README.md\n", []string{"config/.env", "config/deep/.env.local"}, nil},
+		{"skipped folders", "dist\n", []string{".git/.env", "node_modules/pkg/.env", ".venv/.env"}, nil},
 	}
 	for _, tt := range tests {
 		m := map[string]string{}
@@ -139,14 +153,43 @@ func TestEnvExposed(t *testing.T) {
 	}
 }
 
+// A .dockerignore Docker can't read (a link to nothing, a folder) keeps
+// nothing out: kx treats the folder as having none it can rely on.
+func TestEnvExposed_BrokenDockerignore(t *testing.T) {
+	dir := files(t, map[string]string{".env": "SECRET=1\n", "api/.env": "SECRET=2\n"})
+	if err := os.Symlink(filepath.Join(dir, "missing"), filepath.Join(dir, ".dockerignore")); err != nil {
+		t.Skipf("can't make a symbolic link here: %v", err)
+	}
+	if !DockerignoreBroken(dir) {
+		t.Fatal("DockerignoreBroken() = false for a link to nothing")
+	}
+	got, err := EnvExposed(dir)
+	if err != nil || !slices.Equal(got, []string{".env", "api/.env"}) {
+		t.Fatalf("EnvExposed() = %q, %v", got, err)
+	}
+	dir = t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".dockerignore"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !DockerignoreBroken(dir) {
+		t.Fatal("DockerignoreBroken() = false for a folder")
+	}
+	for _, m := range []map[string]string{{}, {".dockerignore": ".git\n"}} {
+		if DockerignoreBroken(files(t, m)) {
+			t.Fatalf("DockerignoreBroken(%v) = true", m)
+		}
+	}
+}
+
 func TestIgnoreEnv(t *testing.T) {
 	for before, after := range map[string]string{
-		"dist\n":        "dist\n.env\n.env.*\n",
-		"dist":          "dist\n.env\n.env.*\n",
-		"dist\r\n":      "dist\r\n.env\r\n.env.*\r\n",
-		".env\n!.env\n": ".env\n!.env\n.env\n.env.*\n",
+		"dist\n":        "dist\n**/.env\n**/.env.*\n",
+		"dist":          "dist\n**/.env\n**/.env.*\n",
+		"dist\r\n":      "dist\r\n**/.env\r\n**/.env.*\r\n",
+		".env\n!.env\n": ".env\n!.env\n**/.env\n**/.env.*\n",
+		"*\n!config/\n": "*\n!config/\n**/.env\n**/.env.*\n",
 	} {
-		dir := files(t, map[string]string{".dockerignore": before, ".env": "", ".env.local": ""})
+		dir := files(t, map[string]string{".dockerignore": before, ".env": "", ".env.local": "", "config/.env": "", "config/.env.prod": ""})
 		if err := IgnoreEnv(dir); err != nil {
 			t.Fatal(err)
 		}
@@ -160,5 +203,27 @@ func TestIgnoreEnv(t *testing.T) {
 	}
 	if err := IgnoreEnv(t.TempDir()); err == nil || !strings.Contains(err.Error(), ".dockerignore") {
 		t.Fatalf("IgnoreEnv without a .dockerignore = %v", err)
+	}
+}
+
+// UnreadableDockerfile names a Dockerfile that is there but can't be used
+// (a link to nothing, a folder), which kx neither builds nor replaces.
+func TestUnreadableDockerfile(t *testing.T) {
+	dir := t.TempDir()
+	if got := UnreadableDockerfile(dir); got != "" {
+		t.Fatalf("empty folder: %q", got)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "dockerfile"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := UnreadableDockerfile(dir); got != filepath.Join(dir, "dockerfile") {
+		t.Fatalf("folder named dockerfile: %q", got)
+	}
+	dir = t.TempDir()
+	if err := os.Symlink(filepath.Join(dir, "missing"), filepath.Join(dir, "Dockerfile")); err != nil {
+		t.Skipf("can't make a symbolic link here: %v", err)
+	}
+	if got := UnreadableDockerfile(dir); got != filepath.Join(dir, "Dockerfile") {
+		t.Fatalf("link to nothing: %q", got)
 	}
 }

@@ -2,6 +2,8 @@ package scaffold
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -9,41 +11,102 @@ import (
 	"strings"
 )
 
-// EnvExposed returns the .env and .env.* files at the top of dir that the
-// folder's existing .dockerignore doesn't exclude, so a Dockerfile that
-// copies the folder would put them in the image. With no .dockerignore it
-// returns nothing: Write adds one that excludes them.
-func EnvExposed(dir string) ([]string, error) {
-	data, err := os.ReadFile(filepath.Join(dir, ".dockerignore")) //nolint:gosec // G304: the .dockerignore of the folder kx deploys
-	if os.IsNotExist(err) {
-		return nil, nil
+// Folders EnvExposed doesn't look in: they hold no .env file of the
+// app's own, and can be large.
+var skipFolders = map[string]bool{".git": true, "node_modules": true, ".venv": true}
+
+// maxWalk bounds how many entries EnvExposed looks at.
+const maxWalk = 100_000
+
+// ignoreState says what kind of .dockerignore a folder has.
+type ignoreState int
+
+const (
+	ignoreNone   ignoreState = iota // there is none
+	ignoreOK                        // a regular file kx could read
+	ignoreBroken                    // something Docker can't read: a link to nothing, a folder
+)
+
+// loadDockerignore reads dir's .dockerignore.
+func loadDockerignore(dir string) (ignoreRules, ignoreState) {
+	p := filepath.Join(dir, ".dockerignore")
+	if _, err := os.Lstat(p); errors.Is(err, fs.ErrNotExist) {
+		return nil, ignoreNone
 	}
+	data, err := readFile(dir, ".dockerignore")
 	if err != nil {
-		return nil, err
+		return nil, ignoreBroken
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, err
-	}
-	rules := parseDockerignore(data)
-	var exposed []string
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || (name != ".env" && !strings.HasPrefix(name, ".env.")) {
-			continue
-		}
-		if !rules.excludes(name) {
-			exposed = append(exposed, name)
-		}
-	}
-	return exposed, nil
+	return parseDockerignore(data), ignoreOK
 }
 
-// IgnoreEnv adds the lines .env and .env.* to dir's .dockerignore, which
-// must exist, keeping its line endings.
+// DockerignoreBroken reports whether dir has something called
+// .dockerignore that Docker can't read (a link to nothing, a folder), so
+// it keeps nothing out of the image, and kx can neither use nor replace it.
+func DockerignoreBroken(dir string) bool {
+	_, state := loadDockerignore(dir)
+	return state == ignoreBroken
+}
+
+// EnvExposed returns the .env and .env.* files in dir and its subfolders
+// (as slash-separated paths relative to dir) that the folder's existing
+// .dockerignore doesn't exclude, so a Dockerfile that copies the folder
+// would put them in the image. With no .dockerignore it returns nothing:
+// Write adds one that excludes them. A broken .dockerignore excludes
+// nothing.
+func EnvExposed(dir string) ([]string, error) {
+	rules, state := loadDockerignore(dir)
+	if state == ignoreNone {
+		return nil, nil
+	}
+	// Without a ! line, nothing in an excluded folder can be let back
+	// in, so the walk can skip it.
+	prune := !rules.hasNegation()
+	var exposed []string
+	seen := 0
+	err := filepath.WalkDir(dir, func(p string, e fs.DirEntry, err error) error {
+		if err != nil {
+			if p == dir {
+				return err
+			}
+			return nil // a folder kx can't read: Docker would fail on it too
+		}
+		if seen++; seen > maxWalk {
+			return fs.SkipAll
+		}
+		if p == dir {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if e.IsDir() {
+			if skipFolders[e.Name()] || (prune && rules.excludes(rel)) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if isEnvFile(e.Name()) && !rules.excludes(rel) {
+			exposed = append(exposed, rel)
+		}
+		return nil
+	})
+	return exposed, err
+}
+
+func isEnvFile(name string) bool { return name == ".env" || strings.HasPrefix(name, ".env.") }
+
+// envLines are what IgnoreEnv adds: .env files at any depth, the top of
+// the folder included.
+var envLines = []string{"**/.env", "**/.env.*"}
+
+// IgnoreEnv adds the lines **/.env and **/.env.* to dir's .dockerignore,
+// which must be a regular file, keeping its line endings.
 func IgnoreEnv(dir string) error {
 	p := filepath.Join(dir, ".dockerignore")
-	data, err := os.ReadFile(p) //nolint:gosec // G304: the .dockerignore of the folder kx deploys
+	data, err := readFile(dir, ".dockerignore")
 	if err != nil {
 		return err
 	}
@@ -51,7 +114,7 @@ func IgnoreEnv(dir string) error {
 	if bytes.Contains(data, []byte("\r\n")) {
 		nl = "\r\n"
 	}
-	add := ".env" + nl + ".env.*" + nl
+	add := strings.Join(envLines, nl) + nl
 	if len(data) > 0 && !bytes.HasSuffix(data, []byte("\n")) {
 		add = nl + add
 	}
@@ -103,12 +166,37 @@ func parseDockerignore(data []byte) ignoreRules {
 	return rules
 }
 
-// excludes reports whether name, a file at the top of the folder, stays
-// out of the build: the last line that matches it decides.
-func (rules ignoreRules) excludes(name string) bool {
+func (rules ignoreRules) hasNegation() bool {
+	for _, r := range rules {
+		if r.negate {
+			return true
+		}
+	}
+	return false
+}
+
+// excludes reports whether rel (slash-separated, relative to the folder)
+// stays out of the build, as Docker decides: a line matches the path or
+// any folder above it, and the last line that matches decides.
+func (rules ignoreRules) excludes(rel string) bool {
+	parts := strings.Split(rel, "/")
+	parents := make([]string, 0, len(parts)-1)
+	for i := 1; i < len(parts); i++ {
+		parents = append(parents, strings.Join(parts[:i], "/"))
+	}
 	excluded := false
 	for _, r := range rules {
-		if r.negate == excluded && r.re.MatchString(name) {
+		if r.negate != excluded {
+			continue
+		}
+		match := r.re.MatchString(rel)
+		for _, p := range parents {
+			if match {
+				break
+			}
+			match = r.re.MatchString(p)
+		}
+		if match {
 			excluded = !r.negate
 		}
 	}

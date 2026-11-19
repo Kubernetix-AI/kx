@@ -1,6 +1,12 @@
 # Written by kx deploy for a static site.
-FROM nginxinc/nginx-unprivileged:1.27-alpine
-COPY . /usr/share/nginx/html
+FROM nginx/nginx-unprivileged:1.30-alpine AS site
+USER root
+COPY . /site
+# Serve the site, not the files that build it or the folder's git history.
+RUN rm -rf /site/.git /site/Dockerfile /site/.dockerignore /site/.kx.json && chmod -R a+rX /site
+
+FROM nginx/nginx-unprivileged:1.30-alpine
+COPY --from=site /site /usr/share/nginx/html
 EXPOSE 8080
 # Some hosts refuse containers that run as root, and can only check a numeric user.
 USER 101

@@ -42,6 +42,7 @@ type Detection struct {
 	Label string // how kx names it to people: "a Node app"
 
 	Image     string   // the base image (for Go, the build stage's)
+	Env       []string // NAME=value settings the install needs
 	CopyFirst []string // files copied before Install, so its layer is reused
 	Install   []string // shell commands, one RUN each
 	Build     []string // shell commands, run once the whole folder is copied
@@ -69,9 +70,67 @@ func Detect(dir string) ([]Detection, error) {
 		}
 	}
 	if len(found) == 0 && isFile(dir, "index.html") {
-		found = append(found, Detection{Stack: StackStatic, Label: "a static site", Image: "nginxinc/nginx-unprivileged:1.27-alpine"})
+		found = append(found, Detection{Stack: StackStatic, Label: "a static site", Image: staticImage})
+	}
+	for i := range found {
+		checkNpmToken(dir, &found[i])
 	}
 	return found, nil
+}
+
+// staticImage serves a static site: nginx's unprivileged image (it
+// listens on 8080), on nginx's current stable branch.
+const staticImage = "nginx/nginx-unprivileged:1.30-alpine"
+
+// ---- .npmrc ----
+
+var (
+	npmAuthKeyRe = regexp.MustCompile(`(?i)(?:^|:)_(?:authToken|auth|password)$`)
+	envRefRe     = regexp.MustCompile(`\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*`)
+)
+
+// checkNpmToken stops a Dockerfile that would copy a registry token
+// written into .npmrc into the image. A Node app's Dockerfile copies
+// .npmrc unless the folder's .dockerignore keeps it out; for other apps
+// the .dockerignore kx writes keeps it out, but an existing one may not.
+func checkNpmToken(dir string, d *Detection) {
+	if d.Problem != "" || !npmrcHasToken(dir) {
+		return
+	}
+	rules, state := loadDockerignore(dir)
+	copied := state == ignoreBroken || (state == ignoreOK && !rules.excludes(".npmrc"))
+	if d.Stack == StackNode {
+		copied = state != ignoreOK || !rules.excludes(".npmrc")
+	}
+	if copied {
+		d.Problem = "Your .npmrc holds a registry token, and the Dockerfile would copy it into your image."
+		d.Fix = "Use an environment variable in .npmrc instead, for example //registry.npmjs.org/:_authToken=${NPM_TOKEN}, then run kx deploy again."
+	}
+}
+
+// npmrcHasToken reports whether dir's .npmrc writes out a registry
+// credential (_authToken, _auth or _password with a value that isn't only
+// ${VARIABLE} references).
+func npmrcHasToken(dir string) bool {
+	data, err := readFile(dir, ".npmrc")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line[0] == '#' || line[0] == ';' {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || !npmAuthKeyRe.MatchString(strings.TrimSpace(key)) {
+			continue
+		}
+		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		if strings.TrimSpace(envRefRe.ReplaceAllString(value, "")) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- Node ----
@@ -113,19 +172,21 @@ func detectNode(dir string) (*Detection, error) {
 	}
 	d.Image = fmt.Sprintf("node:%d-alpine", major)
 
-	// Node 25 and later no longer include corepack.
+	// Node 25 and later no longer include corepack. The yarn or pnpm it
+	// downloads goes where any user can run it, not in root's home.
 	corepack := "corepack enable && "
 	if major >= 25 {
 		corepack = "npm install -g corepack && " + corepack
 	}
+	corepackEnv := []string{"COREPACK_HOME=/usr/local/share/corepack", "COREPACK_ENABLE_DOWNLOAD_PROMPT=0"}
 	lock, install := "", "npm install"
 	switch {
 	case isFile(dir, "package-lock.json"):
 		lock, install = "package-lock.json", "npm ci"
 	case isFile(dir, "yarn.lock"):
-		lock, install = "yarn.lock", corepack+"yarn install --frozen-lockfile"
+		lock, install, d.Env = "yarn.lock", corepack+"yarn install --frozen-lockfile", corepackEnv
 	case isFile(dir, "pnpm-lock.yaml"):
-		lock, install = "pnpm-lock.yaml", corepack+"pnpm install --frozen-lockfile"
+		lock, install, d.Env = "pnpm-lock.yaml", corepack+"pnpm install --frozen-lockfile", corepackEnv
 	}
 	d.Install = []string{install}
 	// A workspace, or Yarn's own settings, need the whole folder first.
@@ -134,7 +195,9 @@ func detectNode(dir string) (*Detection, error) {
 		if lock != "" {
 			d.CopyFirst = append(d.CopyFirst, lock)
 		}
-		if isFile(dir, ".npmrc") {
+		// .npmrc can change how the install works; a .dockerignore that
+		// keeps it out would make copying it fail.
+		if rules, state := loadDockerignore(dir); isFile(dir, ".npmrc") && (state != ignoreOK || !rules.excludes(".npmrc")) {
 			d.CopyFirst = append(d.CopyFirst, ".npmrc")
 		}
 	}
@@ -359,11 +422,9 @@ func detectGo(dir string) (*Detection, error) {
 	pkg, mains := ".", []string(nil)
 	if !hasMainPackage(dir) {
 		pkg = ""
-		entries, _ := os.ReadDir(filepath.Join(dir, "cmd"))
-		for _, e := range entries {
-			if e.IsDir() && cmdNameRe.MatchString(e.Name()) && hasMainFile(filepath.Join(dir, "cmd", e.Name(), "main.go")) {
-				mains = append(mains, "cmd/"+e.Name())
-			}
+		mains = cmdMains(dir)
+		if len(mains) == 0 {
+			mains = otherMains(dir)
 		}
 		if len(mains) == 1 {
 			pkg = "./" + mains[0]
@@ -371,15 +432,69 @@ func detectGo(dir string) (*Detection, error) {
 	}
 	switch {
 	case pkg != "":
-		d.Build = []string{"CGO_ENABLED=0 go build -o /out/app " + pkg}
+		d.Build = []string{"CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -buildvcs=false -trimpath -o /out/app " + pkg}
 	case len(mains) == 0:
 		d.Problem = "This looks like a Go app, but it has no main package, so kx can't tell how to run it."
 		d.Fix = "Add a main package, or add a Dockerfile."
 	default:
-		d.Problem = "This looks like a Go app, but it has more than one main package (" + joinAnd(mains) + "), so kx can't tell how to run it."
+		d.Problem = "This looks like a Go app, but it has more than one main package (" + listSome(mains) + "), so kx can't tell how to run it."
 		d.Fix = "Keep one main package, or add a Dockerfile."
 	}
 	return d, nil
+}
+
+// cmdMains lists the cmd/<name> folders whose main.go is package main.
+func cmdMains(dir string) []string {
+	var mains []string
+	entries, _ := os.ReadDir(filepath.Join(dir, "cmd"))
+	for _, e := range entries {
+		if e.IsDir() && cmdNameRe.MatchString(e.Name()) && hasMainFile(filepath.Join(dir, "cmd", e.Name(), "main.go")) {
+			mains = append(mains, "cmd/"+e.Name())
+		}
+	}
+	return mains
+}
+
+// Folders the Go tool, or kx, doesn't treat as the app's own packages.
+var goSkipFolders = map[string]bool{"vendor": true, "testdata": true, "node_modules": true}
+
+// maxGoFolders bounds how many folders otherMains looks in.
+const maxGoFolders = 5000
+
+// otherMains lists the folders below dir, anywhere, that hold package
+// main, as slash-separated paths, skipping vendor, testdata and folders
+// whose names start with . or _ (the Go tool ignores those), and any whose
+// name kx can't write safely.
+func otherMains(dir string) []string {
+	var mains []string
+	seen := 0
+	_ = filepath.WalkDir(dir, func(p string, e fs.DirEntry, err error) error {
+		if err != nil || !e.IsDir() || p == dir {
+			return nil
+		}
+		if seen++; seen > maxGoFolders {
+			return fs.SkipAll
+		}
+		name := e.Name()
+		if goSkipFolders[name] || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || !cmdNameRe.MatchString(name) {
+			return filepath.SkipDir
+		}
+		if hasMainPackage(p) {
+			if rel, err := filepath.Rel(dir, p); err == nil {
+				mains = append(mains, filepath.ToSlash(rel))
+			}
+		}
+		return nil
+	})
+	return mains
+}
+
+// listSome names up to four items, or three and how many more.
+func listSome(items []string) string {
+	if len(items) <= 4 {
+		return joinAnd(items)
+	}
+	return strings.Join(items[:3], ", ") + " and " + strconv.Itoa(len(items)-3) + " more"
 }
 
 // hasMainPackage reports whether the folder's own .go files are package

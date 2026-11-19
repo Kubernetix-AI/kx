@@ -14,9 +14,18 @@ id_rsa*
 .pypirc
 *.tfstate
 .kx.json
+{{- if ne .Stack "node"}}
+.npmrc
+{{- end}}
+Dockerfile
+.dockerignore
+.DS_Store
 # The same secrets in subfolders.
 **/.env
 **/.env.*
 **/*.pem
 **/*.key
 **/id_rsa*
+{{- if ne .Stack "node"}}
+**/.npmrc
+{{- end}}

@@ -1,8 +1,11 @@
 # Written by kx deploy for a Go app.
-FROM golang:1.22-alpine AS build
+# The build runs on this computer's own platform and compiles for the image's.
+FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src
 COPY . .
-RUN CGO_ENABLED=0 go build -o /out/app .
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -buildvcs=false -trimpath -o /out/app .
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/app /app

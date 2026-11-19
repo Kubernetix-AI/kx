@@ -36,24 +36,27 @@ func TestRender(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantPath := filepath.Join(dir, "want.Dockerfile")
-			if *update {
-				if err := os.WriteFile(wantPath, got, 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
-			want, err := os.ReadFile(wantPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			// A checkout with CRLF line endings must not fail on Windows.
-			if string(got) != strings.ReplaceAll(string(want), "\r\n", "\n") {
-				t.Fatalf("Dockerfile differs from %s\n--- got ---\n%s\n--- want ---\n%s", wantPath, got, want)
-			}
-			if !hasLine(string(ignore), ".env") || !hasLine(string(ignore), ".env.*") {
-				t.Fatalf(".dockerignore doesn't keep .env out:\n%s", ignore)
-			}
+			checkGolden(t, filepath.Join(dir, "want.Dockerfile"), got)
+			// CI builds each test app with this as its .dockerignore.
+			checkGolden(t, filepath.Join(dir, "want.dockerignore"), ignore)
 		})
+	}
+}
+
+func checkGolden(t *testing.T, path string, got []byte) {
+	t.Helper()
+	if *update {
+		if err := os.WriteFile(path, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A checkout with CRLF line endings must not fail on Windows.
+	if string(got) != strings.ReplaceAll(string(want), "\r\n", "\n") {
+		t.Fatalf("output differs from %s\n--- got ---\n%s\n--- want ---\n%s", path, got, want)
 	}
 }
 
@@ -99,6 +102,14 @@ func TestRender_NumericUserAndPort(t *testing.T) {
 		if user == "" || strings.Trim(user, "0123456789:") != "" {
 			t.Errorf("%s: USER %q is not numeric", name, user)
 		}
+	}
+}
+
+// Render itself refuses a value that spans lines, whatever made it.
+func TestRender_RefusesAMultiLineCommand(t *testing.T) {
+	d := Detection{Stack: StackNode, Label: "a Node app", Image: "node:22-alpine", Install: []string{"npm ci"}, Start: []string{"node", "a.js\nRUN rm -rf /"}}
+	if df, _, err := Render(d); err == nil {
+		t.Fatalf("rendered:\n%s", df)
 	}
 }
 
@@ -212,6 +223,97 @@ func TestDetect_NodeWithoutCorepack_InstallsIt(t *testing.T) {
 	}
 }
 
+// The yarn or pnpm corepack downloads goes where any user can run it,
+// not into root's home folder; npm alone needs no corepack.
+func TestDetect_NodeCorepackHome(t *testing.T) {
+	want := []string{"COREPACK_HOME=/usr/local/share/corepack", "COREPACK_ENABLE_DOWNLOAD_PROMPT=0"}
+	for _, lock := range []string{"yarn.lock", "pnpm-lock.yaml"} {
+		d := only(t, files(t, map[string]string{"package.json": `{"scripts":{"start":"node a.js"}}`, lock: ""}))
+		if !slices.Equal(d.Env, want) {
+			t.Errorf("%s: Env = %q, want %q", lock, d.Env, want)
+		}
+	}
+	if d := only(t, files(t, map[string]string{"package.json": `{"scripts":{"start":"node a.js"}}`, "package-lock.json": "{}"})); d.Env != nil {
+		t.Errorf("npm: Env = %q", d.Env)
+	}
+}
+
+func TestDetect_NodeYarnrc_CopiesEverythingFirst(t *testing.T) {
+	d := only(t, files(t, map[string]string{"package.json": `{"scripts":{"start":"node a.js"}}`, "yarn.lock": "", ".yarnrc.yml": "nodeLinker: node-modules\n"}))
+	if d.CopyFirst != nil {
+		t.Fatalf("CopyFirst = %q", d.CopyFirst)
+	}
+}
+
+// A package.json that isn't a file isn't a Node app.
+func TestDetect_PackageJSONNotAFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "package.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := Detect(dir); err != nil || len(found) != 0 {
+		t.Fatalf("Detect() = %+v, %v", found, err)
+	}
+}
+
+const (
+	npmTokenWhat = "Your .npmrc holds a registry token, and the Dockerfile would copy it into your image."
+	npmTokenFix  = "Use an environment variable in .npmrc instead, for example //registry.npmjs.org/:_authToken=${NPM_TOKEN}, then run kx deploy again."
+)
+
+// A registry token written into .npmrc must never be copied into an image.
+func TestDetect_NpmrcToken_Problem(t *testing.T) {
+	node := map[string]string{"package.json": `{"scripts":{"start":"node a.js"}}`, "package-lock.json": "{}"}
+	with := func(m map[string]string, extra map[string]string) map[string]string {
+		out := map[string]string{}
+		for k, v := range m {
+			out[k] = v
+		}
+		for k, v := range extra {
+			out[k] = v
+		}
+		return out
+	}
+	for _, npmrc := range []string{
+		"//registry.npmjs.org/:_authToken=test-only-not-a-token\n",
+		"registry=https://npm.example.test/\n//npm.example.test/:_auth = dGVzdDp0ZXN0\n",
+		"//npm.example.test/:_password=\"test-only\"\r\n",
+	} {
+		wantProblem(t, only(t, files(t, with(node, map[string]string{".npmrc": npmrc}))), npmTokenWhat, npmTokenFix)
+	}
+	for _, npmrc := range []string{
+		"//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n",
+		"//npm.example.test/:_auth=\"${NPM_AUTH}\"\n",
+		"# //registry.npmjs.org/:_authToken=test-only-not-a-token\n; _password=test-only\nlegacy-peer-deps=true\n",
+		"//registry.npmjs.org/:_authToken=\n",
+	} {
+		if d := only(t, files(t, with(node, map[string]string{".npmrc": npmrc}))); d.Problem != "" {
+			t.Errorf(".npmrc %q: Problem %q", npmrc, d.Problem)
+		}
+	}
+	token := map[string]string{".npmrc": "//registry.npmjs.org/:_authToken=test-only-not-a-token\n"}
+	// A Node app whose .dockerignore keeps .npmrc out: not copied, so no
+	// problem, and the Dockerfile doesn't name it.
+	d := only(t, files(t, with(with(node, token), map[string]string{".dockerignore": ".npmrc\n"})))
+	if d.Problem != "" || slices.Contains(d.CopyFirst, ".npmrc") {
+		t.Fatalf("Problem %q, CopyFirst %q", d.Problem, d.CopyFirst)
+	}
+	// Other apps don't need .npmrc: the .dockerignore kx writes keeps it
+	// out, but an existing one that doesn't is a problem.
+	py := with(token, map[string]string{"requirements.txt": "", "main.py": ""})
+	d = only(t, files(t, py))
+	if d.Problem != "" {
+		t.Fatalf("Python app, no .dockerignore: Problem %q", d.Problem)
+	}
+	if _, ignore, _ := Render(d); !hasLine(string(ignore), ".npmrc") || !hasLine(string(ignore), "**/.npmrc") {
+		t.Fatalf(".dockerignore for a Python app doesn't keep .npmrc out:\n%s", ignore)
+	}
+	wantProblem(t, only(t, files(t, with(py, map[string]string{".dockerignore": "dist\n"}))), npmTokenWhat, npmTokenFix)
+	if d := only(t, files(t, with(py, map[string]string{".dockerignore": "**/.npmrc\n"}))); d.Problem != "" {
+		t.Fatalf("Python app, .npmrc ignored: Problem %q", d.Problem)
+	}
+}
+
 // A workspace needs the whole folder before installing.
 func TestDetect_NodeWorkspace_CopiesEverythingFirst(t *testing.T) {
 	for _, m := range []map[string]string{
@@ -223,7 +325,7 @@ func TestDetect_NodeWorkspace_CopiesEverythingFirst(t *testing.T) {
 			t.Errorf("CopyFirst = %q, want nothing copied before the install", d.CopyFirst)
 		}
 		df, _, err := Render(d)
-		if err != nil || !strings.Contains(string(df), "WORKDIR /app\nCOPY . .\nRUN ") {
+		if err != nil || !strings.Contains(string(df), "\nCOPY . .\nRUN ") || strings.Count(string(df), "COPY ") != 1 {
 			t.Errorf("Dockerfile doesn't copy the folder before installing:\n%s", df)
 		}
 	}
@@ -315,10 +417,58 @@ func TestDetect_GoTwoCmds_Problem(t *testing.T) {
 }
 
 func TestDetect_GoWithoutMain_Problem(t *testing.T) {
-	d := only(t, files(t, map[string]string{"go.mod": "module example.com/lib\n", "lib.go": "package lib\n"}))
+	d := only(t, files(t, map[string]string{
+		"go.mod":                  "module example.com/lib\n",
+		"lib.go":                  "package lib\n",
+		"internal/x/x.go":         "package x\n",
+		"vendor/a/main.go":        "package main\n",
+		"testdata/app/main.go":    "package main\n",
+		".hidden/tool/main.go":    "package main\n",
+		"node_modules/b/main.go":  "package main\n",
+		"examples/gen/gen.go":     "//go:build ignore\n\npackage main\n",
+		"internal/x/main_test.go": "package main\n",
+	}))
 	wantProblem(t, d,
 		"This looks like a Go app, but it has no main package, so kx can't tell how to run it.",
 		"Add a main package, or add a Dockerfile.")
+}
+
+// A main package outside cmd/ is found too.
+func TestDetect_GoMainOutsideCmd(t *testing.T) {
+	d := only(t, files(t, map[string]string{"go.mod": "module x\n\ngo 1.24\n", "server/main.go": "package main\n", "store/store.go": "package store\n"}))
+	if d.Problem != "" || !slices.Equal(d.Build, []string{goBuild("./server")}) {
+		t.Fatalf("Build = %q (problem %q)", d.Build, d.Problem)
+	}
+	// cmd/ wins over the rest of the folder.
+	d = only(t, files(t, map[string]string{"go.mod": "module x\n", "cmd/api/main.go": "package main\n", "tools/gen/main.go": "package main\n"}))
+	if d.Problem != "" || !slices.Equal(d.Build, []string{goBuild("./cmd/api")}) {
+		t.Fatalf("Build = %q (problem %q)", d.Build, d.Problem)
+	}
+	d = only(t, files(t, map[string]string{"go.mod": "module x\n", "server/main.go": "package main\n", "tools/gen/main.go": "package main\n"}))
+	wantProblem(t, d,
+		"This looks like a Go app, but it has more than one main package (server and tools/gen), so kx can't tell how to run it.",
+		"Keep one main package, or add a Dockerfile.")
+	m := map[string]string{"go.mod": "module x\n"}
+	for _, n := range []string{"a", "b", "c", "d", "e", "f"} {
+		m["tools/"+n+"/main.go"] = "package main\n"
+	}
+	wantProblem(t, only(t, files(t, m)),
+		"This looks like a Go app, but it has more than one main package (tools/a, tools/b, tools/c and 3 more), so kx can't tell how to run it.",
+		"Keep one main package, or add a Dockerfile.")
+}
+
+// The Go build runs on the build machine's own platform and cross-compiles
+// for the image's, and doesn't need git.
+func goBuild(pkg string) string {
+	return "CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -buildvcs=false -trimpath -o /out/app " + pkg
+}
+
+// With go.work, the whole folder is needed before downloading anything.
+func TestDetect_GoWork_CopiesEverythingFirst(t *testing.T) {
+	d := only(t, files(t, map[string]string{"go.mod": "module x\n", "go.sum": "", "go.work": "go 1.24\n\nuse .\n", "main.go": "package main\n"}))
+	if d.CopyFirst != nil || d.Install != nil {
+		t.Fatalf("CopyFirst %q, Install %q", d.CopyFirst, d.Install)
+	}
 }
 
 func TestDetect_GoMainPackage(t *testing.T) {
@@ -327,9 +477,9 @@ func TestDetect_GoMainPackage(t *testing.T) {
 		files map[string]string
 		build string
 	}{
-		{"root wins over cmd", map[string]string{"main.go": "package main\n", "cmd/x/main.go": "package main\n"}, "CGO_ENABLED=0 go build -o /out/app ."},
-		{"a generator at the root is not the app", map[string]string{"gen.go": "//go:build ignore\n\npackage main\n", "lib.go": "// Package shop.\npackage shop\n", "cmd/server/main.go": "package main\n"}, "CGO_ENABLED=0 go build -o /out/app ./cmd/server"},
-		{"a cmd folder kx can't name safely is skipped", map[string]string{"cmd/$(x)/main.go": "package main\n", "cmd/web/main.go": "package main\n"}, "CGO_ENABLED=0 go build -o /out/app ./cmd/web"},
+		{"root wins over cmd", map[string]string{"main.go": "package main\n", "cmd/x/main.go": "package main\n"}, goBuild(".")},
+		{"a generator at the root is not the app", map[string]string{"gen.go": "//go:build ignore\n\npackage main\n", "lib.go": "// Package shop.\npackage shop\n", "cmd/server/main.go": "package main\n"}, goBuild("./cmd/server")},
+		{"a cmd folder kx can't name safely is skipped", map[string]string{"cmd/$(x)/main.go": "package main\n", "cmd/web/main.go": "package main\n"}, goBuild("./cmd/web")},
 	}
 	for _, tt := range tests {
 		m := map[string]string{"go.mod": "module example.com/shop\n\ngo 1.24\n"}
@@ -373,7 +523,7 @@ func TestDetect_GoSum_DownloadsFirst(t *testing.T) {
 // A static site is an index.html with nothing else kx recognises.
 func TestDetect_Static(t *testing.T) {
 	d := only(t, files(t, map[string]string{"index.html": "<p>hi</p>"}))
-	if d.Stack != StackStatic || d.Label != "a static site" {
+	if d.Stack != StackStatic || d.Label != "a static site" || d.Image != "nginx/nginx-unprivileged:1.30-alpine" {
 		t.Fatalf("Detect() = %+v", d)
 	}
 	d = only(t, files(t, map[string]string{"index.html": "", "package.json": `{"scripts":{"start":"vite preview"}}`}))
