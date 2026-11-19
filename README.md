@@ -116,9 +116,10 @@ files (`*.pem`, `*.key`), cloud credentials and `.git` out of the image, in subf
 app that needs a certificate bundle at run time can add a `!certs/ca.pem` line. If your own
 `.dockerignore` lets a `.env` file through anywhere in the folder, kx asks to add `**/.env`
 and `**/.env.*` to it first, and builds nothing if you say no. A registry token written into
-`.npmrc` stops it too: use `${NPM_TOKEN}` there instead. When a folder looks like more than one
-kind of app, kx asks which one it is. kx never replaces a Dockerfile, and in CI it writes none:
-commit yours.
+`.npmrc` or `.yarnrc.yml` stops it too: remove the token if your packages are public; if
+they're private, build the image yourself and run `kx deploy --image <image>`. When a folder
+looks like more than one kind of app, kx asks which one it is. kx never replaces a Dockerfile,
+and in CI it writes none: commit yours.
 
 ## Commands
 

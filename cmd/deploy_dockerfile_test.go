@@ -288,7 +288,7 @@ func TestDeploy_NoDockerfile_NpmrcToken_Stops(t *testing.T) {
 	h.put(map[string]string{".npmrc": "//registry.npmjs.org/:_authToken=test-only-not-a-token\n"})
 	h.tty, h.stdin = true, "\n"
 	h.expect(h.run("deploy"), 2)
-	if want := "Your .npmrc holds a registry token, and the Dockerfile would copy it into your image.\nUse an environment variable in .npmrc instead, for example //registry.npmjs.org/:_authToken=${NPM_TOKEN}, then run kx deploy again.\n"; h.err.String() != want {
+	if want := "Your .npmrc holds a registry token, and the Dockerfile would copy it into your image.\nRemove the token if your packages are public; if they're private, build the image yourself and run: kx deploy --image <image>\n"; h.err.String() != want {
 		t.Fatalf("stderr = %q, want %q", h.err.String(), want)
 	}
 	for _, name := range []string{"Dockerfile", ".dockerignore"} {

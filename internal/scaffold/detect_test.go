@@ -258,8 +258,56 @@ func TestDetect_PackageJSONNotAFile(t *testing.T) {
 
 const (
 	npmTokenWhat = "Your .npmrc holds a registry token, and the Dockerfile would copy it into your image."
-	npmTokenFix  = "Use an environment variable in .npmrc instead, for example //registry.npmjs.org/:_authToken=${NPM_TOKEN}, then run kx deploy again."
+	npmTokenFix  = "Remove the token if your packages are public; if they're private, build the image yourself and run: kx deploy --image <image>"
 )
+
+// A registry token written into .yarnrc.yml is stopped the same way.
+func TestDetect_YarnrcToken_Problem(t *testing.T) {
+	const what = "Your .yarnrc.yml holds a registry token, and the Dockerfile would copy it into your image."
+	node := map[string]string{"package.json": `{"scripts":{"start":"node a.js"}}`, "yarn.lock": ""}
+	with := func(extra map[string]string) map[string]string {
+		out := map[string]string{}
+		for k, v := range node {
+			out[k] = v
+		}
+		for k, v := range extra {
+			out[k] = v
+		}
+		return out
+	}
+	for _, yarnrc := range []string{
+		"nodeLinker: node-modules\nnpmAuthToken: test-only-not-a-token\n",
+		"npmScopes:\n  acme:\n    npmRegistryServer: \"https://npm.example.test\"\n    npmAuthToken: \"test-only\"  # private packages\r\n",
+		"npmRegistries:\n  \"//npm.example.test\":\n    npmAuthIdent: 'dGVzdDp0ZXN0'\n",
+	} {
+		wantProblem(t, only(t, files(t, with(map[string]string{".yarnrc.yml": yarnrc}))), what, npmTokenFix)
+	}
+	for _, yarnrc := range []string{
+		"npmAuthToken: \"${NPM_TOKEN}\"\n",
+		"npmAuthToken: ${NPM_TOKEN:-}\n",
+		"npmAuthToken: ${NPM_TOKEN} # set in the environment\n",
+		"# npmAuthToken: test-only-not-a-token\nnodeLinker: node-modules\n",
+		"npmAuthToken: ''\n",
+	} {
+		if d := only(t, files(t, with(map[string]string{".yarnrc.yml": yarnrc}))); d.Problem != "" {
+			t.Errorf(".yarnrc.yml %q: Problem %q", yarnrc, d.Problem)
+		}
+	}
+	if d := only(t, files(t, with(map[string]string{".yarnrc.yml": "npmAuthToken: test-only\n", ".dockerignore": ".yarnrc.yml\n"}))); d.Problem != "" {
+		t.Fatalf("kept out by .dockerignore: Problem %q", d.Problem)
+	}
+	// Other apps: the .dockerignore kx writes keeps it out.
+	py := map[string]string{".yarnrc.yml": "npmAuthToken: test-only\n", "requirements.txt": "", "main.py": ""}
+	d := only(t, files(t, py))
+	if d.Problem != "" {
+		t.Fatalf("Python app, no .dockerignore: Problem %q", d.Problem)
+	}
+	if _, ignore, _ := Render(d); !hasLine(string(ignore), ".yarnrc.yml") || !hasLine(string(ignore), "**/.yarnrc.yml") {
+		t.Fatalf(".dockerignore for a Python app doesn't keep .yarnrc.yml out:\n%s", ignore)
+	}
+	py[".dockerignore"] = "dist\n"
+	wantProblem(t, only(t, files(t, py)), what, npmTokenFix)
+}
 
 // A registry token written into .npmrc must never be copied into an image.
 func TestDetect_NpmrcToken_Problem(t *testing.T) {

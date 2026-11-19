@@ -82,55 +82,90 @@ func Detect(dir string) ([]Detection, error) {
 // listens on 8080), on nginx's current stable branch.
 const staticImage = "nginx/nginx-unprivileged:1.30-alpine"
 
-// ---- .npmrc ----
+// ---- registry tokens ----
 
 var (
-	npmAuthKeyRe = regexp.MustCompile(`(?i)(?:^|:)_(?:authToken|auth|password)$`)
-	envRefRe     = regexp.MustCompile(`\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*`)
+	npmAuthKeyRe  = regexp.MustCompile(`(?i)(?:^|:)_(?:authToken|auth|password)$`)
+	yarnAuthKeyRe = regexp.MustCompile(`^\s*(?:npmAuthToken|npmAuthIdent)\s*:(.*)$`)
+	envRefRe      = regexp.MustCompile(`\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*`)
 )
 
+// tokenFiles are the package managers' settings files that can hold a
+// registry credential, and how to tell that one does.
+var tokenFiles = []struct {
+	name     string
+	hasToken func([]byte) bool
+}{
+	{".npmrc", npmrcHasToken},
+	{".yarnrc.yml", yarnrcHasToken},
+}
+
 // checkNpmToken stops a Dockerfile that would copy a registry token
-// written into .npmrc into the image. A Node app's Dockerfile copies
-// .npmrc unless the folder's .dockerignore keeps it out; for other apps
-// the .dockerignore kx writes keeps it out, but an existing one may not.
+// written into .npmrc or .yarnrc.yml into the image. A Node app's
+// Dockerfile copies them unless the folder's .dockerignore keeps them
+// out; for other apps the .dockerignore kx writes keeps them out, but an
+// existing one may not.
 func checkNpmToken(dir string, d *Detection) {
-	if d.Problem != "" || !npmrcHasToken(dir) {
+	if d.Problem != "" {
 		return
 	}
 	rules, state := loadDockerignore(dir)
-	copied := state == ignoreBroken || (state == ignoreOK && !rules.excludes(".npmrc"))
-	if d.Stack == StackNode {
-		copied = state != ignoreOK || !rules.excludes(".npmrc")
-	}
-	if copied {
-		d.Problem = "Your .npmrc holds a registry token, and the Dockerfile would copy it into your image."
-		d.Fix = "Use an environment variable in .npmrc instead, for example //registry.npmjs.org/:_authToken=${NPM_TOKEN}, then run kx deploy again."
+	for _, f := range tokenFiles {
+		data, err := readFile(dir, f.name)
+		if err != nil || !f.hasToken(data) {
+			continue
+		}
+		copied := state == ignoreBroken || (state == ignoreOK && !rules.excludes(f.name))
+		if d.Stack == StackNode {
+			copied = state != ignoreOK || !rules.excludes(f.name)
+		}
+		if copied {
+			d.Problem = "Your " + f.name + " holds a registry token, and the Dockerfile would copy it into your image."
+			d.Fix = "Remove the token if your packages are public; if they're private, build the image yourself and run: kx deploy --image <image>"
+			return
+		}
 	}
 }
 
-// npmrcHasToken reports whether dir's .npmrc writes out a registry
+// npmrcHasToken reports whether an .npmrc writes out a registry
 // credential (_authToken, _auth or _password with a value that isn't only
 // ${VARIABLE} references).
-func npmrcHasToken(dir string) bool {
-	data, err := readFile(dir, ".npmrc")
-	if err != nil {
-		return false
-	}
+func npmrcHasToken(data []byte) bool {
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || line[0] == '#' || line[0] == ';' {
 			continue
 		}
 		key, value, ok := strings.Cut(line, "=")
-		if !ok || !npmAuthKeyRe.MatchString(strings.TrimSpace(key)) {
-			continue
-		}
-		value = strings.Trim(strings.TrimSpace(value), `"'`)
-		if strings.TrimSpace(envRefRe.ReplaceAllString(value, "")) != "" {
+		if ok && npmAuthKeyRe.MatchString(strings.TrimSpace(key)) && isLiteral(value) {
 			return true
 		}
 	}
 	return false
+}
+
+// yarnrcHasToken reports whether a .yarnrc.yml writes out a registry
+// credential (npmAuthToken or npmAuthIdent, at any level, with a value
+// that isn't only ${VARIABLE} references).
+func yarnrcHasToken(data []byte) bool {
+	for _, line := range strings.Split(string(data), "\n") {
+		m := yarnAuthKeyRe.FindStringSubmatch(strings.TrimRight(line, "\r"))
+		if m == nil {
+			continue
+		}
+		value, _, _ := strings.Cut(m[1], " #") // a comment after the value
+		if isLiteral(value) {
+			return true
+		}
+	}
+	return false
+}
+
+// isLiteral reports whether a settings value holds more than ${VARIABLE}
+// references and quotes.
+func isLiteral(value string) bool {
+	value = strings.Trim(strings.TrimSpace(value), `"'`)
+	return strings.TrimSpace(envRefRe.ReplaceAllString(value, "")) != ""
 }
 
 // ---- Node ----

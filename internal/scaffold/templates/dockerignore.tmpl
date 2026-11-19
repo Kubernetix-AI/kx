@@ -16,6 +16,7 @@ id_rsa*
 .kx.json
 {{- if ne .Stack "node"}}
 .npmrc
+.yarnrc.yml
 {{- end}}
 Dockerfile
 .dockerignore
@@ -28,4 +29,5 @@ Dockerfile
 **/id_rsa*
 {{- if ne .Stack "node"}}
 **/.npmrc
+**/.yarnrc.yml
 {{- end}}
