@@ -106,6 +106,9 @@ func keepEnvOut(ctx context.Context, p *ui.Printer, dir string) error {
 		return nil
 	}
 	envExposed := &kxerr.NoDockerfile{Dir: dir, Why: kxerr.NoDockerfileEnvExposed}
+	if scaffold.EnvListed(dir) {
+		envExposed.Exposed = exposed
+	}
 	p.Warn("%s", api.Explain(envExposed).What)
 	yes, err := p.ConfirmYes(ctx, "Add .env to .dockerignore?")
 	if err != nil {

@@ -1,6 +1,6 @@
 # Written by kx deploy for {{.Label}}.
 # The build runs on this computer's own platform and compiles for the image's.
-FROM --platform=$BUILDPLATFORM {{.Image}} AS build
+FROM --platform=${BUILDPLATFORM:-linux/amd64} {{.Image}} AS build
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src

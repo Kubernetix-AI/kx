@@ -1,6 +1,6 @@
 # Written by kx deploy for a Go app.
 # The build runs on this computer's own platform and compiles for the image's.
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1.25-alpine AS build
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src

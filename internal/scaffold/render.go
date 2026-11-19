@@ -37,16 +37,25 @@ func Render(d Detection) (dockerfile, dockerignore []byte, err error) {
 	return df.Bytes(), ignore.Bytes(), nil
 }
 
+// ignoreRulesFor returns the rules of the .dockerignore kx writes for d.
+func ignoreRulesFor(d Detection) ignoreRules {
+	var b bytes.Buffer
+	if err := templates.ExecuteTemplate(&b, "dockerignore.tmpl", d); err != nil {
+		return nil
+	}
+	return parseDockerignore(b.Bytes())
+}
+
 // UnreadableDockerfile returns the path of a Dockerfile (or dockerfile)
 // in dir that is there but can't be read as a file: a link to nothing, a
-// folder. kx can't build with it and doesn't replace it. It returns ""
-// when there is none.
+// folder, a file kx isn't allowed to read. kx can't build with it and
+// doesn't replace it. It returns "" when there is none.
 func UnreadableDockerfile(dir string) string {
 	for _, name := range []string{"Dockerfile", "dockerfile"} {
 		if _, err := os.Lstat(filepath.Join(dir, name)); err != nil {
 			continue
 		}
-		if !isFile(dir, name) {
+		if !canRead(dir, name) {
 			return filepath.Join(dir, name)
 		}
 	}
@@ -121,4 +130,15 @@ func createNew(path string, data []byte) error {
 		return err
 	}
 	return f.Close()
+}
+
+// canRead reports whether name in dir is a regular file kx can open.
+func canRead(dir, name string) bool {
+	f, err := os.Open(filepath.Join(dir, name)) //nolint:gosec // G304: a file in the folder kx was asked to deploy
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	return err == nil && fi.Mode().IsRegular()
 }

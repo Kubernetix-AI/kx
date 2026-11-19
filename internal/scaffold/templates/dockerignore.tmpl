@@ -27,7 +27,10 @@ Dockerfile
 **/*.pem
 **/*.key
 **/id_rsa*
-{{- if ne .Stack "node"}}
+{{- if eq .Stack "node"}}
+*/**/.npmrc
+*/**/.yarnrc.yml
+{{- else}}
 **/.npmrc
 **/.yarnrc.yml
 {{- end}}

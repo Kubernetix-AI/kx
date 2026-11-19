@@ -59,10 +59,18 @@ func EnvExposed(dir string) ([]string, error) {
 	if state == ignoreNone {
 		return nil, nil
 	}
+	return contextFiles(dir, rules, isEnvFile)
+}
+
+// contextFiles returns the files in dir and its subfolders whose names
+// match, and that rules don't exclude: what Docker would send with the
+// build. Paths are slash-separated and relative to dir. It skips .git,
+// node_modules and .venv, and stops after maxWalk entries.
+func contextFiles(dir string, rules ignoreRules, match func(name string) bool) ([]string, error) {
 	// Without a ! line, nothing in an excluded folder can be let back
 	// in, so the walk can skip it.
 	prune := !rules.hasNegation()
-	var exposed []string
+	var found []string
 	seen := 0
 	err := filepath.WalkDir(dir, func(p string, e fs.DirEntry, err error) error {
 		if err != nil {
@@ -88,12 +96,19 @@ func EnvExposed(dir string) ([]string, error) {
 			}
 			return nil
 		}
-		if isEnvFile(e.Name()) && !rules.excludes(rel) {
-			exposed = append(exposed, rel)
+		if match(e.Name()) && !rules.excludes(rel) {
+			found = append(found, rel)
 		}
 		return nil
 	})
-	return exposed, err
+	return found, err
+}
+
+// EnvListed reports whether dir's .dockerignore keeps the .env at the top
+// of the folder out of the image.
+func EnvListed(dir string) bool {
+	rules, state := loadDockerignore(dir)
+	return state == ignoreOK && rules.excludes(".env")
 }
 
 func isEnvFile(name string) bool { return name == ".env" || strings.HasPrefix(name, ".env.") }

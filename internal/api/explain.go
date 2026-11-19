@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -493,9 +494,26 @@ func noDockerfile(e *kxerr.NoDockerfile) Problem {
 	case kxerr.NoDockerfileUndetected:
 		return Problem{"no_dockerfile", what, "kx can write one for Node, Python, Go and static sites, but couldn't tell what this folder is. Add a Dockerfile, or cd to your app's folder.", ExitUsage}
 	case kxerr.NoDockerfileEnvExposed:
-		return Problem{"no_dockerfile", ".dockerignore doesn't list .env, so a .env file in this folder would be copied into the image.", "Add the lines **/.env and **/.env.* to .dockerignore, then run kx deploy again.", ExitUsage}
+		return Problem{"no_dockerfile", envExposedWhat(e.Exposed), "Add the lines **/.env and **/.env.* to .dockerignore, then run kx deploy again.", ExitUsage}
 	}
 	return Problem{"no_dockerfile", what, "Add a Dockerfile to this folder, or cd to the folder that has one. To have kx write one, run kx deploy in a terminal.", ExitUsage}
+}
+
+// envExposedWhat says that .env files would go into the image, naming
+// them when kx was given their names (because .dockerignore does list
+// .env, just not them).
+func envExposedWhat(exposed []string) string {
+	if len(exposed) == 0 {
+		return ".dockerignore doesn't list .env, so a .env file in this folder would be copied into the image."
+	}
+	if len(exposed) == 1 {
+		return exposed[0] + " would be copied into the image, because .dockerignore doesn't exclude it."
+	}
+	names := joinAnd(exposed)
+	if len(exposed) > 4 {
+		names = strings.Join(exposed[:3], ", ") + " and " + strconv.Itoa(len(exposed)-3) + " more"
+	}
+	return names + " would be copied into the image, because .dockerignore doesn't exclude them."
 }
 
 func cannotPush() Problem {

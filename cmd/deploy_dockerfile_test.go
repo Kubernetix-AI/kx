@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -272,7 +273,8 @@ func TestScaffold_SubfolderEnvNotIgnored_AsksThenAppends(t *testing.T) {
 	h.put(map[string]string{".dockerignore": "node_modules\n.env\n", "config/.env": "STRIPE_KEY=test-only\n"})
 	h.tty, h.stdin = true, "\n\n"
 	h.expect(h.run("deploy"), 0)
-	if !strings.Contains(h.err.String(), "Add .env to .dockerignore? [Y/n] ") {
+	// The warning names the file, since .dockerignore does list .env.
+	if !strings.Contains(h.err.String(), "! config/.env would be copied into the image, because .dockerignore doesn't exclude it.\nAdd .env to .dockerignore? [Y/n] ") {
 		t.Fatalf("stderr = %q", h.err.String())
 	}
 	if got, _ := h.read(".dockerignore"); got != "node_modules\n.env\n**/.env\n**/.env.*\n" {
@@ -288,7 +290,7 @@ func TestDeploy_NoDockerfile_NpmrcToken_Stops(t *testing.T) {
 	h.put(map[string]string{".npmrc": "//registry.npmjs.org/:_authToken=test-only-not-a-token\n"})
 	h.tty, h.stdin = true, "\n"
 	h.expect(h.run("deploy"), 2)
-	if want := "Your .npmrc holds a registry token, and the Dockerfile would copy it into your image.\nRemove the token if your packages are public; if they're private, build the image yourself and run: kx deploy --image <image>\n"; h.err.String() != want {
+	if want := "Your .npmrc holds a registry token, and the Dockerfile would copy it into your image.\nRemove the token if your packages are public; if they're private, build and push the image yourself, then run: kx deploy --image <image>\n"; h.err.String() != want {
 		t.Fatalf("stderr = %q, want %q", h.err.String(), want)
 	}
 	for _, name := range []string{"Dockerfile", ".dockerignore"} {
@@ -395,5 +397,63 @@ func TestDeploy_NoDockerfile_FolderNotWritable(t *testing.T) {
 	h.expect(h.run("deploy"), 2)
 	if want := "kx couldn't write " + filepath.Join(h.dir, ".dockerignore") + ": permission denied.\nCheck that you can write to " + h.dir + ", then run kx deploy again.\n"; !strings.HasSuffix(h.err.String(), want) {
 		t.Fatalf("stderr = %q, want suffix %q", h.err.String(), want)
+	}
+}
+
+// A Dockerfile kx isn't allowed to read gets its own message, not an offer
+// to write one that kx then can't.
+func TestDeploy_NoDockerfile_NoPermission_SaysSo(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions and a user that isn't root")
+	}
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.nodeApp()
+	h.dockerfile("FROM scratch\n")
+	p := filepath.Join(h.dir, "Dockerfile")
+	if err := os.Chmod(p, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(p, 0o644) })
+	h.tty, h.stdin = true, "\n"
+	h.expect(h.run("deploy"), 2)
+	if want := "kx can't read " + p + ", and won't replace it.\nFix or remove " + p + ", then run kx deploy again.\n"; h.err.String() != want {
+		t.Fatalf("stderr = %q, want %q", h.err.String(), want)
+	}
+}
+
+// answerAfter answers a question with "\n", after running do (while the
+// question waits for the answer).
+type answerAfter struct {
+	do   func()
+	done bool
+}
+
+func (a *answerAfter) Read(b []byte) (int, error) {
+	if a.done {
+		return 0, io.EOF
+	}
+	a.do()
+	a.done = true
+	return copy(b, "\n"), nil
+}
+
+// A Dockerfile that appears while kx asks is never replaced, and kx says
+// what happened.
+func TestDeploy_NoDockerfile_AppearsWhileAsking(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.nodeApp()
+	p := filepath.Join(h.dir, "Dockerfile")
+	h.tty = true
+	h.input = &answerAfter{do: func() { _ = os.WriteFile(p, []byte("FROM scratch\n"), 0o644) }}
+	h.expect(h.run("deploy"), 2)
+	if want := p + " appeared while kx was asking, and kx doesn't replace it.\nRun kx deploy again to build with it.\n"; !strings.HasSuffix(h.err.String(), want) {
+		t.Fatalf("stderr = %q, want suffix %q", h.err.String(), want)
+	}
+	if got, _ := h.read("Dockerfile"); got != "FROM scratch\n" || len(h.docker.builds) != 0 {
+		t.Fatalf("Dockerfile %q, builds %d", got, len(h.docker.builds))
 	}
 }

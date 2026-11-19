@@ -258,8 +258,63 @@ func TestDetect_PackageJSONNotAFile(t *testing.T) {
 
 const (
 	npmTokenWhat = "Your .npmrc holds a registry token, and the Dockerfile would copy it into your image."
-	npmTokenFix  = "Remove the token if your packages are public; if they're private, build the image yourself and run: kx deploy --image <image>"
+	npmTokenFix  = "Remove the token if your packages are public; if they're private, build and push the image yourself, then run: kx deploy --image <image>"
 )
+
+// A token file below the top of the folder (a workspace package's) is
+// checked too, whenever the build would copy it.
+func TestDetect_TokenInASubfolder(t *testing.T) {
+	const what = "Your packages/api/.npmrc holds a registry token, and the Dockerfile would copy it into your image."
+	node := map[string]string{"package.json": `{"workspaces":["packages/*"],"scripts":{"start":"node a.js"}}`, "package-lock.json": "{}",
+		"packages/api/.npmrc": "//registry.npmjs.org/:_authToken=test-only-not-a-token\n"}
+	// With no .dockerignore, the one kx writes keeps it out.
+	d := only(t, files(t, node))
+	if d.Problem != "" {
+		t.Fatalf("no .dockerignore: Problem %q", d.Problem)
+	}
+	_, ignore, _ := Render(d)
+	rules := parseDockerignore(ignore)
+	if !rules.excludes("packages/api/.npmrc") || !rules.excludes("packages/api/.yarnrc.yml") || rules.excludes(".npmrc") || rules.excludes(".yarnrc.yml") {
+		t.Fatalf("the Node .dockerignore should keep nested .npmrc and .yarnrc.yml out, and the top ones in:\n%s", ignore)
+	}
+	// An existing .dockerignore that lets it through.
+	node[".dockerignore"] = "node_modules\n"
+	wantProblem(t, only(t, files(t, node)), what, npmTokenFix)
+	node[".dockerignore"] = "node_modules\n**/.npmrc\n"
+	if d := only(t, files(t, node)); d.Problem != "" {
+		t.Fatalf("kept out: Problem %q", d.Problem)
+	}
+}
+
+// For apps other than Node, a .dockerignore Docker can't read lets a
+// token file through.
+func TestDetect_TokenWithBrokenDockerignore(t *testing.T) {
+	dir := files(t, map[string]string{".npmrc": "//registry.npmjs.org/:_authToken=test-only-not-a-token\n", "requirements.txt": "", "main.py": ""})
+	if err := os.Symlink(filepath.Join(dir, "missing"), filepath.Join(dir, ".dockerignore")); err != nil {
+		t.Skipf("can't make a symbolic link here: %v", err)
+	}
+	wantProblem(t, only(t, dir), "Your .npmrc holds a registry token, and the Dockerfile would copy it into your image.", npmTokenFix)
+}
+
+// The Go template works with Docker's classic builder too, which doesn't
+// set BUILDPLATFORM, TARGETOS or TARGETARCH: each has a default.
+func TestRender_GoDefaultsForTheClassicBuilder(t *testing.T) {
+	d := only(t, files(t, map[string]string{"go.mod": "module x\n\ngo 1.24\n", "main.go": "package main\n"}))
+	df, _, err := Render(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(df), "FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1.24-alpine AS build\n") {
+		t.Fatalf("no defaulted platform:\n%s", df)
+	}
+	for _, v := range []string{"BUILDPLATFORM", "TARGETOS", "TARGETARCH", "TARGETPLATFORM"} {
+		text := strings.ReplaceAll(string(df), "${"+v+":-", "")
+		text = strings.ReplaceAll(text, "ARG "+v+"\n", "")
+		if strings.Contains(text, "$"+v) || strings.Contains(text, "${"+v+"}") {
+			t.Errorf("%s is used without a default:\n%s", v, df)
+		}
+	}
+}
 
 // A registry token written into .yarnrc.yml is stopped the same way.
 func TestDetect_YarnrcToken_Problem(t *testing.T) {
@@ -279,6 +334,9 @@ func TestDetect_YarnrcToken_Problem(t *testing.T) {
 		"nodeLinker: node-modules\nnpmAuthToken: test-only-not-a-token\n",
 		"npmScopes:\n  acme:\n    npmRegistryServer: \"https://npm.example.test\"\n    npmAuthToken: \"test-only\"  # private packages\r\n",
 		"npmRegistries:\n  \"//npm.example.test\":\n    npmAuthIdent: 'dGVzdDp0ZXN0'\n",
+		"npmScopes:\n  acme:\n    \"npmAuthToken\": test-only\n",
+		"npmScopes: {acme: {npmAuthToken: test-only, npmRegistryServer: \"https://npm.example.test\"}}\n",
+		"\ufeffnpmAuthToken: test-only\n",
 	} {
 		wantProblem(t, only(t, files(t, with(map[string]string{".yarnrc.yml": yarnrc}))), what, npmTokenFix)
 	}
@@ -286,6 +344,8 @@ func TestDetect_YarnrcToken_Problem(t *testing.T) {
 		"npmAuthToken: \"${NPM_TOKEN}\"\n",
 		"npmAuthToken: ${NPM_TOKEN:-}\n",
 		"npmAuthToken: ${NPM_TOKEN} # set in the environment\n",
+		"npmAuthIdent: \"${NPM_USER}:${NPM_PASS}\"\n",
+		"npmAuthToken: # fill in\n",
 		"# npmAuthToken: test-only-not-a-token\nnodeLinker: node-modules\n",
 		"npmAuthToken: ''\n",
 	} {
@@ -326,6 +386,7 @@ func TestDetect_NpmrcToken_Problem(t *testing.T) {
 		"//registry.npmjs.org/:_authToken=test-only-not-a-token\n",
 		"registry=https://npm.example.test/\n//npm.example.test/:_auth = dGVzdDp0ZXN0\n",
 		"//npm.example.test/:_password=\"test-only\"\r\n",
+		"\ufeff_auth=dGVzdDp0ZXN0\n",
 	} {
 		wantProblem(t, only(t, files(t, with(node, map[string]string{".npmrc": npmrc}))), npmTokenWhat, npmTokenFix)
 	}
@@ -334,6 +395,10 @@ func TestDetect_NpmrcToken_Problem(t *testing.T) {
 		"//npm.example.test/:_auth=\"${NPM_AUTH}\"\n",
 		"# //registry.npmjs.org/:_authToken=test-only-not-a-token\n; _password=test-only\nlegacy-peer-deps=true\n",
 		"//registry.npmjs.org/:_authToken=\n",
+		"//registry.npmjs.org/:_authToken=${NPM_TOKEN} # set in CI\n",
+		"//registry.npmjs.org/:_authToken=${NPM_TOKEN} ; set in CI\n",
+		"//registry.npmjs.org/:_authToken= # fill in\n",
+		"//npm.example.test/:_auth=\"${NPM_USER}:${NPM_PASS}\"\n",
 	} {
 		if d := only(t, files(t, with(node, map[string]string{".npmrc": npmrc}))); d.Problem != "" {
 			t.Errorf(".npmrc %q: Problem %q", npmrc, d.Problem)

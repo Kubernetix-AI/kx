@@ -18,6 +18,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -85,51 +86,51 @@ const staticImage = "nginx/nginx-unprivileged:1.30-alpine"
 // ---- registry tokens ----
 
 var (
-	npmAuthKeyRe  = regexp.MustCompile(`(?i)(?:^|:)_(?:authToken|auth|password)$`)
-	yarnAuthKeyRe = regexp.MustCompile(`^\s*(?:npmAuthToken|npmAuthIdent)\s*:(.*)$`)
-	envRefRe      = regexp.MustCompile(`\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*`)
+	npmAuthKeyRe = regexp.MustCompile(`(?i)(?:^|:)_(?:authToken|auth|password)$`)
+	// A Yarn credential key, quoted or not, in block or flow style; the
+	// value runs to the end of the line, a comma or a closing brace that
+	// doesn't end a ${VARIABLE}.
+	yarnAuthRe = regexp.MustCompile(`["']?\b(?:npmAuthToken|npmAuthIdent)["']?\s*:((?:\$\{[^}\r\n]*\}|[^,}\r\n])*)`)
+	envRefRe   = regexp.MustCompile(`\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*`)
 )
 
 // tokenFiles are the package managers' settings files that can hold a
 // registry credential, and how to tell that one does.
-var tokenFiles = []struct {
-	name     string
-	hasToken func([]byte) bool
-}{
-	{".npmrc", npmrcHasToken},
-	{".yarnrc.yml", yarnrcHasToken},
+var tokenFiles = map[string]func([]byte) bool{
+	".npmrc":      npmrcHasToken,
+	".yarnrc.yml": yarnrcHasToken,
 }
 
 // checkNpmToken stops a Dockerfile that would copy a registry token
-// written into .npmrc or .yarnrc.yml into the image. A Node app's
-// Dockerfile copies them unless the folder's .dockerignore keeps them
-// out; for other apps the .dockerignore kx writes keeps them out, but an
-// existing one may not.
+// written into an .npmrc or .yarnrc.yml, at any depth, into the image:
+// any such file the build would send, given the folder's .dockerignore,
+// or the one kx writes when there is none.
 func checkNpmToken(dir string, d *Detection) {
 	if d.Problem != "" {
 		return
 	}
 	rules, state := loadDockerignore(dir)
-	for _, f := range tokenFiles {
-		data, err := readFile(dir, f.name)
-		if err != nil || !f.hasToken(data) {
+	switch state {
+	case ignoreNone:
+		rules = ignoreRulesFor(*d)
+	case ignoreBroken:
+		rules = nil
+	}
+	found, _ := contextFiles(dir, rules, func(name string) bool { return tokenFiles[name] != nil })
+	for _, rel := range found {
+		data, err := readFile(dir, filepath.FromSlash(rel))
+		if err != nil || !tokenFiles[path.Base(rel)](bytes.TrimPrefix(data, []byte("\ufeff"))) {
 			continue
 		}
-		copied := state == ignoreBroken || (state == ignoreOK && !rules.excludes(f.name))
-		if d.Stack == StackNode {
-			copied = state != ignoreOK || !rules.excludes(f.name)
-		}
-		if copied {
-			d.Problem = "Your " + f.name + " holds a registry token, and the Dockerfile would copy it into your image."
-			d.Fix = "Remove the token if your packages are public; if they're private, build the image yourself and run: kx deploy --image <image>"
-			return
-		}
+		d.Problem = "Your " + rel + " holds a registry token, and the Dockerfile would copy it into your image."
+		d.Fix = "Remove the token if your packages are public; if they're private, build and push the image yourself, then run: kx deploy --image <image>"
+		return
 	}
 }
 
 // npmrcHasToken reports whether an .npmrc writes out a registry
-// credential (_authToken, _auth or _password with a value that isn't only
-// ${VARIABLE} references).
+// credential: _authToken, _auth or _password with a value that isn't only
+// ${VARIABLE} references. As npm does, an unquoted value ends at # or ;.
 func npmrcHasToken(data []byte) bool {
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
@@ -137,7 +138,16 @@ func npmrcHasToken(data []byte) bool {
 			continue
 		}
 		key, value, ok := strings.Cut(line, "=")
-		if ok && npmAuthKeyRe.MatchString(strings.TrimSpace(key)) && isLiteral(value) {
+		if !ok || !npmAuthKeyRe.MatchString(strings.TrimSpace(key)) {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if q := value; len(q) >= 2 && (q[0] == '"' || q[0] == '\'') && strings.IndexByte(q[1:], q[0]) >= 0 {
+			value = q[1 : 1+strings.IndexByte(q[1:], q[0])]
+		} else if i := strings.IndexAny(value, "#;"); i >= 0 {
+			value = value[:i]
+		}
+		if isLiteral(value) {
 			return true
 		}
 	}
@@ -149,23 +159,24 @@ func npmrcHasToken(data []byte) bool {
 // that isn't only ${VARIABLE} references).
 func yarnrcHasToken(data []byte) bool {
 	for _, line := range strings.Split(string(data), "\n") {
-		m := yarnAuthKeyRe.FindStringSubmatch(strings.TrimRight(line, "\r"))
-		if m == nil {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
 			continue
 		}
-		value, _, _ := strings.Cut(m[1], " #") // a comment after the value
-		if isLiteral(value) {
-			return true
+		for _, m := range yarnAuthRe.FindAllStringSubmatch(line, -1) {
+			value, _, _ := strings.Cut(m[1], " #") // a comment after the value
+			if isLiteral(value) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
 // isLiteral reports whether a settings value holds more than ${VARIABLE}
-// references and quotes.
+// references, quotes, and the colons or spaces between them.
 func isLiteral(value string) bool {
 	value = strings.Trim(strings.TrimSpace(value), `"'`)
-	return strings.TrimSpace(envRefRe.ReplaceAllString(value, "")) != ""
+	return strings.Trim(envRefRe.ReplaceAllString(value, ""), " \t:") != ""
 }
 
 // ---- Node ----

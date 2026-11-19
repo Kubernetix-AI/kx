@@ -1,9 +1,6 @@
 # Written by kx deploy for {{.Label}}.
 FROM {{.Image}}
 WORKDIR /app
-{{- if .Env}}
-ENV {{join .Env}}
-{{- end}}
 {{- if .CopyFirst}}
 COPY {{join .CopyFirst}} ./
 {{- range .Install}}

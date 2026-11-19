@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -153,6 +154,20 @@ func TestEnvExposed(t *testing.T) {
 	}
 }
 
+// EnvListed reports whether the folder's .dockerignore keeps the top .env
+// out, so a message saying it doesn't list .env would be wrong.
+func TestEnvListed(t *testing.T) {
+	for ignore, want := range map[string]bool{"": false, "node_modules\n": false, ".env\n": true, ".env*\n": true, "**/.env\n": true, ".env\n!.env\n": false} {
+		m := map[string]string{}
+		if ignore != "" {
+			m[".dockerignore"] = ignore
+		}
+		if got := EnvListed(files(t, m)); got != want {
+			t.Errorf(".dockerignore %q: EnvListed() = %v, want %v", ignore, got, want)
+		}
+	}
+}
+
 // A .dockerignore Docker can't read (a link to nothing, a folder) keeps
 // nothing out: kx treats the folder as having none it can rely on.
 func TestEnvExposed_BrokenDockerignore(t *testing.T) {
@@ -225,5 +240,25 @@ func TestUnreadableDockerfile(t *testing.T) {
 	}
 	if got := UnreadableDockerfile(dir); got != filepath.Join(dir, "Dockerfile") {
 		t.Fatalf("link to nothing: %q", got)
+	}
+}
+
+// A Dockerfile kx isn't allowed to read is unreadable too, so kx says so
+// instead of offering to write one it then can't.
+func TestUnreadableDockerfile_NoPermission(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions and a user that isn't root")
+	}
+	dir := files(t, map[string]string{"Dockerfile": "FROM scratch\n"})
+	p := filepath.Join(dir, "Dockerfile")
+	if err := os.Chmod(p, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(p, 0o644) })
+	if got := UnreadableDockerfile(dir); got != p {
+		t.Fatalf("mode 000: %q", got)
+	}
+	if got := UnreadableDockerfile(files(t, map[string]string{"Dockerfile": "FROM scratch\n"})); got != "" {
+		t.Fatalf("a readable Dockerfile: %q", got)
 	}
 }
