@@ -337,6 +337,8 @@ func TestDetect_YarnrcToken_Problem(t *testing.T) {
 		"npmScopes:\n  acme:\n    \"npmAuthToken\": test-only\n",
 		"npmScopes: {acme: {npmAuthToken: test-only, npmRegistryServer: \"https://npm.example.test\"}}\n",
 		"\ufeffnpmAuthToken: test-only\n",
+		// The second key on the line holds the token.
+		"npmScopes: {acme: {npmAuthIdent: \"${NPM_USER}:${NPM_PASS}\", npmAuthToken: test-only}}\n",
 	} {
 		wantProblem(t, only(t, files(t, with(map[string]string{".yarnrc.yml": yarnrc}))), what, npmTokenFix)
 	}
@@ -346,6 +348,9 @@ func TestDetect_YarnrcToken_Problem(t *testing.T) {
 		"npmAuthToken: ${NPM_TOKEN} # set in the environment\n",
 		"npmAuthIdent: \"${NPM_USER}:${NPM_PASS}\"\n",
 		"npmAuthToken: # fill in\n",
+		// In a flow mapping the value ends at a comma or a closing brace.
+		"npmScopes: {acme: {npmAuthToken: ${NPM_TOKEN}, npmRegistryServer: \"https://npm.example.test\"}}\n",
+		"npmScopes: {acme: {npmAuthToken: ${NPM_TOKEN}}}\n",
 		"# npmAuthToken: test-only-not-a-token\nnodeLinker: node-modules\n",
 		"npmAuthToken: ''\n",
 	} {
@@ -387,6 +392,9 @@ func TestDetect_NpmrcToken_Problem(t *testing.T) {
 		"registry=https://npm.example.test/\n//npm.example.test/:_auth = dGVzdDp0ZXN0\n",
 		"//npm.example.test/:_password=\"test-only\"\r\n",
 		"\ufeff_auth=dGVzdDp0ZXN0\n",
+		// In quotes, # and ; are part of the value, not a comment.
+		"//npm.example.test/:_password=\"#test-only\"\n",
+		"//npm.example.test/:_authToken=';test-only'\n",
 	} {
 		wantProblem(t, only(t, files(t, with(node, map[string]string{".npmrc": npmrc}))), npmTokenWhat, npmTokenFix)
 	}
