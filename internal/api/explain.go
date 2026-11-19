@@ -493,7 +493,7 @@ func noDockerfile(e *kxerr.NoDockerfile) Problem {
 	case kxerr.NoDockerfileUndetected:
 		return Problem{"no_dockerfile", what, "kx can write one for Node, Python, Go and static sites, but couldn't tell what this folder is. Add a Dockerfile, or cd to your app's folder.", ExitUsage}
 	case kxerr.NoDockerfileEnvExposed:
-		return Problem{"no_dockerfile", ".dockerignore doesn't list .env, so a .env file in this folder would be copied into the image.", "Add a line .env to .dockerignore, then run kx deploy again.", ExitUsage}
+		return Problem{"no_dockerfile", ".dockerignore doesn't list .env, so a .env file in this folder would be copied into the image.", "Add the lines **/.env and **/.env.* to .dockerignore, then run kx deploy again.", ExitUsage}
 	}
 	return Problem{"no_dockerfile", what, "Add a Dockerfile to this folder, or cd to the folder that has one. To have kx write one, run kx deploy in a terminal.", ExitUsage}
 }

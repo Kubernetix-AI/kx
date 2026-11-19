@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -166,7 +167,7 @@ func TestScaffold_EnvPresentAndNotIgnored_AsksThenAppends(t *testing.T) {
 	if !strings.Contains(h.err.String(), "Create one now? [Y/n] ! .dockerignore doesn't list .env, so a .env file in this folder would be copied into the image.\nAdd .env to .dockerignore? [Y/n] ") {
 		t.Fatalf("stderr = %q", h.err.String())
 	}
-	if got, _ := h.read(".dockerignore"); got != "node_modules\n.env\n.env.*\n" {
+	if got, _ := h.read(".dockerignore"); got != "node_modules\n**/.env\n**/.env.*\n" {
 		t.Fatalf(".dockerignore = %q", got)
 	}
 	if strings.Contains(h.err.String(), "Wrote .dockerignore") {
@@ -186,7 +187,7 @@ func TestScaffold_EnvPresentDeclined_BuildsNothing(t *testing.T) {
 	h.put(map[string]string{".dockerignore": "node_modules\n", ".env.production": "STRIPE_KEY=test-only\n"})
 	h.tty, h.stdin = true, "\nn\n"
 	h.expect(h.run("deploy"), 2)
-	if !strings.HasSuffix(h.err.String(), "Add .env to .dockerignore? [Y/n] .dockerignore doesn't list .env, so a .env file in this folder would be copied into the image.\nAdd a line .env to .dockerignore, then run kx deploy again.\n") {
+	if !strings.HasSuffix(h.err.String(), "Add .env to .dockerignore? [Y/n] .dockerignore doesn't list .env, so a .env file in this folder would be copied into the image.\nAdd the lines **/.env and **/.env.* to .dockerignore, then run kx deploy again.\n") {
 		t.Fatalf("stderr = %q", h.err.String())
 	}
 	if _, ok := h.read("Dockerfile"); ok {
@@ -258,5 +259,141 @@ func TestDeploy_NoDockerfile_FirstRunOffersThenPicks(t *testing.T) {
 	}
 	if _, ok := h.read("Dockerfile"); !ok {
 		t.Fatal("no Dockerfile")
+	}
+}
+
+// A .env in a subfolder that the existing .dockerignore lets through is
+// asked about like one at the top.
+func TestScaffold_SubfolderEnvNotIgnored_AsksThenAppends(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.nodeApp()
+	h.put(map[string]string{".dockerignore": "node_modules\n.env\n", "config/.env": "STRIPE_KEY=test-only\n"})
+	h.tty, h.stdin = true, "\n\n"
+	h.expect(h.run("deploy"), 0)
+	if !strings.Contains(h.err.String(), "Add .env to .dockerignore? [Y/n] ") {
+		t.Fatalf("stderr = %q", h.err.String())
+	}
+	if got, _ := h.read(".dockerignore"); got != "node_modules\n.env\n**/.env\n**/.env.*\n" {
+		t.Fatalf(".dockerignore = %q", got)
+	}
+}
+
+func TestDeploy_NoDockerfile_NpmrcToken_Stops(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.nodeApp()
+	h.put(map[string]string{".npmrc": "//registry.npmjs.org/:_authToken=test-only-not-a-token\n"})
+	h.tty, h.stdin = true, "\n"
+	h.expect(h.run("deploy"), 2)
+	if want := "Your .npmrc holds a registry token, and the Dockerfile would copy it into your image.\nUse an environment variable in .npmrc instead, for example //registry.npmjs.org/:_authToken=${NPM_TOKEN}, then run kx deploy again.\n"; h.err.String() != want {
+		t.Fatalf("stderr = %q, want %q", h.err.String(), want)
+	}
+	for _, name := range []string{"Dockerfile", ".dockerignore"} {
+		if _, ok := h.read(name); ok {
+			t.Errorf("wrote %s", name)
+		}
+	}
+}
+
+// stdin is a terminal but stderr isn't (kx deploy 2>log): nobody would
+// see the question or the file, so kx asks nothing and writes nothing.
+func TestDeploy_NoDockerfile_StderrNotATerminal_AsksNothing(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.nodeApp()
+	h.tty, h.stderrFile, h.stdin = true, true, "\n"
+	h.expect(h.run("deploy"), 2)
+	if want := h.noDockerfileWhat() + "\nAdd a Dockerfile to this folder, or cd to the folder that has one. To have kx write one, run kx deploy in a terminal.\n"; h.err.String() != want {
+		t.Fatalf("stderr = %q, want %q", h.err.String(), want)
+	}
+	if _, ok := h.read("Dockerfile"); ok {
+		t.Fatal("wrote a Dockerfile")
+	}
+}
+
+// A Dockerfile that is a link to nothing: kx can't build with it and
+// doesn't replace it, so it says so before asking anything, even in CI.
+func TestDeploy_NoDockerfile_BrokenLink_SaysSo(t *testing.T) {
+	for _, ci := range []bool{false, true} {
+		h := newHarness(t)
+		h.loginAs("acme-corp", tokCorp, &dec11)
+		h.link("shop-api", appShopID, "acme-corp")
+		h.nodeApp()
+		link := filepath.Join(h.dir, "Dockerfile")
+		if err := os.Symlink(filepath.Join(h.dir, "docker", "Dockerfile"), link); err != nil {
+			t.Skipf("can't make a symbolic link here: %v", err)
+		}
+		if ci {
+			h.env["CI"] = "true"
+		}
+		h.tty, h.stdin = true, "\n"
+		h.expect(h.run("deploy"), 2)
+		if want := "kx can't read " + link + ", and won't replace it.\nFix or remove " + link + ", then run kx deploy again.\n"; h.err.String() != want {
+			t.Fatalf("CI %v: stderr = %q, want %q", ci, h.err.String(), want)
+		}
+		if _, err := os.Lstat(filepath.Join(h.dir, "docker", "Dockerfile")); err == nil {
+			t.Fatal("created the link's target")
+		}
+	}
+}
+
+// A .dockerignore Docker can't read keeps nothing out. With a .env in the
+// folder kx can't fix that, so it stops; without one it warns and goes on.
+func TestDeploy_NoDockerfile_BrokenDockerignore(t *testing.T) {
+	for _, env := range []bool{true, false} {
+		h := newHarness(t)
+		h.loginAs("acme-corp", tokCorp, &dec11)
+		h.link("shop-api", appShopID, "acme-corp")
+		h.nodeApp()
+		if env {
+			h.put(map[string]string{".env": "STRIPE_KEY=test-only\n"})
+		}
+		if err := os.Symlink(filepath.Join(h.dir, "missing"), filepath.Join(h.dir, ".dockerignore")); err != nil {
+			t.Skipf("can't make a symbolic link here: %v", err)
+		}
+		h.tty, h.stdin = true, "\n\n"
+		code := h.run("deploy")
+		if env {
+			h.expect(code, 2)
+			if !strings.HasSuffix(h.err.String(), "Create one now? [Y/n] .dockerignore is a broken link or not a file, so a .env file in this folder would be copied into the image.\nFix or remove .dockerignore, then run kx deploy again.\n") {
+				t.Fatalf("stderr = %q", h.err.String())
+			}
+			if _, ok := h.read("Dockerfile"); ok || len(h.docker.builds) != 0 {
+				t.Fatal("wrote or built with a .env going into the image")
+			}
+			continue
+		}
+		h.expect(code, 0)
+		if !strings.Contains(h.err.String(), "Create one now? [Y/n] ! .dockerignore is a broken link or not a file, so it keeps nothing out of the image.\nWrote ") {
+			t.Fatalf("stderr = %q", h.err.String())
+		}
+		if strings.Contains(h.err.String(), "Wrote .dockerignore") {
+			t.Fatal("said it wrote a .dockerignore")
+		}
+	}
+}
+
+// A folder kx can't write to gets the reason and a fix, not "an
+// unexpected problem".
+func TestDeploy_NoDockerfile_FolderNotWritable(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions and a user that isn't root")
+	}
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.nodeApp()
+	if err := os.Chmod(h.dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(h.dir, 0o755) })
+	h.tty, h.stdin = true, "\n"
+	h.expect(h.run("deploy"), 2)
+	if want := "kx couldn't write " + filepath.Join(h.dir, ".dockerignore") + ": permission denied.\nCheck that you can write to " + h.dir + ", then run kx deploy again.\n"; !strings.HasSuffix(h.err.String(), want) {
+		t.Fatalf("stderr = %q, want suffix %q", h.err.String(), want)
 	}
 }

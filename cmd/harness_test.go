@@ -292,6 +292,7 @@ type harness struct {
 
 	stdin        string
 	tty          bool
+	stderrFile   bool // with tty: stdin is a terminal, stderr isn't (kx … 2>log)
 	password     string
 	readPassword func() (string, error) // overrides password when set
 	canOpen      bool
@@ -358,7 +359,7 @@ func (h *harness) runCtx(ctx context.Context, args ...string) int {
 			return ctx.Err()
 		},
 		PreparePrinter: func(p *ui.Printer) {
-			p.InTTY, p.TTY = h.tty, h.tty
+			p.InTTY, p.TTY = h.tty, h.tty && !h.stderrFile
 			// Spinners draw nothing during a test, so output is the same
 			// on a slow machine; only their line-clearing on Stop remains.
 			p.SpinEvery, p.HeartbeatEvery = time.Hour, time.Hour

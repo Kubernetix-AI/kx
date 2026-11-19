@@ -3,7 +3,9 @@ package cmd
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/kubernetix-ai/kx/internal/api"
@@ -19,6 +21,11 @@ import (
 // one that would copy a .env file into the image.
 func (d *deployRun) writeDockerfile(ctx context.Context, dir string) error {
 	s, p := d.s, d.s.P
+	// A Dockerfile that's there but can't be read is neither built nor
+	// replaced, wherever kx runs.
+	if path := scaffold.UnreadableDockerfile(dir); path != "" {
+		return &kxerr.NoDockerfile{Dir: dir, What: "kx can't read " + path + ", and won't replace it.", Fix: "Fix or remove " + path + ", then run kx deploy again."}
+	}
 	switch {
 	case s.CI.IsCI:
 		return &kxerr.NoDockerfile{Dir: dir, Why: kxerr.NoDockerfileCI}
@@ -47,29 +54,16 @@ func (d *deployRun) writeDockerfile(ctx context.Context, dir string) error {
 	if app.Problem != "" {
 		return &kxerr.NoDockerfile{Dir: dir, What: app.Problem, Fix: app.Fix}
 	}
-
-	exposed, err := scaffold.EnvExposed(dir)
-	if err != nil {
+	if err := keepEnvOut(ctx, p, dir); err != nil {
 		return err
-	}
-	if len(exposed) > 0 {
-		envExposed := &kxerr.NoDockerfile{Dir: dir, Why: kxerr.NoDockerfileEnvExposed}
-		p.Warn("%s", api.Explain(envExposed).What)
-		yes, err := p.ConfirmYes(ctx, "Add .env to .dockerignore?")
-		if err != nil {
-			return err
-		}
-		if !yes {
-			return envExposed
-		}
-		if err := scaffold.IgnoreEnv(dir); err != nil {
-			return err
-		}
 	}
 
 	wrote, err := scaffold.Write(dir, *app)
+	if slices.Contains(wrote, ".dockerignore") && err != nil {
+		p.Info("Wrote .dockerignore, which keeps .env files and .git out of the image.")
+	}
 	if err != nil {
-		return err
+		return writeFailed(dir, err)
 	}
 	dockerfile, _, err := scaffold.Render(*app)
 	if err != nil {
@@ -83,13 +77,73 @@ func (d *deployRun) writeDockerfile(ctx context.Context, dir string) error {
 		}
 		p.Info("    %s", line)
 	}
-	for _, name := range wrote {
-		if name == ".dockerignore" {
-			p.Info("Wrote .dockerignore, which keeps .env files and .git out of the image.")
-		}
+	if slices.Contains(wrote, ".dockerignore") {
+		p.Info("Wrote .dockerignore, which keeps .env files and .git out of the image.")
 	}
 	p.Info("")
 	return nil
+}
+
+// keepEnvOut makes sure no .env file in dir would be copied into the
+// image: when the folder's .dockerignore lets one through, it asks to add
+// the .env lines to it, and stops if the answer is no. A .dockerignore
+// Docker can't read keeps nothing out, and kx can't add to it.
+func keepEnvOut(ctx context.Context, p *ui.Printer, dir string) error {
+	broken := scaffold.DockerignoreBroken(dir)
+	exposed, err := scaffold.EnvExposed(dir)
+	if err != nil {
+		return err
+	}
+	switch {
+	case broken && len(exposed) > 0:
+		return &kxerr.NoDockerfile{Dir: dir,
+			What: ".dockerignore is a broken link or not a file, so a .env file in this folder would be copied into the image.",
+			Fix:  "Fix or remove .dockerignore, then run kx deploy again."}
+	case broken:
+		p.Warn(".dockerignore is a broken link or not a file, so it keeps nothing out of the image.")
+		return nil
+	case len(exposed) == 0:
+		return nil
+	}
+	envExposed := &kxerr.NoDockerfile{Dir: dir, Why: kxerr.NoDockerfileEnvExposed}
+	p.Warn("%s", api.Explain(envExposed).What)
+	yes, err := p.ConfirmYes(ctx, "Add .env to .dockerignore?")
+	if err != nil {
+		return err
+	}
+	if !yes {
+		return envExposed
+	}
+	if err := scaffold.IgnoreEnv(dir); err != nil {
+		path := filepath.Join(dir, ".dockerignore")
+		return &kxerr.NoDockerfile{Dir: dir,
+			What: "kx couldn't add .env to " + path + ": " + fileErrReason(err) + ".",
+			Fix:  "Add the lines **/.env and **/.env.* to .dockerignore yourself, then run kx deploy again."}
+	}
+	return nil
+}
+
+// writeFailed explains why scaffold.Write didn't write the Dockerfile.
+func writeFailed(dir string, err error) error {
+	path := filepath.Join(dir, "Dockerfile")
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		path = pe.Path
+	}
+	if errors.Is(err, fs.ErrExist) {
+		return &kxerr.NoDockerfile{Dir: dir, What: path + " appeared while kx was asking, and kx doesn't replace it.", Fix: "Run kx deploy again to build with it."}
+	}
+	return &kxerr.NoDockerfile{Dir: dir, What: "kx couldn't write " + path + ": " + fileErrReason(err) + ".", Fix: "Check that you can write to " + dir + ", then run kx deploy again."}
+}
+
+// fileErrReason is the operating system's reason for a file error
+// ("permission denied"), without the path it already names.
+func fileErrReason(err error) string {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err.Error()
+	}
+	return err.Error()
 }
 
 // chooseStack asks whether to write a Dockerfile for the one app kx

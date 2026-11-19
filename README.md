@@ -110,11 +110,15 @@ it names the likely cause. The version before it keeps serving.
 
 **No Dockerfile?** On a terminal, `kx deploy` recognises Node, Python and Go apps and static
 sites, offers to write a Dockerfile for yours, shows it, and carries on with the deploy. The
-Dockerfile listens on port 8080 and runs as a non-root user; change it as you need. If the
-folder has no `.dockerignore`, kx writes one that keeps `.env` files, keys and `.git` out of
-the image; if yours doesn't exclude a `.env` file in the folder, kx asks to add it first, and
-builds nothing if you say no. When a folder looks like more than one kind of app, kx asks
-which one it is. kx never replaces a Dockerfile, and in CI it writes none: commit yours.
+Dockerfile listens on port 8080 and runs as a non-root user (any user can run it); change it as
+you need. If the folder has no `.dockerignore`, kx writes one that keeps `.env` files, key
+files (`*.pem`, `*.key`), cloud credentials and `.git` out of the image, in subfolders too; an
+app that needs a certificate bundle at run time can add a `!certs/ca.pem` line. If your own
+`.dockerignore` lets a `.env` file through anywhere in the folder, kx asks to add `**/.env`
+and `**/.env.*` to it first, and builds nothing if you say no. A registry token written into
+`.npmrc` stops it too: use `${NPM_TOKEN}` there instead. When a folder looks like more than one
+kind of app, kx asks which one it is. kx never replaces a Dockerfile, and in CI it writes none:
+commit yours.
 
 ## Commands
 
