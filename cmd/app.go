@@ -47,6 +47,10 @@ type App struct {
 	jsonOut bool
 	orgFlag string
 	apiURL  string
+
+	// autoLoggedIn is set once a command has logged in by itself in this
+	// run, which it does at most once.
+	autoLoggedIn bool
 }
 
 // Main runs kx with the process's arguments and returns the exit code.

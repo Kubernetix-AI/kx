@@ -66,7 +66,7 @@ func runTokenList(ctx context.Context, a *App, cmd *cobra.Command, appFlag strin
 	if err != nil {
 		return err
 	}
-	c, err := s.Client()
+	c, err := s.Client(ctx)
 	if err != nil {
 		return err
 	}
@@ -141,7 +141,7 @@ func runTokenRevoke(ctx context.Context, a *App, cmd *cobra.Command, which strin
 	if err != nil {
 		return err
 	}
-	c, err := s.Client()
+	c, err := s.Client(ctx)
 	if err != nil {
 		return err
 	}

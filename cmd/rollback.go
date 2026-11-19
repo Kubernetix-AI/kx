@@ -65,7 +65,7 @@ func runRollback(ctx context.Context, a *App, cmd *cobra.Command, o rollbackOpts
 	if err != nil {
 		return err
 	}
-	c, err := s.Client()
+	c, err := s.Client(ctx)
 	if err != nil {
 		return err
 	}

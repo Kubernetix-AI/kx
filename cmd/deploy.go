@@ -220,7 +220,7 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 		// Before the picker writes .kx.json, which would count as a change.
 		tag = deploy.ImageTag(ctx, s.CI, df.Dir, a.Now())
 	}
-	c, err := s.Client()
+	c, err := s.Client(ctx)
 	if err != nil {
 		return nil, err
 	}

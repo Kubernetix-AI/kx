@@ -93,7 +93,7 @@ func runLink(ctx context.Context, a *App, cmd *cobra.Command, name string) error
 // deploying a folder over an app takes an explicit pick. command is the
 // command asking ("link" or "deploy"), for the fix lines.
 func chooseApp(ctx context.Context, s *Session, name, command string) (linkChoice, error) {
-	c, err := s.Client()
+	c, err := s.Client(ctx)
 	if err != nil {
 		return linkChoice{}, err
 	}

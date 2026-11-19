@@ -72,7 +72,7 @@ func runAppsList(ctx context.Context, a *App, cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	c, err := s.Client()
+	c, err := s.Client(ctx)
 	if err != nil {
 		return err
 	}

@@ -84,6 +84,10 @@ func UserAgent(ver, ciName string) string {
 	return fmt.Sprintf("kx/%s (%s)", ver, plat)
 }
 
+// SetToken makes the client authenticate with token from its next
+// request on, for a client whose login was just replaced.
+func (c *Client) SetToken(token string) { c.token = token }
+
 // BaseURL returns the validated API base URL ("" if it was rejected).
 func (c *Client) BaseURL() string { return c.base }
 

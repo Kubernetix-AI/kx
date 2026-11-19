@@ -65,7 +65,7 @@ func runStatus(ctx context.Context, a *App, cmd *cobra.Command, appFlag string) 
 	if err != nil {
 		return err
 	}
-	c, _ := s.Client()
+	c, _ := s.Client(ctx)
 	org, err := s.Org(ctx)
 	if err != nil {
 		return err

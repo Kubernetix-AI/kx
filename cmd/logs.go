@@ -73,7 +73,7 @@ func runLogs(ctx context.Context, a *App, cmd *cobra.Command, o logsOpts) error 
 	if err != nil {
 		return err
 	}
-	c, _ := s.Client()
+	c, _ := s.Client(ctx)
 	if o.deployment != "" {
 		return deploymentLogs(ctx, s, c, app, o.deployment)
 	}
