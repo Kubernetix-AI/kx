@@ -111,15 +111,16 @@ it names the likely cause. The version before it keeps serving.
 **No Dockerfile?** On a terminal, `kx deploy` recognises Node, Python and Go apps and static
 sites, offers to write a Dockerfile for yours, shows it, and carries on with the deploy. The
 Dockerfile listens on port 8080 and runs as a non-root user (any user can run it); change it as
-you need. If the folder has no `.dockerignore`, kx writes one that keeps `.env` files, key
-files (`*.pem`, `*.key`), cloud credentials and `.git` out of the image, in subfolders too; an
-app that needs a certificate bundle at run time can add a `!certs/ca.pem` line. If your own
-`.dockerignore` lets a `.env` file through anywhere in the folder, kx asks to add `**/.env`
-and `**/.env.*` to it first, and builds nothing if you say no. A registry token written into
-`.npmrc` or `.yarnrc.yml` stops it too: remove the token if your packages are public; if
-they're private, build the image yourself and run `kx deploy --image <image>`. When a folder
-looks like more than one kind of app, kx asks which one it is. kx never replaces a Dockerfile,
-and in CI it writes none: commit yours.
+you need. The app's folder is read-only while it runs: write to /tmp or to a database. If the
+folder has no `.dockerignore`, kx writes one that keeps `.env` files, key files (`*.pem`,
+`*.key`), cloud credentials and `.git` out of the image, in subfolders too; an app that needs a
+certificate bundle at run time can add a `!certs/ca.pem` line. If your own `.dockerignore` lets
+a `.env` file through anywhere in the folder, kx asks to add `**/.env` and `**/.env.*` to it
+first, and builds nothing if you say no. A registry token written into `.npmrc` or
+`.yarnrc.yml` stops it too: remove the token if your packages are public; if they're private,
+[build and push the image yourself](#deploy-an-image-you-built-yourself) and deploy it with
+`kx deploy --image`. When a folder looks like more than one kind of app, kx asks which one it
+is. kx never replaces a Dockerfile, and in CI it writes none: commit yours.
 
 ## Commands
 
@@ -155,6 +156,38 @@ kx link shop-api                 # a new app if there's none by that name
 
 `URL=$(kx deploy)` works: progress goes to standard error and the URL alone to standard
 output.
+
+### Deploy an image you built yourself
+
+When kx can't build your app, for example because its install needs a private registry token,
+build and push the image yourself, then deploy it:
+
+1. In the dashboard, open Container Images and click Push credentials. Copy the user name and
+   token; the token expires after about an hour.
+2. Log in to the registry with them, build for linux/amd64, and push. Use a new tag for each
+   push, such as the commit's hash: the registry won't replace an image under a tag it already
+   has.
+
+   ```sh
+   docker login registry.kubernetix.ai
+   docker build --platform linux/amd64 -t registry.kubernetix.ai/<org>/<app>:<tag> .
+   docker push registry.kubernetix.ai/<org>/<app>:<tag>
+   ```
+
+   Give the build its registry token as a secret, not in a file the Dockerfile copies, so the
+   token stays out of the image. Pass the file holding it to the build:
+
+   ```sh
+   docker build --platform linux/amd64 --secret id=npmrc,src=$HOME/.npmrc -t registry.kubernetix.ai/<org>/<app>:<tag> .
+   ```
+
+   and install with it mounted, in your Dockerfile:
+
+   ```dockerfile
+   RUN --mount=type=secret,id=npmrc,target=/root/.npmrc npm ci
+   ```
+
+3. Deploy it: `kx deploy --image registry.kubernetix.ai/<org>/<app>:<tag>`
 
 ### Your apps
 
