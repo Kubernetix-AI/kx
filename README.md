@@ -302,6 +302,7 @@ The messages you are most likely to meet:
 |---|---|---|
 | You're not logged in to Kubernetix. | Run: kx login | 3 |
 | Your login to acme-corp has ended. | Run: kx login --org acme-corp | 3 |
+| Kubernetix didn't accept the token this computer uses for acme-corp. | If it worked before, Kubernetix may be being updated: try again in a few minutes. | 3 |
 | The KX_TOKEN secret holds a token that expired on 9 Feb 2027. | Create a new deploy token on the app's Deploy tab and replace the KX_TOKEN secret. | 3 |
 | This token stopped working because the person who created it is no longer a member of acme-corp. | Ask an admin of acme-corp for a new token: Settings → API tokens | 3 |
 | This token can only deploy shop-api, and you asked to deploy web. | Log in with a token that can deploy web: kx login | 3 |

@@ -41,7 +41,7 @@ type Problem struct {
 var allCodes = []string{
 	"not_logged_in", "login_ended", "token_expired", "token_revoked", "invalid_token", "legacy_token",
 	"token_owner_removed", "token_owner_rejected", "token_owner_pending", "token_owner_role",
-	"token_app_mismatch", "token_org_mismatch", "token_create_not_allowed", "org_not_logged_in", "token_cannot_push", "token_not_allowed",
+	"token_not_accepted", "token_app_mismatch", "token_org_mismatch", "token_create_not_allowed", "org_not_logged_in", "token_cannot_push", "token_not_allowed",
 	"insufficient_permissions", "token_limit_reached", "token_lookup_unavailable",
 	"app_not_found", "deployment_not_found", "org_not_found", "not_found", "not_live", "version_not_found", "token_not_found",
 	"validation_error", "request_rejected", "duplicate_app", "app_deleting", "invalid_deployment_status",
@@ -221,6 +221,9 @@ func explainAPI(e *Error) Problem {
 	src, org := e.Ctx.TokenSource, e.Ctx.Org
 	named := tokenLabel(e)
 
+	if notAccepted(e) {
+		return tokenNotAccepted(src, org)
+	}
 	switch e.Code {
 	case "token_expired":
 		switch src {
@@ -353,6 +356,28 @@ func explainAPI(e *Error) Problem {
 		return Problem{"request_rejected", "Kubernetix didn't accept the request: " + sentence(msg), checkValuesFix, ExitUsage}
 	}
 	return Problem{"server_error", "Something went wrong on Kubernetix's side.", "Try again in a minute; if it keeps happening, open an issue at " + issuesURL, ExitUnexpected}
+}
+
+// notAccepted reports a 401 that carries no reason, or the generic one,
+// which doesn't say whether the token itself is at fault.
+func notAccepted(e *Error) bool {
+	if e.Status != 401 {
+		return false
+	}
+	return e.Code == "" || (e.Code == "invalid_token" && strings.TrimRight(e.Message, ". ") == "Invalid or expired token")
+}
+
+// tokenNotAccepted words notAccepted. The token may well still be good, so
+// the fix is to try again, never to make a new token or log in again.
+func tokenNotAccepted(src kxerr.TokenSource, org string) Problem {
+	const again = "If it worked before, Kubernetix may be being updated: try again in a few minutes."
+	switch src {
+	case kxerr.SourceLogin:
+		return Problem{"token_not_accepted", "Kubernetix didn't accept the token this computer uses for " + orgOr(org, "Kubernetix") + ".", again, ExitAuth}
+	case kxerr.SourcePaste:
+		return Problem{"token_not_accepted", "Kubernetix didn't accept that token.", "If you just created it, Kubernetix may be being updated: try again in a few minutes.", ExitAuth}
+	}
+	return Problem{"token_not_accepted", "Kubernetix didn't accept the token in the KX_TOKEN secret.", again, ExitAuth}
 }
 
 func explainInvalidToken(e *kxerr.InvalidToken) Problem {

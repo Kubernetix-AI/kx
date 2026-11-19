@@ -77,6 +77,8 @@ func explainCases() []explainCase {
 		{"KX_TOKEN invalid (API)", apiErr(401, "invalid_token", envCtx), Problem{"invalid_token", "Kubernetix doesn't recognise the token in the KX_TOKEN secret.", "Create a new deploy token on the app's Deploy tab and replace the KX_TOKEN secret.", 3}},
 		{"pasted token invalid (API)", apiErr(401, "invalid_token", pasteCtx), Problem{"invalid_token", "Kubernetix doesn't recognise that token.", "Create a new token and paste it: kx login", 3}},
 		{"unauthenticated (API)", apiErr(401, "not_authenticated", loginCtx), Problem{"invalid_token", "Kubernetix doesn't recognise the token this computer uses for acme-corp.", "Run: kx login --org acme-corp", 3}},
+		{"401 without a reason", &Error{Status: 401, Method: "GET", Path: "/whoami", Ctx: loginCtx}, Problem{"token_not_accepted", "Kubernetix didn't accept the token this computer uses for acme-corp.", "If it worked before, Kubernetix may be being updated: try again in a few minutes.", 3}},
+		{"generic 401 for KX_TOKEN", &Error{Status: 401, Code: "invalid_token", Message: "Invalid or expired token", Ctx: envCtx}, Problem{"token_not_accepted", "Kubernetix didn't accept the token in the KX_TOKEN secret.", "If it worked before, Kubernetix may be being updated: try again in a few minutes.", 3}},
 		{"pasted token malformed", &kxerr.InvalidToken{Source: kxerr.SourcePaste, Reason: "checksum mismatch"}, Problem{"invalid_token", "That doesn't look like a whole Kubernetix token.", "Copy it again with the Copy button and paste it: kx login", 3}},
 		{"KX_TOKEN malformed", &kxerr.InvalidToken{Source: kxerr.SourceEnv, Reason: "checksum mismatch"}, Problem{"invalid_token", "The KX_TOKEN secret doesn't hold a whole Kubernetix token.", "Create a new deploy token on the app's Deploy tab and replace the KX_TOKEN secret.", 3}},
 		{"saved token damaged", &kxerr.InvalidToken{Source: kxerr.SourceLogin, Reason: "checksum mismatch"}, Problem{"invalid_token", "The token saved on this computer is damaged.", "Run: kx login", 3}},
@@ -535,5 +537,61 @@ func TestExplain_ServerTextCannotIssueWorkflowCommands(t *testing.T) {
 		if strings.Contains(p.What, "##[") || strings.Contains(strings.ToLower(p.What), "##vso[") {
 			t.Errorf("Explain kept a workflow command: %q", p.What)
 		}
+	}
+}
+
+// A 401 that carries no reason, or only the generic one, may come from a
+// Kubernetix that is being updated, so kx never tells anyone to make a new
+// token or log in again for it.
+func TestExplain_Bare401_NeverSuggestsANewToken(t *testing.T) {
+	const again = "If it worked before, Kubernetix may be being updated: try again in a few minutes."
+	tests := []struct {
+		ctx       ErrContext
+		what, fix string
+	}{
+		{ErrContext{Org: "acme-corp", TokenSource: kxerr.SourceLogin}, "Kubernetix didn't accept the token this computer uses for acme-corp.", again},
+		{ErrContext{TokenSource: kxerr.SourceLogin}, "Kubernetix didn't accept the token this computer uses for Kubernetix.", again},
+		{ErrContext{Org: "acme-corp", TokenSource: kxerr.SourceEnv}, "Kubernetix didn't accept the token in the KX_TOKEN secret.", again},
+		{ErrContext{TokenSource: kxerr.SourcePaste}, "Kubernetix didn't accept that token.", "If you just created it, Kubernetix may be being updated: try again in a few minutes."},
+	}
+	for _, tt := range tests {
+		got := Explain(&Error{Status: 401, Method: "GET", Path: "/whoami", Ctx: tt.ctx})
+		want := Problem{"token_not_accepted", tt.what, tt.fix, ExitAuth}
+		if got != want {
+			t.Errorf("source %q: Explain() =\n  %+v\nwant\n  %+v", tt.ctx.TokenSource, got, want)
+		}
+		for _, s := range []string{got.What, got.Fix} {
+			if strings.Contains(s, "new token") || strings.Contains(s, "kx login") {
+				t.Errorf("source %q suggests a new token or a login: %q", tt.ctx.TokenSource, s)
+			}
+		}
+		checkShape(t, got)
+	}
+}
+
+// "Invalid or expired token" is the generic answer for a token Kubernetix
+// can't check; "This API token is not valid." means it checked and the
+// token is unknown.
+func TestExplain_InvalidTokenFromPlatformWithoutAPITokens(t *testing.T) {
+	login := ErrContext{Org: "acme-corp", TokenSource: kxerr.SourceLogin}
+	generic := Explain(&Error{Status: 401, Code: "invalid_token", Message: "Invalid or expired token", Ctx: login})
+	bare := Explain(&Error{Status: 401, Ctx: login})
+	if generic != bare || generic.Code != "token_not_accepted" {
+		t.Fatalf("generic 401 = %+v, want the bare 401's %+v", generic, bare)
+	}
+	known := Explain(&Error{Status: 401, Code: "invalid_token", Message: "This API token is not valid.", Ctx: login})
+	want := Problem{"invalid_token", "Kubernetix doesn't recognise the token this computer uses for acme-corp.", "Run: kx login --org acme-corp", ExitAuth}
+	if known != want {
+		t.Fatalf("unknown token = %+v, want %+v", known, want)
+	}
+}
+
+// A real 401 without a body, through the client.
+func TestExplain_EmptyBody401(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusUnauthorized) })
+	c.Ctx = ErrContext{Org: "acme-corp", TokenSource: kxerr.SourceEnv}
+	_, err := c.WhoAmI(context.Background())
+	if got := Explain(err); got.Code != "token_not_accepted" || got.What != "Kubernetix didn't accept the token in the KX_TOKEN secret." {
+		t.Fatalf("Explain() = %+v", got)
 	}
 }
