@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -149,7 +150,7 @@ func explainCases() []explainCase {
 			Problem{"wait_timeout", "shop-api v15 isn't live after 18 minutes: its container keeps stopping right after it starts, so kx stopped waiting; the deploy continues.", "Check on it with kx status; the log lines above may say what stops your app from starting.", 9}},
 		{"timeout with a likely cause, rollback", &kxerr.WaitTimeout{App: "shop-api", Version: 16, After: 18 * time.Minute, NotStarting: &kxerr.NotStarting{After: 2 * time.Minute, Path: "/", Port: 8080, HealthCheck: true, Rollback: true}},
 			Problem{"wait_timeout", "shop-api v16 isn't live after 18 minutes: its container keeps crashing or isn't answering health checks on / at port 8080, so kx stopped waiting; the deploy continues.", "Check on it with kx status; if it doesn't go live, pick another version to roll back to.", 9}},
-		{"bad .kx.json", &kxerr.BadConfig{Path: "/code/shop/.kx.json", Project: true, Reason: "not valid JSON"}, Problem{"bad_project_file", "The .kx.json in /code/shop can't be read: not valid JSON.", "Fix it, or delete it and run: kx link", 2}},
+		{"bad .kx.json", &kxerr.BadConfig{Path: "/code/shop/.kx.json", Project: true, Reason: "not valid JSON"}, Problem{"bad_project_file", "The .kx.json in " + filepath.FromSlash("/code/shop") + " can't be read: not valid JSON.", "Fix it, or delete it and run: kx link", 2}},
 		{"bad settings", &kxerr.BadConfig{Path: "/home/sam/.config/kx/config.json", Reason: "not valid JSON"}, Problem{"bad_settings_file", "kx's settings file /home/sam/.config/kx/config.json can't be read: not valid JSON.", "Delete it and run: kx login", 2}},
 		{"interrupted", context.Canceled, Problem{"interrupted", "kx stopped because it was interrupted.", "Run the command again when you're ready.", 1}},
 		{"deadline", context.DeadlineExceeded, Problem{"timeout", "Kubernetix took too long to answer.", "Try again in a minute.", 1}},

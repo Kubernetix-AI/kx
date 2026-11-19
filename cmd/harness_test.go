@@ -439,7 +439,8 @@ func golden(t *testing.T, name, got string) {
 	if err != nil {
 		t.Fatalf("missing golden file %s (run go test ./cmd -update): %v", path, err)
 	}
-	if got != string(want) {
+	// A checkout with CRLF line endings must not fail every golden test on Windows.
+	if got != strings.ReplaceAll(string(want), "\r\n", "\n") {
 		t.Fatalf("output differs from %s\n--- got ---\n%s\n--- want ---\n%s", path, got, want)
 	}
 }

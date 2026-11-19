@@ -1,0 +1,2 @@
+# Check out text files with LF everywhere, so golden files and scripts match on Windows.
+* text=auto eol=lf
