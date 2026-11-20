@@ -7,9 +7,11 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/kubernetix-ai/kx/internal/api"
 	"github.com/kubernetix-ai/kx/internal/config"
 	"github.com/kubernetix-ai/kx/internal/version"
 )
@@ -445,4 +447,47 @@ func TestToken_RevokeByNameSkipsDeadTokens(t *testing.T) {
 		t.Fatalf("did not revoke the active ci token:\n%s", reqs)
 	}
 	h.expect(h.run("token", "revoke", "kx_oldoldol", "--yes"), 0) // revoking again is harmless
+}
+
+// Right after a deploy, replica counts can lag behind: an app that just
+// went live may show none for a minute or two.
+func TestStatus_JustDeployed_NoReplicasYet_SaysStarting(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	done := h.now.Add(-40 * time.Second)
+	h.api.deployments[appShopID] = append([]api.Deployment{{ID: "dep-16", AppID: appShopID, Version: 16, Status: "ready", CompletedAt: &done}}, h.api.deployments[appShopID]...)
+	h.api.replicas = []api.Replica{}
+	h.expect(h.run("status"), 0)
+	if !strings.Contains(h.out.String(), "Replicas  starting (counts can take a minute to appear)\n") {
+		t.Fatalf("stdout:\n%s", h.out.String())
+	}
+	h.expect(h.run("status", "--json"), 0)
+	if !strings.Contains(h.out.String(), "\"replicas\": {\n    \"ready\": 0,\n    \"total\": 0,\n    \"starting\": true\n  }") {
+		t.Fatalf("json:\n%s", h.out.String())
+	}
+
+	// Without completed_at, updated_at tells when it went live.
+	h.api.deployments[appShopID][0].CompletedAt, h.api.deployments[appShopID][0].UpdatedAt = nil, h.now.Add(-2*time.Minute)
+	h.expect(h.run("status"), 0)
+	if !strings.Contains(h.out.String(), "Replicas  starting (counts can take a minute to appear)\n") {
+		t.Fatalf("stdout:\n%s", h.out.String())
+	}
+}
+
+func TestStatus_NoReplicasLongAfterDeploy_SaysNoneRunning(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	done := h.now.Add(-10 * time.Minute)
+	h.api.deployments[appShopID] = append([]api.Deployment{{ID: "dep-16", AppID: appShopID, Version: 16, Status: "ready", CompletedAt: &done}}, h.api.deployments[appShopID]...)
+	h.api.replicas = []api.Replica{}
+	h.expect(h.run("status"), 0)
+	if !strings.Contains(h.out.String(), "Replicas  none running\n") {
+		t.Fatalf("stdout:\n%s", h.out.String())
+	}
+	h.expect(h.run("status", "--json"), 0)
+	if strings.Contains(h.out.String(), "starting") {
+		t.Fatalf("json:\n%s", h.out.String())
+	}
 }
