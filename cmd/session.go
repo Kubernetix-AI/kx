@@ -127,16 +127,23 @@ func (s *Session) canAutoLogin() bool {
 		a.Getenv(config.EnvToken) == "" && !noAutoLogin[s.command] && !a.autoLoggedIn
 }
 
-// autoLogin logs in for the organization the command asked for, if any,
+// autoLogin logs in for the organization the command is for, if any,
 // then resolves the configuration again so the command uses the new login.
+// A token for another organization is saved, as kx login does, but the
+// command stops: it never carries on somewhere it wasn't meant for, even
+// when its organization was only the last one this computer logged in to.
 func (s *Session) autoLogin(ctx context.Context) error {
 	s.App.autoLoggedIn = true
 	org := s.askedOrg()
 	if !config.ValidOrgName(org) {
 		org = ""
 	}
-	if _, err := s.App.interactiveLogin(ctx, s, org, "", true); err != nil {
+	saved, err := s.App.interactiveLogin(ctx, s, org, "", true)
+	if err != nil {
 		return err
+	}
+	if org != "" && saved != org {
+		return &kxerr.LoggedInElsewhere{Org: org, TokenOrg: saved}
 	}
 	cfg, err := config.Resolve(s.flags, s.App.Getenv)
 	if err != nil {

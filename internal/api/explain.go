@@ -75,36 +75,37 @@ func Explain(err error) Problem {
 		return Problem{Exit: ExitOK}
 	}
 	var (
-		apiErr   *Error
-		netErr   *NetworkError
-		ended    *kxerr.LoginEnded
-		orgNot   *kxerr.OrgNotLoggedIn
-		mismatch *kxerr.TokenAppMismatch
-		lacks    *kxerr.TokenLacks
-		orgMis   *kxerr.TokenOrgMismatch
-		invalid  *kxerr.InvalidToken
-		insecure *kxerr.InsecureURL
-		usage    *kxerr.Usage
-		noDocker *kxerr.NoDockerfile
-		limit    *kxerr.DeployLimit
-		pushRate *kxerr.PushRateLimited
-		failed   *kxerr.DeployFailed
-		timeout  *kxerr.WaitTimeout
-		build    *kxerr.BuildFailed
-		push     *kxerr.PushFailed
-		multi    *kxerr.MultiRegion
-		badCfg   *kxerr.BadConfig
-		notLive  *kxerr.NotLive
-		noVer    *kxerr.NoVersion
-		noTok    *kxerr.NoToken
-		prevRun  *kxerr.PreviousRunning
-		stopped  *kxerr.StoppedWaiting
-		noLive   *kxerr.NothingLive
-		noTarget *kxerr.NoRollbackTarget
-		already  *kxerr.AlreadyLive
-		notReady *kxerr.NotRollbackable
-		unknown  *kxerr.RollbackUnconfirmed
-		dockCtx  *kxerr.DockerContextUnknown
+		apiErr    *Error
+		netErr    *NetworkError
+		ended     *kxerr.LoginEnded
+		orgNot    *kxerr.OrgNotLoggedIn
+		elsewhere *kxerr.LoggedInElsewhere
+		mismatch  *kxerr.TokenAppMismatch
+		lacks     *kxerr.TokenLacks
+		orgMis    *kxerr.TokenOrgMismatch
+		invalid   *kxerr.InvalidToken
+		insecure  *kxerr.InsecureURL
+		usage     *kxerr.Usage
+		noDocker  *kxerr.NoDockerfile
+		limit     *kxerr.DeployLimit
+		pushRate  *kxerr.PushRateLimited
+		failed    *kxerr.DeployFailed
+		timeout   *kxerr.WaitTimeout
+		build     *kxerr.BuildFailed
+		push      *kxerr.PushFailed
+		multi     *kxerr.MultiRegion
+		badCfg    *kxerr.BadConfig
+		notLive   *kxerr.NotLive
+		noVer     *kxerr.NoVersion
+		noTok     *kxerr.NoToken
+		prevRun   *kxerr.PreviousRunning
+		stopped   *kxerr.StoppedWaiting
+		noLive    *kxerr.NothingLive
+		noTarget  *kxerr.NoRollbackTarget
+		already   *kxerr.AlreadyLive
+		notReady  *kxerr.NotRollbackable
+		unknown   *kxerr.RollbackUnconfirmed
+		dockCtx   *kxerr.DockerContextUnknown
 	)
 	switch {
 	case errors.As(err, &apiErr):
@@ -121,6 +122,8 @@ func Explain(err error) Problem {
 			what = "This folder deploys to " + orgNot.Org
 		}
 		return Problem{"org_not_logged_in", what + ", but this computer is only logged in to " + joinAnd(orgNot.LoggedIn) + ".", "Run: kx login --org " + orgNot.Org, ExitAuth}
+	case errors.As(err, &elsewhere):
+		return Problem{"org_not_logged_in", "The token you pasted is for " + elsewhere.TokenOrg + ", but this command is for " + elsewhere.Org + ".", "Run: kx login --org " + elsewhere.Org, ExitAuth}
 	case errors.Is(err, kxerr.ErrTokenCreateMoved):
 		return Problem{"token_create_not_allowed", "kx can't create tokens; only people signed in to the dashboard can.", "Create one in the dashboard: Settings → API tokens (for CI, the app's Deploy tab)", ExitUsage}
 	case errors.As(err, &orgMis):

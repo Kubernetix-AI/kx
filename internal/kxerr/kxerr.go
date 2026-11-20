@@ -63,6 +63,14 @@ type OrgNotLoggedIn struct {
 
 func (e *OrgNotLoggedIn) Error() string { return "not logged in to " + e.Org }
 
+// LoggedInElsewhere means a command logged in by itself for Org, but the
+// token pasted was for TokenOrg (and was saved for it).
+type LoggedInElsewhere struct{ Org, TokenOrg string }
+
+func (e *LoggedInElsewhere) Error() string {
+	return "logged in to " + e.TokenOrg + ", not " + e.Org
+}
+
 // TokenOrgMismatch means KX_TOKEN belongs to TokenOrg, but --org, KX_ORG
 // or the folder's .kx.json (FromFolder) names Org.
 type TokenOrgMismatch struct {

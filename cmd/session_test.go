@@ -333,3 +333,38 @@ func TestLogin_PendingApprovalHint(t *testing.T) {
 		t.Fatalf("stderr:\n%s", h.err.String())
 	}
 }
+
+// A command logs in for the organization it was for; a token for another
+// one is saved (as kx login does) but the command doesn't carry on there,
+// even when its organization was only the last one logged in to.
+func TestDeploy_AutoLogin_TokenForAnotherOrg_Stops(t *testing.T) {
+	h := newHarness(t)
+	ended := nov12.Add(-time.Hour)
+	h.loginAs("acme-corp", tokCorp, &ended) // the default org, no folder link
+	h.inFolder("my-shop")
+	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+	h.tty, h.password, h.stdin = true, tokLabs, "\n"
+	h.expect(h.run("deploy"), 3)
+	want := "! This token is for acme-labs, not acme-corp, so kx saved it for acme-labs.\n" +
+		"Logged in to acme-labs as sam@acme.dev. This token can deploy every app in acme-labs and never expires.\n\n" +
+		"The token you pasted is for acme-labs, but this command is for acme-corp.\nRun: kx login --org acme-corp\n"
+	if !strings.HasSuffix(h.err.String(), want) {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	if strings.Contains(h.err.String(), "Which app") || len(h.api.newApps) != 0 || len(h.api.deployPosts) != 0 {
+		t.Fatalf("carried on in acme-labs:\n%s", h.err.String())
+	}
+	if h.user().Orgs["acme-labs"].Token != tokLabs {
+		t.Fatal("the pasted token wasn't saved")
+	}
+
+	// A folder linked to acme-labs, and a token for acme-corp.
+	h = newHarness(t)
+	h.link("shop-api", "", "acme-labs")
+	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+	h.tty, h.password = true, tokCorp
+	h.expect(h.run("deploy"), 3)
+	if !strings.HasSuffix(h.err.String(), "The token you pasted is for acme-corp, but this command is for acme-labs.\nRun: kx login --org acme-labs\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+}
