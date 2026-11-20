@@ -53,7 +53,7 @@
 - When a deployment records no health check, kx names only the port it checks, not a path.
 - When Kubernetix reports that an organization has started the most deploys it may start in a
   day, failed ones included, kx says so instead of using the daily deploy limit's wording,
-  with the number and plan Kubernetix gives, if any. Problem code `deploy_limit_reached`,
+  with the number Kubernetix gives, if any. Problem code `deploy_limit_reached`,
   exit 5, as before.
 
 ## 1.0.0

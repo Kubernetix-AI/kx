@@ -332,7 +332,7 @@ func explainAPI(e *Error) Problem {
 
 	case "tier_limit_exceeded":
 		if e.LimitName == "max_deployments_per_day" && e.Reason == "too_many_tries" {
-			return tooManyTries(org, e.Plan, e.TriesLimit)
+			return tooManyTries(org, e.TriesLimit)
 		}
 		if e.LimitName == "max_deployments_per_day" {
 			return deployLimit(org, "", 0, time.Time{})
@@ -618,19 +618,16 @@ func deployLimit(org, plan string, limit int, now time.Time) Problem {
 }
 
 // tooManyTries explains a deploy refused because the organization has
-// started as many deploys today, failed ones included, as its plan allows.
-// It doesn't say "used all its deploys", which kx status, counting only
+// started as many deploys today, failed ones included, as it may. It
+// doesn't say "used all its deploys", which kx status, counting only
 // deploys that didn't fail, would contradict. It names a number only when
-// Kubernetix gave one (tries), and the plan only with it.
-func tooManyTries(org, plan string, tries int) Problem {
+// Kubernetix gave one (tries), and never the plan: an organization's own
+// quota can differ from its plan's.
+func tooManyTries(org string, tries int) Problem {
 	who := orgOr(org, "Your organization")
 	what := who + " has started as many deploys today as its plan allows in a day, failed ones included."
 	if tries > 0 {
-		planName := "its plan"
-		if plan != "" {
-			planName = "the " + strings.ToUpper(plan[:1]) + plan[1:] + " plan"
-		}
-		what = fmt.Sprintf("%s has started %d deploys today, failed ones included, which is the most %s allows in a day.", who, tries, planName)
+		what = fmt.Sprintf("%s has tried %d deploys today, the most it can try in a day.", who, tries)
 	}
 	return Problem{"deploy_limit_reached", what, "More are available at 00:00 UTC; fix what makes the deploys fail before trying again.", ExitLimit}
 }

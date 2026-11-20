@@ -30,8 +30,8 @@ type ErrContext struct {
 // token failures add "token_prefix", "token_name" and sometimes
 // "expires_at", plan limits add "limit_name", and billing blocks may add
 // "reason". The ceiling on deploys started a day adds "reason":
-// "too_many_tries" and may add "tries_limit" and "plan". Every string is
-// cleaned of control characters and anything that looks like a token.
+// "too_many_tries" and may add "tries_limit". Every string is cleaned of
+// control characters and anything that looks like a token.
 type Error struct {
 	Status         int
 	Code           string
@@ -43,7 +43,6 @@ type Error struct {
 	LimitName      string
 	Reason         string // what lifts a billing block, e.g. outstanding_invoice; or too_many_tries
 	TriesLimit     int    // with too_many_tries: the deploys a day the org may start, failed ones included (0 if not given)
-	Plan           string // with too_many_tries: the org's plan, e.g. free ("" if not given)
 	Method         string
 	Path           string // relative to the API base, e.g. /registry/credentials
 	Ctx            ErrContext
@@ -98,7 +97,6 @@ func parseErrorBody(status int, body []byte, h http.Header) *Error {
 	}
 	e.LimitName = cleanCode(str("limit_name"))
 	e.Reason = cleanCode(str("reason"))
-	e.Plan = cleanCode(str("plan"))
 	var tries float64
 	if v, ok := raw["tries_limit"]; ok && json.Unmarshal(v, &tries) == nil && tries >= 1 && tries <= maxTriesLimit && tries == math.Trunc(tries) {
 		e.TriesLimit = int(tries)

@@ -1126,7 +1126,7 @@ func TestRun_Expose80_AppLiveOnThatPort_DoesNotAsk(t *testing.T) {
 
 // The ceiling on tries a day (failed deploys included) is worded apart
 // from the daily deploy limit, which kx status would contradict, with the
-// number and plan Kubernetix gives, and none of kx's own.
+// number Kubernetix gives, and none of kx's own.
 func TestRun_ServerTriesCeiling_UsesWhatKubernetixSays(t *testing.T) {
 	const fix = "More are available at 00:00 UTC; fix what makes the deploys fail before trying again."
 	e := newEnv(t)
@@ -1135,7 +1135,7 @@ func TestRun_ServerTriesCeiling_UsesWhatKubernetixSays(t *testing.T) {
 	e.api.usage = &api.Usage{Plan: "pro", Usage: map[string]api.UsageItem{"deployments_today": {Current: 2, Limit: 50}}}
 	_, err := e.run(e.options())
 	want := api.Problem{Code: "deploy_limit_reached",
-		What: "acme-corp has started 25 deploys today, failed ones included, which is the most the Free plan allows in a day.",
+		What: "acme-corp has tried 25 deploys today, the most it can try in a day.",
 		Fix:  fix, Exit: api.ExitLimit}
 	if p := api.Explain(err); p != want {
 		t.Fatalf("Explain() = %+v\nwant %+v", p, want)

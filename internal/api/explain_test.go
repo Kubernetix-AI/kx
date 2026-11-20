@@ -643,25 +643,25 @@ func TestExplain_DeployFailed_PrefersPlatformReasonWhenClassified(t *testing.T) 
 
 func TestExplain_TriesCeilingWording(t *testing.T) {
 	const fix = "More are available at 00:00 UTC; fix what makes the deploys fail before trying again."
-	tries := func(limit int, plan string) *Error {
+	tries := func(limit int) *Error {
 		return &Error{Status: 402, Code: "tier_limit_exceeded", LimitName: "max_deployments_per_day", Reason: "too_many_tries",
-			TriesLimit: limit, Plan: plan, Ctx: ErrContext{Org: "acme-corp"}}
+			TriesLimit: limit, Ctx: ErrContext{Org: "acme-corp"}}
 	}
 	tests := []struct {
 		err  *Error
 		what string
 	}{
-		// The number and plan only ever come from Kubernetix.
-		{tries(25, "free"), "acme-corp has started 25 deploys today, failed ones included, which is the most the Free plan allows in a day."},
-		{tries(1000, ""), "acme-corp has started 1000 deploys today, failed ones included, which is the most its plan allows in a day."},
-		{tries(0, "free"), "acme-corp has started as many deploys today as its plan allows in a day, failed ones included."},
-		{tries(0, ""), "acme-corp has started as many deploys today as its plan allows in a day, failed ones included."},
+		// The number only ever comes from Kubernetix. The plan isn't named:
+		// an organization's own quota can differ from its plan's.
+		{tries(25), "acme-corp has tried 25 deploys today, the most it can try in a day."},
+		{tries(1000), "acme-corp has tried 1000 deploys today, the most it can try in a day."},
+		{tries(0), "acme-corp has started as many deploys today as its plan allows in a day, failed ones included."},
 	}
 	for _, tt := range tests {
 		got := Explain(tt.err)
 		want := Problem{"deploy_limit_reached", tt.what, fix, ExitLimit}
 		if got != want {
-			t.Errorf("tries_limit %d, plan %q: Explain() =\n  %+v\nwant\n  %+v", tt.err.TriesLimit, tt.err.Plan, got, want)
+			t.Errorf("tries_limit %d: Explain() =\n  %+v\nwant\n  %+v", tt.err.TriesLimit, got, want)
 		}
 		checkShape(t, got)
 	}
@@ -672,14 +672,14 @@ func TestExplain_TriesCeilingWording(t *testing.T) {
 	}
 }
 
-// The tries ceiling's 402 names the number of tries and the plan.
+// The tries ceiling's 402 names the number of tries.
 func TestClient_ParsesTheTriesCeiling(t *testing.T) {
-	for body, want := range map[string][2]any{
-		`{"error":"tier_limit_exceeded","limit_name":"max_deployments_per_day","reason":"too_many_tries","tries_limit":25,"plan":"free"}`: {25, "free"},
-		`{"error":"tier_limit_exceeded","limit_name":"max_deployments_per_day","reason":"too_many_tries"}`:                                {0, ""},
-		`{"error":"tier_limit_exceeded","reason":"too_many_tries","tries_limit":2.5,"plan":"Free Plan!"}`:                                 {0, ""},
-		`{"error":"tier_limit_exceeded","reason":"too_many_tries","tries_limit":-3,"plan":"pro"}`:                                         {0, "pro"},
-		`{"error":"tier_limit_exceeded","reason":"too_many_tries","tries_limit":"25"}`:                                                    {0, ""},
+	for body, want := range map[string]int{
+		`{"error":"tier_limit_exceeded","limit_name":"max_deployments_per_day","reason":"too_many_tries","tries_limit":25,"plan":"free"}`: 25,
+		`{"error":"tier_limit_exceeded","limit_name":"max_deployments_per_day","reason":"too_many_tries"}`:                                0,
+		`{"error":"tier_limit_exceeded","reason":"too_many_tries","tries_limit":2.5}`:                                                     0,
+		`{"error":"tier_limit_exceeded","reason":"too_many_tries","tries_limit":-3}`:                                                      0,
+		`{"error":"tier_limit_exceeded","reason":"too_many_tries","tries_limit":"25"}`:                                                    0,
 	} {
 		c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -688,7 +688,7 @@ func TestClient_ParsesTheTriesCeiling(t *testing.T) {
 		})
 		_, err := c.WhoAmI(context.Background())
 		var apiErr *Error
-		if !errors.As(err, &apiErr) || apiErr.TriesLimit != want[0] || apiErr.Plan != want[1] {
+		if !errors.As(err, &apiErr) || apiErr.TriesLimit != want {
 			t.Errorf("%s: %+v", body, err)
 		}
 	}
