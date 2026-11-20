@@ -401,8 +401,9 @@ func (d *deployRun) namedApp() bool {
 }
 
 // offerNewApp asks whether to create the app that --app or KX_APP names
-// and that doesn't exist (notFound says so). In CI it stays an error;
-// without a terminal the fix says how to create it.
+// and that doesn't exist (notFound says so). The name was typed, maybe
+// mistyped, so the default is no: Enter alone creates nothing. In CI it
+// stays an error; without a terminal the fix says how to create it.
 func (d *deployRun) offerNewApp(ctx context.Context, notFound error) (*api.App, string, error) {
 	s, name := d.s, d.s.Cfg.App
 	if s.CI.IsCI {
@@ -412,7 +413,7 @@ func (d *deployRun) offerNewApp(ctx context.Context, notFound error) (*api.App, 
 	if !s.P.InTTY || !s.P.TTY {
 		return nil, "", &kxerr.Usage{What: what, Fix: "Create it: kx link " + name + ", then kx deploy"}
 	}
-	yes, err := s.P.ConfirmYes(ctx, what+" Create it?")
+	yes, err := s.P.Confirm(ctx, what+" Create it?")
 	if err != nil {
 		return nil, "", err
 	}

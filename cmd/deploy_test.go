@@ -1238,14 +1238,22 @@ func (h *harness) kxJSON() string {
 	return strings.Join(strings.Fields(string(b)), "")
 }
 
+// The name came from the command line, where a typo is easy, so creating
+// the app takes a y: Enter alone creates nothing.
 func TestDeploy_AppFlagNewName_AsksThenCreates(t *testing.T) {
 	h := newHarness(t)
 	h.loginAs("acme-corp", tokCorp, &dec11)
 	h.api.apps = h.api.apps[:1] // shop-api only
 	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
 	h.tty, h.stdin = true, "\n"
+	h.expect(h.run("deploy", "--app", "web"), 2)
+	if !strings.HasSuffix(h.err.String(), "There's no app called web in acme-corp. Create it? [y/N] Nothing was deployed: there's no app called web in acme-corp.\nSee your apps: kx apps list\n") || len(h.api.newApps) != 0 {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+
+	h.stdin = "y\n"
 	h.expect(h.run("deploy", "--app", "web"), 0)
-	if !strings.HasPrefix(h.err.String(), "There's no app called web in acme-corp. Create it? [Y/n] Saved in .kx.json. Next time, just run kx deploy.\n\n✓ Checked ") {
+	if !strings.HasPrefix(h.err.String(), "There's no app called web in acme-corp. Create it? [y/N] Saved in .kx.json. Next time, just run kx deploy.\n\n✓ Checked ") {
 		t.Fatalf("stderr:\n%s", h.err.String())
 	}
 	if len(h.api.newApps) != 1 || h.api.newApps[0]["name"] != "web" {

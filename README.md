@@ -104,8 +104,9 @@ folder and the like), kx asks for a name instead and suggests the git repository
 there are apps, kx asks which one: the first choice is always a new app named after the
 folder, so pressing Enter never deploys over an app you already have; to deploy to an
 existing app, move to it with the arrow keys or type its number. `kx deploy --app web`
-deploys to `web`, offers to create it if there's no such app, and saves it in `.kx.json`
-when the folder has none. The next `kx deploy` in that folder asks nothing. Run `kx` on its
+deploys to `web`, asks whether to create it if there's no such app (type `y`; Enter alone
+creates nothing, in case of a typo), and saves it in `.kx.json` when the folder has none
+and kx builds the folder's own Dockerfile. The next `kx deploy` in that folder asks nothing. Run `kx` on its
 own at any time to see these steps again, and `kx <command> --help` for examples of any
 command.
 

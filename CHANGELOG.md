@@ -18,9 +18,10 @@
   says nothing about the app (`src`, `app`, `code`, `Desktop`, the home folder and the like)
   asks for a name, suggesting the git repository's. When the organization has apps, kx asks
   which one, as before.
-- `kx deploy --app web` offers to create `web` when there's no app by that name (on a
-  terminal; without one it says how; in CI it fails as before), and saves the app in
-  `.kx.json` when the folder has none (not in CI, not with `--image`).
+- `kx deploy --app web` asks whether to create `web` when there's no app by that name (on a
+  terminal, and only a `y` creates it; without one it says how; in CI it fails as before).
+  It saves the app in `.kx.json` when the folder has none and kx builds the folder's own
+  Dockerfile (not in CI, not with `--image`, `--build` elsewhere or `--dockerfile`).
 - `kx deploy` offers to write a Dockerfile for Node, Python and Go apps and static sites when
   the folder has none, shows what it wrote, and carries on.
 - `kx status`, `kx logs` and `kx open` in a folder that isn't linked use the organization's
