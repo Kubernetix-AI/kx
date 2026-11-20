@@ -1293,6 +1293,15 @@ func TestDeploy_AppFlagNewName_NoTerminal_SaysHow(t *testing.T) {
 			t.Fatalf("stderr:\n%s", h.err.String())
 		}
 	}
+
+	// A name kx couldn't create stays "no such app".
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+	h.expect(h.run("deploy", "--app", "Shop API"), 4)
+	if !strings.HasSuffix(h.err.String(), "There's no app called Shop API in acme-corp.\nSee your apps: kx apps list\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
 }
 
 func TestDeploy_AppFlagNewName_InCI_Fails(t *testing.T) {

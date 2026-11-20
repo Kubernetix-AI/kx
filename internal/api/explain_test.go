@@ -581,7 +581,7 @@ func TestExplain_Bare401_NeverSuggestsANewToken(t *testing.T) {
 // "Invalid or expired token" is the generic answer for a token Kubernetix
 // can't check; "This API token is not valid." means it checked and the
 // token is unknown.
-func TestExplain_InvalidTokenFromPlatformWithoutAPITokens(t *testing.T) {
+func TestExplain_GenericInvalidToken_IsNotAccepted(t *testing.T) {
 	login := ErrContext{Org: "acme-corp", TokenSource: kxerr.SourceLogin}
 	generic := Explain(&Error{Status: 401, Code: "invalid_token", Message: "Invalid or expired token", Ctx: login})
 	bare := Explain(&Error{Status: 401, Ctx: login})
