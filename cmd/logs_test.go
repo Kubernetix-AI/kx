@@ -150,7 +150,7 @@ func TestLogs_NotLinked(t *testing.T) {
 	h := newHarness(t)
 	h.loginAs("acme-corp", tokCorp, &dec11)
 	h.expect(h.run("logs"), 2)
-	if h.err.String() != "This folder isn't linked to an app yet.\nRun: kx link\n" {
+	if h.err.String() != "This folder isn't linked to an app, so kx doesn't know which one you mean.\nRun: kx logs --app <name>. Your apps: shop-api, web\n" {
 		t.Fatalf("stderr = %q", h.err.String())
 	}
 }

@@ -1,0 +1,34 @@
+kx puts the app in this folder on Kubernetix.
+
+Examples:
+  kx deploy                build this folder and put it live (logs in first if needed)
+  kx status                see what's live
+  kx logs --follow         watch your app's output
+  kx open                  open your app in the browser
+
+Usage:
+  kx [flags]
+  kx <command>
+
+Get started:
+  deploy      Build this folder and put it live
+  status      See what's live: version, URL, replicas, deploys left today
+  logs        Show your app's output
+  rollback    Put the previous version back
+  open        Open your app in the browser
+
+More commands:
+  apps        List and inspect apps
+  link        Choose the app this folder deploys to
+  login       Connect this computer to Kubernetix
+  logout      Revoke this computer's token and forget it
+  token       List and revoke API tokens
+  whoami      Show where this computer is logged in
+  version     Show which kx this is
+
+Options:
+  -h, --help      help for kx
+      --json      print machine-readable JSON
+      --org org   use this org (default: the folder's, then your last login)
+
+More about a command: kx <command> --help

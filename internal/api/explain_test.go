@@ -77,6 +77,11 @@ func explainCases() []explainCase {
 		{"KX_TOKEN invalid (API)", apiErr(401, "invalid_token", envCtx), Problem{"invalid_token", "Kubernetix doesn't recognise the token in the KX_TOKEN secret.", "Create a new deploy token on the app's Deploy tab and replace the KX_TOKEN secret.", 3}},
 		{"pasted token invalid (API)", apiErr(401, "invalid_token", pasteCtx), Problem{"invalid_token", "Kubernetix doesn't recognise that token.", "Create a new token and paste it: kx login", 3}},
 		{"unauthenticated (API)", apiErr(401, "not_authenticated", loginCtx), Problem{"invalid_token", "Kubernetix doesn't recognise the token this computer uses for acme-corp.", "Run: kx login --org acme-corp", 3}},
+		{"automatic login for another org than the last login's", &kxerr.LoggedInElsewhere{Org: "acme-corp", TokenOrg: "acme-labs", LastLogin: true, Command: "kx status"},
+			Problem{"org_not_logged_in", "The token you pasted is for acme-labs, but kx was going to use acme-corp, where this computer was last logged in.", "Run kx status again to use acme-labs, or log in to acme-corp: kx login --org acme-corp", 3}},
+		{"automatic login for another org", &kxerr.LoggedInElsewhere{Org: "acme-corp", TokenOrg: "acme-labs"}, Problem{"org_not_logged_in", "The token you pasted is for acme-labs, but this command is for acme-corp.", "Run: kx login --org acme-corp", 3}},
+		{"401 without a reason", &Error{Status: 401, Method: "GET", Path: "/whoami", Ctx: loginCtx}, Problem{"token_not_accepted", "Kubernetix didn't accept the token this computer uses for acme-corp.", "If it worked before, Kubernetix may be being updated: try again in a few minutes.", 3}},
+		{"generic 401 for KX_TOKEN", &Error{Status: 401, Code: "invalid_token", Message: "Invalid or expired token", Ctx: envCtx}, Problem{"token_not_accepted", "Kubernetix didn't accept the token in the KX_TOKEN secret.", "If it worked before, Kubernetix may be being updated: try again in a few minutes.", 3}},
 		{"pasted token malformed", &kxerr.InvalidToken{Source: kxerr.SourcePaste, Reason: "checksum mismatch"}, Problem{"invalid_token", "That doesn't look like a whole Kubernetix token.", "Copy it again with the Copy button and paste it: kx login", 3}},
 		{"KX_TOKEN malformed", &kxerr.InvalidToken{Source: kxerr.SourceEnv, Reason: "checksum mismatch"}, Problem{"invalid_token", "The KX_TOKEN secret doesn't hold a whole Kubernetix token.", "Create a new deploy token on the app's Deploy tab and replace the KX_TOKEN secret.", 3}},
 		{"saved token damaged", &kxerr.InvalidToken{Source: kxerr.SourceLogin, Reason: "checksum mismatch"}, Problem{"invalid_token", "The token saved on this computer is damaged.", "Run: kx login", 3}},
@@ -117,6 +122,9 @@ func explainCases() []explainCase {
 		{"API URL from elsewhere", &kxerr.InsecureURL{URL: "http://x"}, Problem{"insecure_api_url", "kx only talks to Kubernetix over https, and the API address isn't an https address.", "Use an https:// API address.", 2}},
 		{"insecure URL config", &kxerr.InsecureURL{URL: "http://x", Source: "config"}, Problem{"insecure_api_url", "kx only talks to Kubernetix over https, and the api_url in kx's settings file isn't an https address.", "Remove api_url from kx's settings file, or make it an https:// address.", 2}},
 		{"usage", &kxerr.Usage{What: "kx logs takes no arguments.", Fix: "See examples: kx logs --help"}, Problem{"usage", "kx logs takes no arguments.", "See examples: kx logs --help", 2}},
+		{"not linked, no apps", &kxerr.Unlinked{Org: "acme-corp", Command: "status"}, Problem{"not_linked", "There are no apps in acme-corp yet.", "Deploy this folder: kx deploy", 2}},
+		{"not linked, several apps", &kxerr.Unlinked{Org: "acme-corp", Command: "logs", Apps: []string{"web", "shop-api", "zeta", "docs", "api", "yak", "admin"}},
+			Problem{"not_linked", "This folder isn't linked to an app, so kx doesn't know which one you mean.", "Run: kx logs --app <name>. Your apps: admin, api, docs, shop-api, web and 2 more", 2}},
 		{"not linked", kxerr.ErrNotLinked, Problem{"not_linked", "This folder isn't linked to an app yet.", "Run: kx link", 2}},
 		{"multi-region", &kxerr.MultiRegion{App: "shop-api"}, Problem{"multi_region_app", "shop-api runs in several regions, and kx can't deploy those yet.", "Deploy it from the dashboard: platform.kubernetix.ai", 2}},
 		{"login in CI", kxerr.ErrLoginInCI, Problem{"login_in_ci", "kx login saves a token on this computer, so it doesn't run in CI.", "Save a deploy token as the KX_TOKEN secret instead.", 2}},
@@ -253,9 +261,14 @@ func checkShape(t *testing.T, p Problem) {
 		t.Errorf("line one has %d sentences: %q", sentences, p.What)
 	}
 	maxFixSentences := 1
-	if p.Code == "no_dockerfile" {
+	switch p.Code {
+	case "no_dockerfile":
 		// "Add a Dockerfile …, or cd to the folder that has one." is the
 		// fix; the second sentence says how kx can write one instead.
+		maxFixSentences = 2
+	case "not_linked":
+		// "Run: kx logs --app <name>." is the fix; the second sentence
+		// lists the names to choose from.
 		maxFixSentences = 2
 	}
 	if strings.Count(p.Fix, ". ")+1 > maxFixSentences {
@@ -534,6 +547,149 @@ func TestExplain_ServerTextCannotIssueWorkflowCommands(t *testing.T) {
 		p := Explain(&Error{Status: 400, Code: "validation_error", Message: msg})
 		if strings.Contains(p.What, "##[") || strings.Contains(strings.ToLower(p.What), "##vso[") {
 			t.Errorf("Explain kept a workflow command: %q", p.What)
+		}
+	}
+}
+
+// A 401 that carries no reason, or only the generic one, may come from a
+// Kubernetix that is being updated, so kx never tells anyone to make a new
+// token or log in again for it.
+func TestExplain_Bare401_NeverSuggestsANewToken(t *testing.T) {
+	const again = "If it worked before, Kubernetix may be being updated: try again in a few minutes."
+	tests := []struct {
+		ctx       ErrContext
+		what, fix string
+	}{
+		{ErrContext{Org: "acme-corp", TokenSource: kxerr.SourceLogin}, "Kubernetix didn't accept the token this computer uses for acme-corp.", again},
+		{ErrContext{TokenSource: kxerr.SourceLogin}, "Kubernetix didn't accept the token this computer uses for Kubernetix.", again},
+		{ErrContext{Org: "acme-corp", TokenSource: kxerr.SourceEnv}, "Kubernetix didn't accept the token in the KX_TOKEN secret.", again},
+		{ErrContext{TokenSource: kxerr.SourcePaste}, "Kubernetix didn't accept that token.", "If you just created it, Kubernetix may be being updated: try again in a few minutes."},
+	}
+	for _, tt := range tests {
+		got := Explain(&Error{Status: 401, Method: "GET", Path: "/whoami", Ctx: tt.ctx})
+		want := Problem{"token_not_accepted", tt.what, tt.fix, ExitAuth}
+		if got != want {
+			t.Errorf("source %q: Explain() =\n  %+v\nwant\n  %+v", tt.ctx.TokenSource, got, want)
+		}
+		for _, s := range []string{got.What, got.Fix} {
+			if strings.Contains(s, "new token") || strings.Contains(s, "kx login") {
+				t.Errorf("source %q suggests a new token or a login: %q", tt.ctx.TokenSource, s)
+			}
+		}
+		checkShape(t, got)
+	}
+}
+
+// "Invalid or expired token" is the generic answer for a token Kubernetix
+// can't check; "This API token is not valid." means it checked and the
+// token is unknown.
+func TestExplain_GenericInvalidToken_IsNotAccepted(t *testing.T) {
+	login := ErrContext{Org: "acme-corp", TokenSource: kxerr.SourceLogin}
+	generic := Explain(&Error{Status: 401, Code: "invalid_token", Message: "Invalid or expired token", Ctx: login})
+	bare := Explain(&Error{Status: 401, Ctx: login})
+	if generic != bare || generic.Code != "token_not_accepted" {
+		t.Fatalf("generic 401 = %+v, want the bare 401's %+v", generic, bare)
+	}
+	known := Explain(&Error{Status: 401, Code: "invalid_token", Message: "This API token is not valid.", Ctx: login})
+	want := Problem{"invalid_token", "Kubernetix doesn't recognise the token this computer uses for acme-corp.", "Run: kx login --org acme-corp", ExitAuth}
+	if known != want {
+		t.Fatalf("unknown token = %+v, want %+v", known, want)
+	}
+}
+
+// A real 401 without a body, through the client.
+func TestExplain_EmptyBody401(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusUnauthorized) })
+	c.Ctx = ErrContext{Org: "acme-corp", TokenSource: kxerr.SourceEnv}
+	_, err := c.WhoAmI(context.Background())
+	if got := Explain(err); got.Code != "token_not_accepted" || got.What != "Kubernetix didn't accept the token in the KX_TOKEN secret." {
+		t.Fatalf("Explain() = %+v", got)
+	}
+}
+
+func TestExplain_DeployFailed_PrefersPlatformReasonWhenClassified(t *testing.T) {
+	const reason = "Nothing is listening on port 8080. Make your app listen on 0.0.0.0:8080 (not only localhost), or change the app's port to the one it uses."
+	seen := &kxerr.NotStarting{After: 2 * time.Minute, Port: 8080, HealthCheck: true}
+	got := Explain(&kxerr.DeployFailed{App: "my-shop", Version: 3, Code: "not_listening", Reason: reason, NotStarting: seen})
+	if !strings.HasPrefix(got.What, "my-shop v3 didn't go live: Nothing is listening on port 8080.") || got.Fix != "See why: kx logs --deployment v3" || got.Exit != ExitDeploy {
+		t.Fatalf("Explain() = %+v", got)
+	}
+	// Without a class, what kx saw stays more specific than the message.
+	got = Explain(&kxerr.DeployFailed{App: "my-shop", Version: 3, Reason: "Deployment failed.", NotStarting: seen})
+	if got.What != "my-shop v3 didn't go live: its container kept crashing or didn't answer health checks at port 8080." {
+		t.Fatalf("Explain() = %+v", got)
+	}
+	// A class without a message: kx words what it saw.
+	got = Explain(&kxerr.DeployFailed{App: "my-shop", Version: 3, Code: "not_ready", NotStarting: seen})
+	if !strings.Contains(got.What, "didn't answer health checks at port 8080") {
+		t.Fatalf("Explain() = %+v", got)
+	}
+
+	// not_ready only says the version never got ready: what kx saw says
+	// more, when it saw something; otherwise the platform's message.
+	const notReady = "Version 3 didn't become ready within 5 minutes. Check the deployment logs for errors."
+	got = Explain(&kxerr.DeployFailed{App: "my-shop", Version: 3, ServingVersion: 2, Code: "not_ready", Reason: notReady, NotStarting: seen})
+	want := Problem{"deploy_failed", "my-shop v3 didn't go live: its container kept crashing or didn't answer health checks at port 8080. Version 2 is still serving.",
+		"Make your app start and answer health checks at port 8080 (the log lines above may say why it didn't), then run kx deploy again.", ExitDeploy}
+	if got != want {
+		t.Fatalf("Explain() =\n  %+v\nwant\n  %+v", got, want)
+	}
+	got = Explain(&kxerr.DeployFailed{App: "my-shop", Version: 3, Code: "not_ready", Reason: notReady})
+	want = Problem{"deploy_failed", "my-shop v3 didn't go live: " + notReady, "See why: kx logs --deployment v3", ExitDeploy}
+	if got != want {
+		t.Fatalf("Explain() =\n  %+v\nwant\n  %+v", got, want)
+	}
+}
+
+func TestExplain_TriesCeilingWording(t *testing.T) {
+	const fix = "More are available at 00:00 UTC; fix what makes the deploys fail before trying again."
+	tries := func(limit int) *Error {
+		return &Error{Status: 402, Code: "tier_limit_exceeded", LimitName: "max_deployments_per_day", Reason: "too_many_tries",
+			TriesLimit: limit, Ctx: ErrContext{Org: "acme-corp"}}
+	}
+	tests := []struct {
+		err  *Error
+		what string
+	}{
+		// The number only ever comes from Kubernetix. The plan isn't named:
+		// an organization's own quota can differ from its plan's.
+		{tries(25), "acme-corp has tried 25 deploys today, the most it can try in a day."},
+		{tries(1000), "acme-corp has tried 1000 deploys today, the most it can try in a day."},
+		{tries(0), "acme-corp has started as many deploys today as its plan allows in a day, failed ones included."},
+	}
+	for _, tt := range tests {
+		got := Explain(tt.err)
+		want := Problem{"deploy_limit_reached", tt.what, fix, ExitLimit}
+		if got != want {
+			t.Errorf("tries_limit %d: Explain() =\n  %+v\nwant\n  %+v", tt.err.TriesLimit, got, want)
+		}
+		checkShape(t, got)
+	}
+
+	// The daily limit itself keeps its wording.
+	if got := Explain(&Error{Status: 402, Code: "tier_limit_exceeded", LimitName: "max_deployments_per_day", Ctx: ErrContext{Org: "acme-corp"}}); !strings.HasPrefix(got.What, "acme-corp has used all the deploys its plan includes today") {
+		t.Fatalf("Explain() = %+v", got)
+	}
+}
+
+// The tries ceiling's 402 names the number of tries.
+func TestClient_ParsesTheTriesCeiling(t *testing.T) {
+	for body, want := range map[string]int{
+		`{"error":"tier_limit_exceeded","limit_name":"max_deployments_per_day","reason":"too_many_tries","tries_limit":25,"plan":"free"}`: 25,
+		`{"error":"tier_limit_exceeded","limit_name":"max_deployments_per_day","reason":"too_many_tries"}`:                                0,
+		`{"error":"tier_limit_exceeded","reason":"too_many_tries","tries_limit":2.5}`:                                                     0,
+		`{"error":"tier_limit_exceeded","reason":"too_many_tries","tries_limit":-3}`:                                                      0,
+		`{"error":"tier_limit_exceeded","reason":"too_many_tries","tries_limit":"25"}`:                                                    0,
+	} {
+		c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusPaymentRequired)
+			_, _ = io.WriteString(w, body)
+		})
+		_, err := c.WhoAmI(context.Background())
+		var apiErr *Error
+		if !errors.As(err, &apiErr) || apiErr.TriesLimit != want {
+			t.Errorf("%s: %+v", body, err)
 		}
 	}
 }

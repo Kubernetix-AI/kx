@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -41,7 +42,7 @@ type Problem struct {
 var allCodes = []string{
 	"not_logged_in", "login_ended", "token_expired", "token_revoked", "invalid_token", "legacy_token",
 	"token_owner_removed", "token_owner_rejected", "token_owner_pending", "token_owner_role",
-	"token_app_mismatch", "token_org_mismatch", "token_create_not_allowed", "org_not_logged_in", "token_cannot_push", "token_not_allowed",
+	"token_not_accepted", "token_app_mismatch", "token_org_mismatch", "token_create_not_allowed", "org_not_logged_in", "token_cannot_push", "token_not_allowed",
 	"insufficient_permissions", "token_limit_reached", "token_lookup_unavailable",
 	"app_not_found", "deployment_not_found", "org_not_found", "not_found", "not_live", "version_not_found", "token_not_found",
 	"validation_error", "request_rejected", "duplicate_app", "app_deleting", "invalid_deployment_status",
@@ -75,36 +76,38 @@ func Explain(err error) Problem {
 		return Problem{Exit: ExitOK}
 	}
 	var (
-		apiErr   *Error
-		netErr   *NetworkError
-		ended    *kxerr.LoginEnded
-		orgNot   *kxerr.OrgNotLoggedIn
-		mismatch *kxerr.TokenAppMismatch
-		lacks    *kxerr.TokenLacks
-		orgMis   *kxerr.TokenOrgMismatch
-		invalid  *kxerr.InvalidToken
-		insecure *kxerr.InsecureURL
-		usage    *kxerr.Usage
-		noDocker *kxerr.NoDockerfile
-		limit    *kxerr.DeployLimit
-		pushRate *kxerr.PushRateLimited
-		failed   *kxerr.DeployFailed
-		timeout  *kxerr.WaitTimeout
-		build    *kxerr.BuildFailed
-		push     *kxerr.PushFailed
-		multi    *kxerr.MultiRegion
-		badCfg   *kxerr.BadConfig
-		notLive  *kxerr.NotLive
-		noVer    *kxerr.NoVersion
-		noTok    *kxerr.NoToken
-		prevRun  *kxerr.PreviousRunning
-		stopped  *kxerr.StoppedWaiting
-		noLive   *kxerr.NothingLive
-		noTarget *kxerr.NoRollbackTarget
-		already  *kxerr.AlreadyLive
-		notReady *kxerr.NotRollbackable
-		unknown  *kxerr.RollbackUnconfirmed
-		dockCtx  *kxerr.DockerContextUnknown
+		apiErr    *Error
+		netErr    *NetworkError
+		ended     *kxerr.LoginEnded
+		orgNot    *kxerr.OrgNotLoggedIn
+		elsewhere *kxerr.LoggedInElsewhere
+		unlinked  *kxerr.Unlinked
+		mismatch  *kxerr.TokenAppMismatch
+		lacks     *kxerr.TokenLacks
+		orgMis    *kxerr.TokenOrgMismatch
+		invalid   *kxerr.InvalidToken
+		insecure  *kxerr.InsecureURL
+		usage     *kxerr.Usage
+		noDocker  *kxerr.NoDockerfile
+		limit     *kxerr.DeployLimit
+		pushRate  *kxerr.PushRateLimited
+		failed    *kxerr.DeployFailed
+		timeout   *kxerr.WaitTimeout
+		build     *kxerr.BuildFailed
+		push      *kxerr.PushFailed
+		multi     *kxerr.MultiRegion
+		badCfg    *kxerr.BadConfig
+		notLive   *kxerr.NotLive
+		noVer     *kxerr.NoVersion
+		noTok     *kxerr.NoToken
+		prevRun   *kxerr.PreviousRunning
+		stopped   *kxerr.StoppedWaiting
+		noLive    *kxerr.NothingLive
+		noTarget  *kxerr.NoRollbackTarget
+		already   *kxerr.AlreadyLive
+		notReady  *kxerr.NotRollbackable
+		unknown   *kxerr.RollbackUnconfirmed
+		dockCtx   *kxerr.DockerContextUnknown
 	)
 	switch {
 	case errors.As(err, &apiErr):
@@ -121,6 +124,14 @@ func Explain(err error) Problem {
 			what = "This folder deploys to " + orgNot.Org
 		}
 		return Problem{"org_not_logged_in", what + ", but this computer is only logged in to " + joinAnd(orgNot.LoggedIn) + ".", "Run: kx login --org " + orgNot.Org, ExitAuth}
+	case errors.As(err, &elsewhere) && elsewhere.LastLogin:
+		// The new login is now the last one, so running the command again
+		// uses it.
+		return Problem{"org_not_logged_in",
+			"The token you pasted is for " + elsewhere.TokenOrg + ", but kx was going to use " + elsewhere.Org + ", where this computer was last logged in.",
+			"Run " + elsewhere.Command + " again to use " + elsewhere.TokenOrg + ", or log in to " + elsewhere.Org + ": kx login --org " + elsewhere.Org, ExitAuth}
+	case errors.As(err, &elsewhere):
+		return Problem{"org_not_logged_in", "The token you pasted is for " + elsewhere.TokenOrg + ", but this command is for " + elsewhere.Org + ".", "Run: kx login --org " + elsewhere.Org, ExitAuth}
 	case errors.Is(err, kxerr.ErrTokenCreateMoved):
 		return Problem{"token_create_not_allowed", "kx can't create tokens; only people signed in to the dashboard can.", "Create one in the dashboard: Settings → API tokens (for CI, the app's Deploy tab)", ExitUsage}
 	case errors.As(err, &orgMis):
@@ -196,6 +207,8 @@ func Explain(err error) Problem {
 		return Problem{"version_not_found", noVer.App + " has no " + noVer.Version + ".", "See recent versions: kx status", ExitNotFound}
 	case errors.As(err, &noTok):
 		return Problem{"token_not_found", "There's no token " + noTok.Which + " in " + orgOr(noTok.Org, "this organization") + ".", "See your tokens: kx token list", ExitNotFound}
+	case errors.As(err, &unlinked):
+		return explainUnlinked(unlinked)
 	case errors.Is(err, kxerr.ErrNotLinked):
 		return Problem{"not_linked", "This folder isn't linked to an app yet.", "Run: kx link", ExitUsage}
 	case errors.Is(err, kxerr.ErrLoginInCI):
@@ -221,6 +234,9 @@ func explainAPI(e *Error) Problem {
 	src, org := e.Ctx.TokenSource, e.Ctx.Org
 	named := tokenLabel(e)
 
+	if notAccepted(e) {
+		return tokenNotAccepted(src, org)
+	}
 	switch e.Code {
 	case "token_expired":
 		switch src {
@@ -315,6 +331,9 @@ func explainAPI(e *Error) Problem {
 		return Problem{"validation_error", "Kubernetix didn't accept the request: " + sentence(clean(e.Message, maxMessageLen)), checkValuesFix, ExitUsage}
 
 	case "tier_limit_exceeded":
+		if e.LimitName == "max_deployments_per_day" && e.Reason == "too_many_tries" {
+			return tooManyTries(org, e.TriesLimit)
+		}
 		if e.LimitName == "max_deployments_per_day" {
 			return deployLimit(org, "", 0, time.Time{})
 		}
@@ -355,6 +374,28 @@ func explainAPI(e *Error) Problem {
 	return Problem{"server_error", "Something went wrong on Kubernetix's side.", "Try again in a minute; if it keeps happening, open an issue at " + issuesURL, ExitUnexpected}
 }
 
+// notAccepted reports a 401 that carries no reason, or the generic one,
+// which doesn't say whether the token itself is at fault.
+func notAccepted(e *Error) bool {
+	if e.Status != 401 {
+		return false
+	}
+	return e.Code == "" || (e.Code == "invalid_token" && strings.TrimRight(e.Message, ". ") == "Invalid or expired token")
+}
+
+// tokenNotAccepted words notAccepted. The token may well still be good, so
+// the fix is to try again, never to make a new token or log in again.
+func tokenNotAccepted(src kxerr.TokenSource, org string) Problem {
+	const again = "If it worked before, Kubernetix may be being updated: try again in a few minutes."
+	switch src {
+	case kxerr.SourceLogin:
+		return Problem{"token_not_accepted", "Kubernetix didn't accept the token this computer uses for " + orgOr(org, "Kubernetix") + ".", again, ExitAuth}
+	case kxerr.SourcePaste:
+		return Problem{"token_not_accepted", "Kubernetix didn't accept that token.", "If you just created it, Kubernetix may be being updated: try again in a few minutes.", ExitAuth}
+	}
+	return Problem{"token_not_accepted", "Kubernetix didn't accept the token in the KX_TOKEN secret.", again, ExitAuth}
+}
+
 func explainInvalidToken(e *kxerr.InvalidToken) Problem {
 	if e.Legacy {
 		if e.Source == kxerr.SourceEnv {
@@ -369,6 +410,24 @@ func explainInvalidToken(e *kxerr.InvalidToken) Problem {
 		return Problem{"invalid_token", "The token saved on this computer is damaged.", "Run: kx login", ExitAuth}
 	}
 	return Problem{"invalid_token", "That doesn't look like a whole Kubernetix token.", "Copy it again with the Copy button and paste it: kx login", ExitAuth}
+}
+
+// shownApps is how many app names the fix for an unlinked folder lists.
+const shownApps = 5
+
+// explainUnlinked says how to go on in a folder that isn't linked when the
+// organization has no apps, or several (listing a few, sorted).
+func explainUnlinked(e *kxerr.Unlinked) Problem {
+	if len(e.Apps) == 0 {
+		return Problem{"not_linked", "There are no apps in " + orgOr(e.Org, "this organization") + " yet.", "Deploy this folder: kx deploy", ExitUsage}
+	}
+	names := slices.Sorted(slices.Values(e.Apps))
+	list := strings.Join(names[:min(len(names), shownApps)], ", ")
+	if more := len(names) - shownApps; more > 0 {
+		list += fmt.Sprintf(" and %d more", more)
+	}
+	return Problem{"not_linked", "This folder isn't linked to an app, so kx doesn't know which one you mean.",
+		"Run: kx " + e.Command + " --app <name>. Your apps: " + list, ExitUsage}
 }
 
 func explainInsecure(e *kxerr.InsecureURL) Problem {
@@ -558,6 +617,21 @@ func deployLimit(org, plan string, limit int, now time.Time) Problem {
 	return Problem{"deploy_limit_reached", what, "Upgrade for more deploys a day: " + plansURL, ExitLimit}
 }
 
+// tooManyTries explains a deploy refused because the organization has
+// started as many deploys today, failed ones included, as it may. It
+// doesn't say "used all its deploys", which kx status, counting only
+// deploys that didn't fail, would contradict. It names a number only when
+// Kubernetix gave one (tries), and never the plan: an organization's own
+// quota can differ from its plan's.
+func tooManyTries(org string, tries int) Problem {
+	who := orgOr(org, "Your organization")
+	what := who + " has started as many deploys today as its plan allows in a day, failed ones included."
+	if tries > 0 {
+		what = fmt.Sprintf("%s has tried %d deploys today, the most it can try in a day.", who, tries)
+	}
+	return Problem{"deploy_limit_reached", what, "More are available at 00:00 UTC; fix what makes the deploys fail before trying again.", ExitLimit}
+}
+
 func deployFailed(e *kxerr.DeployFailed) Problem {
 	if e.Code == "quota_blocked" {
 		return noRoom(e)
@@ -567,9 +641,11 @@ func deployFailed(e *kxerr.DeployFailed) Problem {
 		reason = "your container is crashing on start"
 	}
 	fix := fmt.Sprintf("See why: kx logs --deployment v%d", e.Version)
-	if ns := e.NotStarting; ns != nil {
+	if ns := e.NotStarting; ns != nil && (e.Code == "" || e.Code == "not_ready" || e.Reason == "") {
 		// What kx saw is more specific than the platform's message for a
-		// version that never got ready.
+		// version that never got ready, unless the platform named a
+		// specific cause: then its message says what went wrong. not_ready
+		// only says the version never got ready.
 		reason, fix = cause(ns, past), failedFix(ns)
 	}
 	what := fmt.Sprintf("%s v%d didn't go live: %s", e.App, e.Version, sentence(clean(reason, maxMessageLen)))

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -28,8 +29,9 @@ type ErrContext struct {
 // The API's error body is {"error": "<code>", "message": "<text>", ...};
 // token failures add "token_prefix", "token_name" and sometimes
 // "expires_at", plan limits add "limit_name", and billing blocks may add
-// "reason". Every string is cleaned of control characters and anything
-// that looks like a token.
+// "reason". The ceiling on deploys started a day adds "reason":
+// "too_many_tries" and may add "tries_limit". Every string is cleaned of
+// control characters and anything that looks like a token.
 type Error struct {
 	Status         int
 	Code           string
@@ -39,7 +41,8 @@ type Error struct {
 	TokenName      string
 	TokenExpiresAt *time.Time
 	LimitName      string
-	Reason         string // what lifts a billing block, e.g. outstanding_invoice
+	Reason         string // what lifts a billing block, e.g. outstanding_invoice; or too_many_tries
+	TriesLimit     int    // with too_many_tries: the deploys a day the org may start, failed ones included (0 if not given)
 	Method         string
 	Path           string // relative to the API base, e.g. /registry/credentials
 	Ctx            ErrContext
@@ -63,6 +66,7 @@ func (e *NetworkError) Error() string { return "network error: " + redactTokens(
 func (e *NetworkError) Unwrap() error { return e.Err }
 
 const (
+	maxTriesLimit = 1_000_000
 	maxMessageLen = 300
 	maxCodeLen    = 64
 	maxNameLen    = 64
@@ -93,6 +97,10 @@ func parseErrorBody(status int, body []byte, h http.Header) *Error {
 	}
 	e.LimitName = cleanCode(str("limit_name"))
 	e.Reason = cleanCode(str("reason"))
+	var tries float64
+	if v, ok := raw["tries_limit"]; ok && json.Unmarshal(v, &tries) == nil && tries >= 1 && tries <= maxTriesLimit && tries == math.Trunc(tries) {
+		e.TriesLimit = int(tries)
+	}
 	if t, err := time.Parse(time.RFC3339, str("expires_at")); err == nil {
 		e.TokenExpiresAt = &t
 	}

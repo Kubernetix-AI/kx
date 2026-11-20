@@ -27,7 +27,7 @@ func newRollbackCmd(a *App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "rollback",
 		Short:   "Put the previous version back",
-		GroupID: groupApps,
+		GroupID: groupStart,
 		Long: `Redeploy the newest earlier version that went live with a different image, as a new
 version. kx asks first; in scripts and CI, add --yes.`,
 		Example: `  kx rollback                  asks before rolling back
@@ -65,7 +65,7 @@ func runRollback(ctx context.Context, a *App, cmd *cobra.Command, o rollbackOpts
 	if err != nil {
 		return err
 	}
-	c, err := s.Client()
+	c, err := s.Client(ctx)
 	if err != nil {
 		return err
 	}

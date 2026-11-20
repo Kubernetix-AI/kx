@@ -13,6 +13,7 @@ import (
 	"github.com/kubernetix-ai/kx/internal/docker"
 	"github.com/kubernetix-ai/kx/internal/kxerr"
 	"github.com/kubernetix-ai/kx/internal/safetext"
+	"github.com/kubernetix-ai/kx/internal/ui"
 )
 
 func TestWaitForPrevious_Blocks(t *testing.T) {
@@ -935,5 +936,257 @@ func TestRun_RejectsBadOptions(t *testing.T) {
 	}
 	if len(e.api.requests) != 0 {
 		t.Fatal("made API calls with bad options")
+	}
+}
+
+// answers returns an Ask that gives these answers in turn and records
+// each question.
+func answers(asked *[]string, list ...string) func(context.Context, string, string) (string, error) {
+	return func(_ context.Context, q, def string) (string, error) {
+		*asked = append(*asked, q+" ["+def+"]")
+		if len(list) == 0 {
+			return "", ui.ErrNoChoice
+		}
+		a := list[0]
+		list = list[1:]
+		if a == "" {
+			a = def
+		}
+		return a, nil
+	}
+}
+
+func TestRun_NoExpose_AsksPortOnce(t *testing.T) {
+	e := newEnv(t)
+	o := e.options()
+	o.App, o.NewApp = nil, "billing-worker"
+	o.Build.Port = 0
+	var asked []string
+	o.Ask = answers(&asked, "3000")
+	if _, err := e.run(o); err != nil {
+		t.Fatalf("Run() = %v\n%s", err, e.errOut.String())
+	}
+	if len(asked) != 1 || asked[0] != "Which port does your app listen on? [8080]" {
+		t.Fatalf("asked %q", asked)
+	}
+	if port := e.api.reqs("POST", "/apps")[0].Body["port"]; port != float64(3000) {
+		t.Fatalf("port = %v", port)
+	}
+	if strings.Contains(e.errOut.String(), "EXPOSE") || !strings.Contains(e.errOut.String(), "✓ Checked   Dockerfile, port 3000\n") {
+		t.Fatalf("stderr:\n%s", e.errOut.String())
+	}
+
+	// Once the app exists, its port is known: no question.
+	e = newEnv(t)
+	o = e.options()
+	o.Build.Port = 0
+	asked = nil
+	o.Ask = answers(&asked, "3000")
+	if _, err := e.run(o); err != nil {
+		t.Fatal(err)
+	}
+	if len(asked) != 0 {
+		t.Fatalf("asked %q for an app that exists", asked)
+	}
+}
+
+func TestRun_NoExpose_BadAnswersAskAgain(t *testing.T) {
+	e := newEnv(t)
+	o := e.options()
+	o.App, o.NewApp = nil, "billing-worker"
+	o.Build.Port = 0
+	var asked []string
+	o.Ask = answers(&asked, "http", "0", "65536", "", "")
+	if _, err := e.run(o); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(e.errOut.String(), "Type a port number from 1 to 65535.\n"); n != 3 || len(asked) != 4 {
+		t.Fatalf("asked %d times, %d retries:\n%s", len(asked), n, e.errOut.String())
+	}
+	if port := e.api.reqs("POST", "/apps")[0].Body["port"]; port != float64(8080) {
+		t.Fatalf("port = %v, want the default", port)
+	}
+
+	// Input that ends without an answer stops before anything is built.
+	e = newEnv(t)
+	o = e.options()
+	o.App, o.NewApp = nil, "billing-worker"
+	o.Build.Port = 0
+	o.Ask = answers(&asked)
+	if _, err := e.run(o); !errors.Is(err, context.Canceled) || len(e.builder.got()) != 0 {
+		t.Fatalf("Run() = %v, docker calls %v", err, e.builder.got())
+	}
+}
+
+// Without a terminal (or in CI) kx can't ask: it says what it assumes, as
+// before.
+func TestRun_NoExpose_NoTerminal_KeepsWarning(t *testing.T) {
+	e := newEnv(t)
+	o := e.options()
+	o.App, o.NewApp = nil, "billing-worker"
+	o.Build.Port = 0
+	if _, err := e.run(o); err != nil {
+		t.Fatal(err)
+	}
+	want := "! Your Dockerfile has no EXPOSE line, so kx assumes your app listens on port 8080.\n" +
+		"  Kubernetix checks that it answers on / there; if it listens on another port, add EXPOSE <port> to your Dockerfile.\n"
+	if !strings.Contains(e.errOut.String(), want) {
+		t.Fatalf("stderr:\n%s", e.errOut.String())
+	}
+}
+
+const expose80 = "! Your Dockerfile exposes port 80. Apps on Kubernetix don't run as root, so they may not be able to listen on ports below 1024.\n" +
+	"  Make your app listen on 8080 and change the line to EXPOSE 8080.\n"
+
+func TestRun_Expose80_AsksAndStopsByDefault(t *testing.T) {
+	e := newEnv(t)
+	o := e.options()
+	o.App, o.NewApp = nil, "billing-worker"
+	o.Build.Port = 80
+	var asked []string
+	o.Confirm = func(_ context.Context, q string) (bool, error) { asked = append(asked, q); return false, nil }
+	_, err := e.run(o)
+	if p := api.Explain(err); p.What != "Nothing was deployed, because your app may not be able to listen on port 80." ||
+		p.Fix != "Change the line to EXPOSE 8080, then run kx deploy again." || p.Exit != api.ExitUsage {
+		t.Fatalf("Run() = %v: %+v", err, p)
+	}
+	if len(asked) != 1 || asked[0] != "Deploy anyway?" || !strings.HasPrefix(e.errOut.String(), expose80) {
+		t.Fatalf("asked %q, stderr:\n%s", asked, e.errOut.String())
+	}
+	if len(e.builder.got()) != 0 || len(e.api.reqs("POST", "/apps")) != 0 {
+		t.Fatalf("docker %v, API %v", e.builder.got(), e.api.reqs("POST", "/"))
+	}
+
+	// An existing app too.
+	e = newEnv(t)
+	o = e.options()
+	o.Build.Port = 443
+	o.Confirm = func(context.Context, string) (bool, error) { return false, nil }
+	if _, err := e.run(o); api.Explain(err).What != "Nothing was deployed, because your app may not be able to listen on port 443." {
+		t.Fatalf("Run() = %v", err)
+	}
+	if len(e.api.reqs("POST", "/apps/")) != 0 {
+		t.Fatal("deployed after no")
+	}
+}
+
+func TestRun_Expose80_Yes_Deploys(t *testing.T) {
+	e := newEnv(t)
+	o := e.options()
+	o.App, o.NewApp = nil, "billing-worker"
+	o.Build.Port = 80
+	o.Confirm = func(context.Context, string) (bool, error) { return true, nil }
+	if _, err := e.run(o); err != nil {
+		t.Fatal(err)
+	}
+	if port := e.api.reqs("POST", "/apps")[0].Body["port"]; port != float64(80) {
+		t.Fatalf("port = %v", port)
+	}
+}
+
+func TestRun_Expose80_CantAsk_WarnsAndDeploys(t *testing.T) {
+	e := newEnv(t)
+	o := e.options()
+	o.App, o.NewApp = nil, "billing-worker"
+	o.Build.Port = 80
+	if _, err := e.run(o); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(e.errOut.String(), expose80) || len(e.api.reqs("POST", "/apps/")) != 1 {
+		t.Fatalf("stderr:\n%s", e.errOut.String())
+	}
+}
+
+// An app that is live on that port shows it works there: kx warns but
+// doesn't ask on every deploy.
+func TestRun_Expose80_AppLiveOnThatPort_DoesNotAsk(t *testing.T) {
+	e := newEnv(t)
+	e.api.apps[testAppID].Port, e.api.apps[testAppID].Status = 80, "ready"
+	o := e.options()
+	o.Build.Port = 80
+	o.Confirm = func(context.Context, string) (bool, error) { t.Fatal("asked"); return false, nil }
+	if _, err := e.run(o); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(e.errOut.String(), expose80) {
+		t.Fatalf("stderr:\n%s", e.errOut.String())
+	}
+
+	// Not live there yet: kx asks.
+	e = newEnv(t)
+	e.api.apps[testAppID].Port, e.api.apps[testAppID].Status = 80, "failed"
+	o = e.options()
+	o.Build.Port = 80
+	asked := false
+	o.Confirm = func(context.Context, string) (bool, error) { asked = true; return true, nil }
+	if _, err := e.run(o); err != nil || !asked {
+		t.Fatalf("Run() = %v, asked %v", err, asked)
+	}
+}
+
+// The ceiling on tries a day (failed deploys included) is worded apart
+// from the daily deploy limit, which kx status would contradict, with the
+// number Kubernetix gives, and none of kx's own.
+func TestRun_ServerTriesCeiling_UsesWhatKubernetixSays(t *testing.T) {
+	const fix = "More are available at 00:00 UTC; fix what makes the deploys fail before trying again."
+	e := newEnv(t)
+	e.api.createErr = []string{"402", "tier_limit_exceeded", "max_deployments_per_day", "too_many_tries"}
+	e.api.createErrExtra = map[string]any{"tries_limit": 25, "plan": "free"}
+	e.api.usage = &api.Usage{Plan: "pro", Usage: map[string]api.UsageItem{"deployments_today": {Current: 2, Limit: 50}}}
+	_, err := e.run(e.options())
+	want := api.Problem{Code: "deploy_limit_reached",
+		What: "acme-corp has tried 25 deploys today, the most it can try in a day.",
+		Fix:  fix, Exit: api.ExitLimit}
+	if p := api.Explain(err); p != want {
+		t.Fatalf("Explain() = %+v\nwant %+v", p, want)
+	}
+
+	// Without them, no number, even though kx knows the plan's daily deploys.
+	e = newEnv(t)
+	e.api.createErr = []string{"402", "tier_limit_exceeded", "max_deployments_per_day", "too_many_tries"}
+	e.api.usage = &api.Usage{Plan: "free", Usage: map[string]api.UsageItem{"deployments_today": {Current: 2, Limit: 5}}}
+	_, err = e.run(e.options())
+	want.What = "acme-corp has started as many deploys today as its plan allows in a day, failed ones included."
+	if p := api.Explain(err); p != want {
+		t.Fatalf("Explain() = %+v\nwant %+v", p, want)
+	}
+}
+
+// A port typed at the question gets the same check as one in EXPOSE.
+func TestRun_NoExpose_TypedPortBelow1024_AsksBeforeDeploying(t *testing.T) {
+	const lines = "! Apps on Kubernetix don't run as root, so they may not be able to listen on ports below 1024.\n" +
+		"  Make your app listen on 8080.\n"
+	e := newEnv(t)
+	o := e.options()
+	o.App, o.NewApp = nil, "billing-worker"
+	o.Build.Port = 0
+	var asked []string
+	o.Ask = answers(&asked, "80")
+	var confirmed []string
+	o.Confirm = func(_ context.Context, q string) (bool, error) { confirmed = append(confirmed, q); return false, nil }
+	_, err := e.run(o)
+	if p := api.Explain(err); p.What != "Nothing was deployed, because your app may not be able to listen on port 80." ||
+		p.Fix != "Make your app listen on 8080, then run kx deploy again." || p.Exit != api.ExitUsage {
+		t.Fatalf("Run() = %v: %+v", err, p)
+	}
+	if len(confirmed) != 1 || confirmed[0] != "Deploy anyway?" || !strings.HasPrefix(e.errOut.String(), lines) {
+		t.Fatalf("asked %q, stderr:\n%s", confirmed, e.errOut.String())
+	}
+	if len(e.builder.got()) != 0 || len(e.api.reqs("POST", "/apps")) != 0 {
+		t.Fatalf("docker %v, API %v", e.builder.got(), e.api.reqs("POST", "/"))
+	}
+
+	// Yes keeps the port.
+	e = newEnv(t)
+	o = e.options()
+	o.App, o.NewApp = nil, "billing-worker"
+	o.Build.Port = 0
+	o.Ask = answers(&asked, "443")
+	o.Confirm = func(context.Context, string) (bool, error) { return true, nil }
+	if _, err := e.run(o); err != nil {
+		t.Fatal(err)
+	}
+	if port := e.api.reqs("POST", "/apps")[0].Body["port"]; port != float64(443) {
+		t.Fatalf("port = %v", port)
 	}
 }

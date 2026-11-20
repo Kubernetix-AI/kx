@@ -595,3 +595,22 @@ func FuzzRuntimeLogs(f *testing.F) {
 		}
 	})
 }
+
+func TestClient_SetTokenAppliesToTheNextRequest(t *testing.T) {
+	const other = "kx_33333333333333333333333333333333333333330oWRgv"
+	var auth []string
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		auth = append(auth, r.Header.Get("Authorization"))
+		writeJSON(w, 200, map[string]any{"kind": "token", "org": "acme-corp"})
+	})
+	if _, err := c.WhoAmI(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	c.SetToken(other)
+	if _, err := c.WhoAmI(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(auth) != 2 || auth[0] != "Bearer "+testToken || auth[1] != "Bearer "+other {
+		t.Fatalf("Authorization headers = %q", auth)
+	}
+}

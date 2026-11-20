@@ -216,8 +216,8 @@ func TestRun_SignalWindowFollowsTheHealthChecks(t *testing.T) {
 	}
 }
 
-// A deployment that records no health checks is checked like a new app
-// (GET / on its port), so kx allows the same two minutes.
+// A deployment that records no health checks gets kx's default window
+// (about two minutes), and the cause names its port but no path.
 func TestRun_NoRecordedHealthCheckMeansTheDefaults(t *testing.T) {
 	e := newEnv(t)
 	e.clock.step = 5 * time.Second
@@ -229,7 +229,7 @@ func TestRun_NoRecordedHealthCheckMeansTheDefaults(t *testing.T) {
 	if len(w.at) != 1 || w.at[0] > 3*time.Minute {
 		t.Fatalf("signals at %v", w.at)
 	}
-	if p := api.Explain(err); !strings.Contains(p.What, "didn't answer health checks on / at port 8080") {
+	if p := api.Explain(err); !strings.Contains(p.What, "didn't answer health checks at port 8080.") {
 		t.Fatalf("problem = %+v", p)
 	}
 }
@@ -430,5 +430,27 @@ func TestRun_SignalLogLinesFallBack(t *testing.T) {
 	_, _ = e.run(e.options())
 	if !strings.Contains(e.errOut.String(), "The last 1 log lines of v15:\n  boot failed: port 8080 in use\n") {
 		t.Fatalf("stderr:\n%s", e.errOut.String())
+	}
+}
+
+// A deployment that records no health check names no path: kx can't know
+// which check Kubernetix used.
+func TestNotLiveYet_NoRecordedHealthCheck_NamesNoPath(t *testing.T) {
+	e := newEnv(t)
+	e.clock.step = 5 * time.Second
+	e.api.statuses = repeat("pending", 60, "deploying", "failed")
+	e.api.failReason = platformGeneric
+	e.api.replicas = func(int) []api.Replica { return []api.Replica{oldReplica, newReplica("Running", false)} }
+	o := e.options()
+	w := e.watchWarnings(&o)
+	_, err := e.run(o)
+	if len(w.whats) != 1 || !strings.Contains(w.whats[0], "at port 8080") || strings.Contains(w.whats[0], " on /") {
+		t.Fatalf("signal = %q", w.whats)
+	}
+	if w.fixes[0] != "Make your app start and answer health checks at port 8080; the log lines below may say why it hasn't." {
+		t.Fatalf("fix = %q", w.fixes[0])
+	}
+	if p := api.Explain(err); p.What != "shop-api v15 didn't go live: its container kept crashing or didn't answer health checks at port 8080. Version 14 is still serving." {
+		t.Fatalf("problem = %+v", p)
 	}
 }

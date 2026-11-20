@@ -45,6 +45,16 @@ var ErrDockerWindowsContainers = errors.New("docker is in windows containers mod
 // ErrNotLinked means no app was given and the folder has no .kx.json.
 var ErrNotLinked = errors.New("folder is not linked to an app")
 
+// Unlinked means the folder isn't linked to an app and Command (status,
+// logs, open) can't use the organization's only app: Org has none, or
+// has several, named in Apps.
+type Unlinked struct {
+	Org, Command string
+	Apps         []string
+}
+
+func (e *Unlinked) Error() string { return "folder is not linked to an app" }
+
 // ErrLoginInCI means kx login was run inside a CI job.
 var ErrLoginInCI = errors.New("kx login does not run in CI")
 
@@ -62,6 +72,20 @@ type OrgNotLoggedIn struct {
 }
 
 func (e *OrgNotLoggedIn) Error() string { return "not logged in to " + e.Org }
+
+// LoggedInElsewhere means a command logged in by itself for Org, but the
+// token pasted was for TokenOrg (and was saved for it). LastLogin means
+// Org came only from this computer's last login, not from the folder, a
+// flag or KX_ORG; Command is then the command to run again ("kx deploy").
+type LoggedInElsewhere struct {
+	Org, TokenOrg string
+	LastLogin     bool
+	Command       string
+}
+
+func (e *LoggedInElsewhere) Error() string {
+	return "logged in to " + e.TokenOrg + ", not " + e.Org
+}
 
 // TokenOrgMismatch means KX_TOKEN belongs to TokenOrg, but --org, KX_ORG
 // or the folder's .kx.json (FromFolder) names Org.

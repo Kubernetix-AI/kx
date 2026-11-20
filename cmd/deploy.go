@@ -46,9 +46,10 @@ func newDeployCmd(a *App) *cobra.Command {
 		GroupID: groupStart,
 		Long: `Build this folder's Dockerfile for linux/amd64, push the image, deploy it and wait
 until it's live. The URL comes last, alone on standard output, so URL=$(kx deploy) works.
-The first run asks which app the folder deploys to and saves it in .kx.json.`,
+The first run logs in if needed and saves the app the folder deploys to in .kx.json,
+asking which one only when there's a choice.`,
 		Example: `  kx deploy                          build, push, deploy, wait, print the URL
-  kx deploy --app web                deploy this folder to another app
+  kx deploy --app web                deploy this folder to another app (or create it)
   kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:...   skip the build
   kx deploy --build ./api --dockerfile ./api/Dockerfile.prod
   kx deploy --no-wait                start the deploy and return`,
@@ -220,7 +221,7 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 		// Before the picker writes .kx.json, which would count as a change.
 		tag = deploy.ImageTag(ctx, s.CI, df.Dir, a.Now())
 	}
-	c, err := s.Client()
+	c, err := s.Client(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -239,6 +240,7 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 	if app != nil {
 		d.appName = app.Name
 	}
+	d.linkNamedApp(app, org)
 	key := s.CI.IdempotencyKey(d.appName)
 	if key == "" {
 		if key, err = uuid.V4(); err != nil {
@@ -255,6 +257,8 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 	}
 	if s.CI.IsCI {
 		opts.MintWait = ciMintWait
+	} else if s.P.InTTY && s.P.TTY {
+		opts.Ask, opts.Confirm = s.P.Ask, s.P.Confirm
 	}
 	// Only a login on this computer gets a cache: a KX_TOKEN usually means
 	// CI, including systems kx doesn't recognise, where other jobs may
@@ -319,6 +323,13 @@ func (d *deployRun) checkPermissions(ctx context.Context) error {
 	return &kxerr.TokenLacks{Permissions: missing, Source: d.s.Cfg.TokenSource, Org: who.Org.ID}
 }
 
+// ownBuild reports whether kx builds the working folder's own Dockerfile,
+// as a plain kx deploy there does: no --dockerfile, and --build is the
+// folder itself.
+func (d *deployRun) ownBuild() bool {
+	return d.o.dockerfile == "" && d.path(d.o.build) == filepath.Clean(d.s.Cfg.Dir)
+}
+
 // path resolves a --build or --dockerfile value against the working folder.
 func (d *deployRun) path(p string) string {
 	if p == "" || filepath.IsAbs(p) {
@@ -350,8 +361,9 @@ func fileExists(p string) bool {
 }
 
 // target finds the app to deploy: the linked or named app, the token's
-// app, a new app (an org token deploying a folder linked to "(new app)"),
-// or, on the first run in a folder, the one the person picks.
+// app, a new app (an org token deploying a folder linked to "(new app)",
+// or naming one that doesn't exist yet and saying to create it), or, on
+// the first run in a folder, the one the person picks.
 func (d *deployRun) target(ctx context.Context) (*api.App, string, error) {
 	s := d.s
 	app, err := s.ResolveApp(ctx)
@@ -359,10 +371,11 @@ func (d *deployRun) target(ctx context.Context) (*api.App, string, error) {
 		return app, "", nil
 	}
 	var apiErr *api.Error
+	notFound := errors.As(err, &apiErr) && apiErr.Code == "app_not_found"
 	switch {
 	case errors.Is(err, kxerr.ErrNotLinked):
 		return d.firstRun(ctx)
-	case errors.As(err, &apiErr) && apiErr.Code == "app_not_found" && d.linkedToNewApp():
+	case notFound && (d.linkedToNewApp() || d.namedApp()):
 		who, werr := s.WhoAmI(ctx)
 		if werr != nil {
 			return nil, "", werr
@@ -370,9 +383,66 @@ func (d *deployRun) target(ctx context.Context) (*api.App, string, error) {
 		if t := who.Token; t != nil && (t.AppScoped() || !t.Can(api.PermDeploy)) {
 			return nil, "", err
 		}
-		return nil, s.Cfg.App, nil
+		if d.linkedToNewApp() {
+			return nil, s.Cfg.App, nil
+		}
+		return d.offerNewApp(ctx, err)
 	}
 	return nil, "", err
+}
+
+// namedApp reports whether the app was named by --app or KX_APP (as an
+// app name kx could create).
+func (d *deployRun) namedApp() bool {
+	cfg := d.s.Cfg
+	return (cfg.AppSource == config.SourceFlag || cfg.AppSource == config.SourceEnv) && config.ValidAppName(cfg.App)
+}
+
+// offerNewApp asks whether to create the app that --app or KX_APP names
+// and that doesn't exist (notFound says so). The name was typed, maybe
+// mistyped, so the default is no: Enter alone creates nothing. In CI it
+// stays an error; without a terminal the fix says how to create it.
+func (d *deployRun) offerNewApp(ctx context.Context, notFound error) (*api.App, string, error) {
+	s, name := d.s, d.s.Cfg.App
+	if s.CI.IsCI {
+		return nil, "", notFound
+	}
+	what := api.Explain(notFound).What // There's no app called web in acme-corp.
+	if !s.P.InTTY || !s.P.TTY {
+		return nil, "", &kxerr.Usage{What: what, Fix: "Create it: kx link " + name + ", then kx deploy"}
+	}
+	yes, err := s.P.Confirm(ctx, what+" Create it?")
+	if err != nil {
+		return nil, "", err
+	}
+	if !yes {
+		return nil, "", &kxerr.Usage{What: "Nothing was deployed: " + strings.ToLower(what[:1]) + what[1:], Fix: "See your apps: kx apps list"}
+	}
+	return nil, name, nil
+}
+
+// linkNamedApp saves the app named by --app in .kx.json when the folder
+// has none, so the next kx deploy there needs no --app. Not in CI (the
+// checkout is thrown away), not for --image, which names no project
+// folder, and not when --build or --dockerfile builds something other
+// than the folder's own Dockerfile, which a plain kx deploy would build
+// next time. A new app's ID is added once it exists (rememberAppID). Not
+// being able to save it is only a warning: nobody asked for the file.
+func (d *deployRun) linkNamedApp(app *api.App, org string) {
+	s := d.s
+	if s.Cfg.AppSource != config.SourceFlag || s.Cfg.Project != nil || s.CI.IsCI || d.o.image != "" || !d.ownBuild() {
+		return
+	}
+	proj := config.Project{App: d.appName, Org: org}
+	if app != nil {
+		proj.AppID = app.ID
+	}
+	if _, err := config.SaveProject(s.Cfg.Dir, proj); err != nil {
+		s.P.Warn("kx couldn't save %s in .kx.json: %s.", d.appName, fileErrReason(err))
+		return
+	}
+	s.P.Info("Saved in .kx.json. Next time, just run kx deploy.")
+	s.P.Info("")
 }
 
 // linkedToNewApp reports whether the app comes from a .kx.json that kx
@@ -382,17 +452,18 @@ func (d *deployRun) linkedToNewApp() bool {
 	return cfg.AppSource == config.SourceProject && cfg.Project != nil && cfg.Project.AppID == "" && cfg.Project.App == cfg.App
 }
 
-// firstRun asks which app this folder deploys to and saves the answer.
+// firstRun finds the app this folder deploys to, asking when there is a
+// choice, and saves it in .kx.json. In CI it never chooses: a fresh
+// checkout without .kx.json would otherwise create an app.
 func (d *deployRun) firstRun(ctx context.Context) (*api.App, string, error) {
 	s := d.s
-	if !s.P.InTTY || !s.P.TTY {
-		fix := "Run: kx deploy --app <app>"
-		if s.CI.IsCI {
-			fix = "Pass the app with --app <app> (the Action's app input), or commit the .kx.json that kx link writes"
+	if s.CI.IsCI {
+		return nil, "", &kxerr.Usage{
+			What: "This folder isn't linked to an app yet, and kx can't ask which one here.",
+			Fix:  "Pass the app with --app <app> (the Action's app input), or commit the .kx.json that kx link writes",
 		}
-		return nil, "", &kxerr.Usage{What: "This folder isn't linked to an app yet, and kx can't ask which one here.", Fix: fix}
 	}
-	choice, err := chooseApp(ctx, s, "", "deploy")
+	choice, err := chooseApp(ctx, s, "", "deploy", s.P.InTTY && s.P.TTY)
 	if err != nil {
 		return nil, "", err
 	}
@@ -407,7 +478,15 @@ func (d *deployRun) firstRun(ctx context.Context) (*api.App, string, error) {
 	if _, err := config.SaveProject(s.Cfg.Dir, proj); err != nil {
 		return nil, "", fmt.Errorf("saving .kx.json: %w", err)
 	}
-	s.P.Info("Saved in .kx.json. Next time, just run kx deploy.")
+	switch {
+	case choice.unasked && choice.newApp != "":
+		s.P.Info("Creating a new app called %s. Saved in .kx.json.", choice.newApp)
+	case !d.ownBuild():
+		// A plain kx deploy would build the folder's own Dockerfile.
+		s.P.Info("Saved in .kx.json.")
+	default:
+		s.P.Info("Saved in .kx.json. Next time, just run kx deploy.")
+	}
 	s.P.Info("")
 	return choice.app, choice.newApp, nil
 }

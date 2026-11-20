@@ -38,7 +38,7 @@ func newLogsCmd(a *App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "logs",
 		Short:   "Show your app's output",
-		GroupID: groupApps,
+		GroupID: groupStart,
 		Long:    "Show the last 100 lines your app printed in the past hour, or a deployment's logs.",
 		Example: `  kx logs                      the last 100 lines
   kx logs --follow             keep watching (Ctrl-C to stop)
@@ -69,11 +69,11 @@ func runLogs(ctx context.Context, a *App, cmd *cobra.Command, o logsOpts) error 
 	if err != nil {
 		return err
 	}
-	app, err := s.ResolveApp(ctx)
+	app, err := s.ResolveAppOrOnly(ctx, "logs")
 	if err != nil {
 		return err
 	}
-	c, _ := s.Client()
+	c, _ := s.Client(ctx)
 	if o.deployment != "" {
 		return deploymentLogs(ctx, s, c, app, o.deployment)
 	}

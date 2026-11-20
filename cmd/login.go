@@ -28,9 +28,10 @@ func newLoginCmd(a *App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "login",
 		Short:   "Connect this computer to Kubernetix",
-		GroupID: groupStart,
+		GroupID: groupMore,
 		Long: `Log in by creating a token for this computer in your browser and pasting it here.
-Logging in to another organization adds it beside the first.`,
+Logging in to another organization adds it beside the first. kx deploy and the
+other commands log in this way by themselves when there's no login on a terminal.`,
 		Example: `  kx login                          open the dashboard, then paste the token
   kx login --org acme-labs          log in to another organization
   kx login --expires 1d             make a token that lasts one day
@@ -61,53 +62,84 @@ func runLogin(ctx context.Context, a *App, cmd *cobra.Command, expires string, f
 	if a.orgFlag != "" && !config.ValidOrgName(a.orgFlag) {
 		return &kxerr.Usage{What: fmt.Sprintf("%q isn't an organization name.", a.orgFlag), Fix: "Check the name, or see where you're logged in: kx whoami"}
 	}
-	p := s.P
-
-	var tok string
 	if fromStdin {
-		if tok, err = p.ReadLine(ctx); err != nil {
+		tok, err := s.P.ReadLine(ctx)
+		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			return &kxerr.InvalidToken{Source: kxerr.SourcePaste, Reason: "nothing on standard input"}
 		}
-	} else {
-		if !p.InTTY {
-			return &kxerr.Usage{What: "kx login needs a terminal to paste the token into.", Fix: "Pipe the token in instead: kx login --token-stdin"}
-		}
-		page := tokenPageURL(s, a.orgFlag, expires)
-		if a.CanOpenBrowser() && a.OpenBrowser(page) == nil {
-			p.Info("Opening %s so you can create a token for this computer.", s.DashboardHost())
-			p.Info("If your browser didn't open, go to %s", page)
-		} else {
-			p.Info("Open this page so you can create a token for this computer:")
-			p.Info("%s", page)
-		}
-		p.Info(`Click "Create token", then "Copy", and paste it here.`)
-		if tok, err = p.ReadSecret(ctx, "Token: "); err != nil {
-			if errors.Is(err, ui.ErrNoTTY) {
-				return &kxerr.Usage{What: "kx login needs a terminal to paste the token into.", Fix: "Pipe the token in instead: kx login --token-stdin"}
-			}
-			return err
-		}
+		_, err = a.saveLogin(ctx, s, tok, a.orgFlag, false)
+		return err
 	}
+	_, err = a.interactiveLogin(ctx, s, a.orgFlag, expires, false)
+	return err
+}
 
+// approvalHint is printed before the token prompt: an account that isn't
+// approved yet can't create a token, and the page says so.
+const approvalHint = `If the page says "Awaiting approval", your account isn't approved yet; we'll email you, then run kx deploy again. Press Ctrl-C to stop.`
+
+// interactiveLogin opens the dashboard's token page for org ("" for the
+// person's own choice), asks for the token it creates and saves it, like
+// kx login. auto is set when a command logs in by itself because it found
+// no usable login; it then says so first, and leaves the next step to the
+// command. It returns the organization the login was saved for.
+func (a *App) interactiveLogin(ctx context.Context, s *Session, org, expires string, auto bool) (string, error) {
+	p := s.P
+	needTerminal := &kxerr.Usage{What: "kx login needs a terminal to paste the token into.", Fix: "Pipe the token in instead: kx login --token-stdin"}
+	if !p.InTTY {
+		return "", needTerminal
+	}
+	page := tokenPageURL(s, org, expires)
+	opened := a.CanOpenBrowser() && a.OpenBrowser(page) == nil
+	if auto && opened {
+		p.Info("First, let's connect this computer to Kubernetix. Opening your browser…")
+	} else if auto {
+		p.Info("First, let's connect this computer to Kubernetix.")
+	}
+	if opened {
+		p.Info("Opening %s so you can create a token for this computer.", s.DashboardHost())
+		p.Info("If your browser didn't open, go to %s", page)
+	} else {
+		p.Info("Open this page so you can create a token for this computer:")
+		p.Info("%s", page)
+	}
+	p.Info(`Click "Create token", then "Copy", and paste it here.`)
+	p.Info("%s", approvalHint)
+	tok, err := p.ReadSecret(ctx, "Token: ")
+	if err != nil {
+		if errors.Is(err, ui.ErrNoTTY) {
+			return "", needTerminal
+		}
+		return "", err
+	}
+	return a.saveLogin(ctx, s, tok, org, auto)
+}
+
+// saveLogin checks tok with Kubernetix and saves it for its organization,
+// replacing (and revoking, when it's safe) the token this computer used
+// for it before. asked is the organization asked for, if any. With auto,
+// it doesn't print the next step: the command that logged in carries on.
+func (a *App) saveLogin(ctx context.Context, s *Session, tok, asked string, auto bool) (string, error) {
+	p := s.P
 	if err := api.CheckToken(tok); err != nil {
 		var inv *kxerr.InvalidToken
 		if errors.As(err, &inv) {
 			inv.Source = kxerr.SourcePaste
 		}
-		return err
+		return "", err
 	}
 	c := a.newClient(s.Cfg.APIURL, tok, s.CI)
 	c.Ctx = api.ErrContext{TokenSource: kxerr.SourcePaste}
 	who, err := c.WhoAmI(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	org := who.Org.ID
 	if !config.ValidOrgName(org) {
-		return errors.New("the server named an organization kx cannot save")
+		return "", errors.New("the server named an organization kx cannot save")
 	}
 
 	login := config.OrgLogin{Token: tok, User: who.User.Email}
@@ -117,11 +149,11 @@ func runLogin(ctx context.Context, a *App, cmd *cobra.Command, expires string, f
 	prev, hadPrev := s.Cfg.User.Orgs[org]
 	s.Cfg.User.AddLogin(org, login)
 	if err := config.SaveUser(s.Cfg.UserPath, s.Cfg.User); err != nil {
-		return fmt.Errorf("saving the login: %w", err)
+		return "", fmt.Errorf("saving the login: %w", err)
 	}
 
-	if a.orgFlag != "" && a.orgFlag != org {
-		p.Warn("This token is for %s, not %s, so kx saved it for %s.", org, a.orgFlag, org)
+	if asked != "" && asked != org {
+		p.Warn("This token is for %s, not %s, so kx saved it for %s.", org, asked, org)
 	}
 	if s.Cfg.TokenSource == kxerr.SourceEnv {
 		p.Warn("KX_TOKEN is set, so kx keeps using it instead of this login.")
@@ -141,15 +173,19 @@ func runLogin(ctx context.Context, a *App, cmd *cobra.Command, expires string, f
 	if a.jsonOut {
 		out := loginJSON(org, who)
 		out.PreviousToken = previous
-		return p.PrintJSON(out)
+		return org, p.PrintJSON(out)
 	}
 	as := ""
 	if who.User.Email != "" {
 		as = " as " + who.User.Email
 	}
 	p.Info("Logged in to %s%s. %s", org, as, tokenSentence(who.Token, org))
+	if auto {
+		p.Info("")
+		return org, nil
+	}
 	p.Info("Next: open your project folder and run kx deploy")
-	return nil
+	return org, nil
 }
 
 func tokenPageURL(s *Session, org, expires string) string {
@@ -214,7 +250,7 @@ func newLogoutCmd(a *App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "logout",
 		Short:   "Revoke this computer's token and forget it",
-		GroupID: groupAccount,
+		GroupID: groupMore,
 		Long: `Revoke the saved token on Kubernetix, then delete it from this computer.
 
 Revoking a token also revokes any tokens that were made with it. If there
@@ -508,7 +544,7 @@ func newWhoamiCmd(a *App) *cobra.Command {
 	return &cobra.Command{
 		Use:     "whoami",
 		Short:   "Show where this computer is logged in",
-		GroupID: groupAccount,
+		GroupID: groupMore,
 		Example: `  kx whoami
   kx whoami --json`,
 		Args: usageArgs(0, 0, ""),

@@ -17,7 +17,7 @@ func newOpenCmd(a *App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "open",
 		Short:   "Open your app in the browser",
-		GroupID: groupApps,
+		GroupID: groupStart,
 		Example: `  kx open               open the live URL
   kx open --dashboard   open the app's page in the dashboard`,
 		Args: usageArgs(0, 0, ""),
@@ -35,7 +35,7 @@ func runOpen(ctx context.Context, a *App, cmd *cobra.Command, appFlag string, da
 	if err != nil {
 		return err
 	}
-	app, err := s.ResolveApp(ctx)
+	app, err := s.ResolveAppOrOnly(ctx, "open")
 	if err != nil {
 		return err
 	}

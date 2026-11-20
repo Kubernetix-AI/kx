@@ -567,6 +567,59 @@ func TestConfirmYes(t *testing.T) {
 	}
 }
 
+func TestAsk(t *testing.T) {
+	// Enter alone takes the default; an answer is trimmed; input that ends
+	// without one gives ErrNoChoice.
+	tests := []struct {
+		in, def, want string
+		err           error
+		prompt        string
+	}{
+		{"\n", "8080", "8080", nil, "Which port does your app listen on? [8080] "},
+		{"  3000 \n", "8080", "3000", nil, "Which port does your app listen on? [8080] "},
+		{"3000", "8080", "3000", nil, "Which port does your app listen on? [8080] "},
+		{"\n", "", "", nil, "Which port does your app listen on? "},
+		{"", "8080", "", ErrNoChoice, "Which port does your app listen on? [8080] \n"},
+	}
+	for _, tt := range tests {
+		p, _, errw := newTest(tt.in)
+		p.InTTY, p.TTY = true, true
+		got, err := p.Ask(context.Background(), "Which port does your app listen on?", tt.def)
+		if got != tt.want || !errors.Is(err, tt.err) {
+			t.Errorf("Ask(%q, %q) = %q, %v; want %q, %v", tt.in, tt.def, got, err, tt.want, tt.err)
+		}
+		if errw.String() != tt.prompt {
+			t.Errorf("Ask(%q, %q) wrote %q, want %q", tt.in, tt.def, errw.String(), tt.prompt)
+		}
+	}
+
+	// Two questions in a row read one line each.
+	p, _, _ := newTest("web\n\n")
+	p.InTTY = true
+	if a, _ := p.Ask(context.Background(), "Name?", "x"); a != "web" {
+		t.Fatalf("first answer %q", a)
+	}
+	if a, _ := p.Ask(context.Background(), "Name?", "x"); a != "x" {
+		t.Fatalf("second answer %q", a)
+	}
+
+	p, _, _ = newTest("3000\n")
+	if _, err := p.Ask(context.Background(), "Which port?", "8080"); !errors.Is(err, ErrNoTTY) {
+		t.Fatalf("without a terminal: %v, want ErrNoTTY", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p, _, _ = newTest("")
+	p.InTTY = true
+	in := blockingReader{done: make(chan struct{})}
+	defer close(in.done)
+	p.In = in
+	if _, err := p.Ask(ctx, "Which port?", "8080"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("after Ctrl-C: %v, want context.Canceled", err)
+	}
+}
+
 func TestPrinter_CopiesShareState(t *testing.T) {
 	p, out, _ := newTest("first\nsecond\n")
 	byValue := *p

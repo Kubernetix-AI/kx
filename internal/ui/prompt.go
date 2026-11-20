@@ -129,6 +129,33 @@ func (p *Printer) ConfirmYes(ctx context.Context, question string) (bool, error)
 	return false, nil
 }
 
+// Ask asks a question on stderr and returns the answer, trimmed. def, if
+// not empty, is shown in brackets and is the answer to Enter alone; with
+// no def, Enter alone answers "". Input that ends without an answer gives
+// ErrNoChoice. The caller checks the answer and asks again if it must.
+func (p *Printer) Ask(ctx context.Context, question, def string) (string, error) {
+	if !p.InTTY {
+		return "", ErrNoTTY
+	}
+	if def != "" {
+		question += " [" + def + "]"
+	}
+	p.writeErr(question + " ")
+	line, err := p.ReadLine(ctx)
+	switch {
+	case ctx.Err() != nil:
+		return "", ctx.Err()
+	case errors.Is(err, io.EOF):
+		p.writeErr("\n")
+		return "", ErrNoChoice
+	case err != nil:
+		return "", err
+	case line == "":
+		return def, nil
+	}
+	return line, nil
+}
+
 // ErrNoChoice means a picker without a default ended before anything was
 // chosen.
 var ErrNoChoice = errors.New("nothing was chosen")
