@@ -224,23 +224,48 @@ func TestIgnoreEnv(t *testing.T) {
 // UnreadableDockerfile names a Dockerfile that is there but can't be used
 // (a link to nothing, a folder), which kx neither builds nor replaces.
 func TestUnreadableDockerfile(t *testing.T) {
-	dir := t.TempDir()
-	if got := UnreadableDockerfile(dir); got != "" {
-		t.Fatalf("empty folder: %q", got)
-	}
-	if err := os.Mkdir(filepath.Join(dir, "dockerfile"), 0o755); err != nil {
+	t.Run("empty folder", func(t *testing.T) {
+		if got := UnreadableDockerfile(t.TempDir()); got != "" {
+			t.Fatalf("UnreadableDockerfile() = %q", got)
+		}
+	})
+	t.Run("a folder named dockerfile", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(dir, "dockerfile"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		want := filepath.Join(dir, "dockerfile")
+		if caseInsensitive(t, dir) {
+			// Here Dockerfile names the same folder, and kx looks for
+			// that name first, so the path it reports is that one.
+			want = filepath.Join(dir, "Dockerfile")
+		}
+		if got := UnreadableDockerfile(dir); got != want {
+			t.Fatalf("UnreadableDockerfile() = %q, want %q", got, want)
+		}
+	})
+	t.Run("a link to nothing", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Symlink(filepath.Join(dir, "missing"), filepath.Join(dir, "Dockerfile")); err != nil {
+			t.Skipf("can't make a symbolic link here: %v", err)
+		}
+		if got := UnreadableDockerfile(dir); got != filepath.Join(dir, "Dockerfile") {
+			t.Fatalf("UnreadableDockerfile() = %q", got)
+		}
+	})
+}
+
+// caseInsensitive reports whether names in dir that differ only in case
+// are the same file, as on the usual macOS and Windows file systems.
+func caseInsensitive(t *testing.T, dir string) bool {
+	t.Helper()
+	probe := filepath.Join(dir, "case-probe")
+	if err := os.WriteFile(probe, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := UnreadableDockerfile(dir); got != filepath.Join(dir, "dockerfile") {
-		t.Fatalf("folder named dockerfile: %q", got)
-	}
-	dir = t.TempDir()
-	if err := os.Symlink(filepath.Join(dir, "missing"), filepath.Join(dir, "Dockerfile")); err != nil {
-		t.Skipf("can't make a symbolic link here: %v", err)
-	}
-	if got := UnreadableDockerfile(dir); got != filepath.Join(dir, "Dockerfile") {
-		t.Fatalf("link to nothing: %q", got)
-	}
+	defer os.Remove(probe)
+	_, err := os.Lstat(filepath.Join(dir, "CASE-PROBE"))
+	return err == nil
 }
 
 // A Dockerfile kx isn't allowed to read is unreadable too, so kx says so
