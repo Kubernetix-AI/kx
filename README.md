@@ -162,6 +162,8 @@ kx deploy                        # build, push, deploy, wait, print the URL
 kx deploy --app web              # deploy this folder to another app (asks to create it)
 kx deploy --image registry.kubernetix.ai/acme-corp/shop-api:3f9c2a1b7d4e   # skip the build
 kx deploy --build ./api --dockerfile ./api/Dockerfile.prod
+kx deploy --tag 1.4.0            # push the image as 1.4.0 too
+kx deploy --repository shop-frontend   # push to registry.kubernetix.ai/<org>/shop-frontend
 kx deploy --no-wait              # start the deploy and return
 kx deploy --timeout 20m          # wait longer than the default 18 minutes
 
@@ -172,6 +174,42 @@ kx link shop-api                 # a new app if there's none by that name
 `URL=$(kx deploy)` works: progress goes to standard error and the URL alone to standard
 output.
 
+### Image tags and repositories
+
+**Tags.** kx pushes every image it builds under the commit's first 12 characters, such as
+`3f9c2a1b7d4e` (with `-dirty-<time>` added when the folder has uncommitted changes, and
+`local-<time>` outside a git repository). When the commit has a git tag that looks like a
+version, `v1.4.0` or `1.4.0`, optionally with a pre-release such as `-rc.1`, kx pushes the
+image under that version too, without the `v`: `1.4.0`. If the commit has several, the highest
+wins; in CI, the tag a tag push or release run was started for counts too. On your computer,
+a folder with uncommitted changes gets no version tag, since its image isn't the tagged
+commit's code (in CI, kx takes the commit the CI system names, as for the commit's tag).
+`kx deploy --tag <tag>` pushes under that tag instead of the version.
+
+kx never moves a version tag (or a `--tag`) to another image. Before pushing it, kx looks the
+tag up in the registry: if the tag already holds this image there is nothing to do, and if it
+holds another one kx stops with exit 7 and deploys nothing. Either way kx deploys the image by
+its digest, never by a tag. The Pushed line shows the version tag
+(`registry.kubernetix.ai/acme-corp/shop-api:1.4.0`), and `--json` adds `"tags"` (the commit's
+tag first) and `"version_tag"`.
+
+```console
+$ git tag v1.4.0 && kx deploy
+✓ Checked   Dockerfile, port 8080
+✓ Built     shop-api:3f9c2a1b7d4e                        1m 12s
+✓ Pushed    registry.kubernetix.ai/acme-corp/shop-api:1.4.0 14s
+✓ Live      v16  queued → starting → live                48s
+```
+
+**Repository.** kx pushes to `registry.kubernetix.ai/<org>/<app>` unless told otherwise. To
+push to another repository in your organization's registry, for example the one your images
+have always been in, pass `--repository shop-frontend`, or add `"repository": "shop-frontend"`
+to `.kx.json`, where it applies when kx deploys the app that `.kx.json` links. A repository
+name is lowercase letters and digits with single `.`, `_` or `-` between them and `/` between
+parts (`web/frontend`), without the registry's address or the organization. A token with Push
+images can push to every repository in the organization's registry, so a token made for one
+app can push to a repository named differently from the app.
+
 ### Deploy an image you built yourself
 
 When kx can't build your app, for example because its install needs a private registry token,
@@ -180,8 +218,7 @@ build and push the image yourself, then deploy it:
 1. In the dashboard, open Container Images and click Push credentials. Copy the user name and
    token; the token expires after about an hour.
 2. Log in to the registry with them, build for linux/amd64, and push. Use a new tag for each
-   push, such as the commit's hash: the registry won't replace an image under a tag it already
-   has.
+   push, such as the commit's hash, so each tag always names one image.
 
    ```sh
    docker login registry.kubernetix.ai
@@ -278,8 +315,10 @@ The organization follows the same order (`--org`, `KX_ORG`, `.kx.json`, then the
 you logged in to most recently), and kx uses the token saved for that organization, so a
 linked folder never asks. `KX_TOKEN`, when set, is used instead of any saved login.
 
-**`.kx.json`** holds `{"app", "app_id", "org"}` and no secret, so commit it: teammates and CI
-then need no `--app`. kx looks for it in the current folder and its parents, up to the root
+**`.kx.json`** holds `{"app", "app_id", "org"}`, optionally `"repository"` (see
+[Image tags and repositories](#image-tags-and-repositories)), and no secret, so commit it:
+teammates and CI then need no `--app`. `kx link` keeps the `"repository"` a `.kx.json` already
+has. kx looks for it in the current folder and its parents, up to the root
 of the git repository. It cannot change where kx sends your token.
 
 **The settings file** holds one token per organization with its expiry, and which
@@ -327,6 +366,8 @@ The messages you are most likely to meet:
 | This folder deploys to acme-labs, but this computer is only logged in to acme-corp. | Run: kx login --org acme-labs | 3 |
 | This token can't upload images. | Create a token with Push images on the app's Deploy tab, or deploy an image that's already pushed: kx deploy --image &lt;image&gt; | 3 |
 | The token in the KX_TOKEN secret doesn't have the Read permission, which kx deploy needs. | Create a deploy token on the app's Deploy tab (it has Deploy, Read and Push images) and replace the KX_TOKEN secret. | 3 |
+| registry.kubernetix.ai/acme-corp/shop-api:1.4.0 already holds another image, so kx left the tag alone and deployed nothing. | Tag the commit with a new version, or deploy what 1.4.0 holds: kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:&lt;digest&gt; | 7 |
+| kx couldn't check whether registry.kubernetix.ai/acme-corp/shop-api:1.4.0 already exists, so nothing was deployed. | Check your internet connection, then run kx deploy again. | 7 |
 | kx builds your app with Docker, and Docker isn't installed on this computer. | Install Docker Desktop from docker.com and run kx deploy again. | 10 |
 | Docker is installed but not running. | Start Docker Desktop, then run kx deploy again. | 10 |
 | kx needs a Dockerfile to build your app, and there isn't one in /Users/sam/code/shop-api. | Add a Dockerfile to this folder, or cd to the folder that has one. To have kx write one, run kx deploy in a terminal. | 2 |
@@ -355,7 +396,7 @@ above.
 | 4 | Not found |
 | 5 | A plan limit or rate limit, or new deploys paused for billing (payment overdue or subscription ended); also a version your plan has no room for, once Kubernetix reports it as such (until then, 8) |
 | 6 | The Docker build failed |
-| 7 | The image upload failed |
+| 7 | The image upload failed, or the version tag already holds another image |
 | 8 | The deploy failed |
 | 9 | kx stopped waiting; the deploy continues |
 | 10 | Docker isn't installed or isn't running |

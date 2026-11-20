@@ -30,6 +30,23 @@
 - `kx --help` shows the commands most people need under "Get started:" and the rest under
   "More commands:". `kx` on its own shows two steps: install, then `kx deploy`.
 
+### Version tags and repositories
+
+- `kx deploy` pushes the image under the commit's version too when the commit has a git tag
+  that looks like one (`v1.4.0` or `1.4.0`, optionally with a pre-release such as `-rc.1`; the
+  highest if there are several), without the `v`: `1.4.0`. In CI, the tag a tag push or
+  release run was started for counts too. On a laptop, a folder with uncommitted changes gets
+  no version tag. `--tag <tag>` pushes under that tag instead. kx looks the tag up first and never
+  moves one that holds another image: it stops with exit 7 and deploys nothing, naming the
+  digest the tag holds (new problem codes `tag_taken` and `tag_check_failed`). It looks again
+  after pushing, so of two runs pushing the same new tag at once only the one whose image the
+  tag holds deploys. It still deploys by digest.
+- The Pushed line shows the version tag, `--json` adds `"tags"` and `"version_tag"`, and the
+  GitHub job summary lists the image's tags.
+- `kx deploy --repository <name>`, or `"repository"` in `.kx.json`, pushes to
+  `registry.kubernetix.ai/<org>/<name>` instead of the repository named after the app. `kx link`
+  keeps a `.kx.json`'s `"repository"`.
+
 ### Questions before a deploy that can't work
 
 - When kx is about to create an app and the Dockerfile has no `EXPOSE` line, it asks which

@@ -63,8 +63,8 @@ ending in the URL. GitHub then shows:
 - the commit status **Kubernetix / production**: "Building", "Deploying v15", then "Live in
   3m 14s" linking to your app, or the first line of the error;
 - a **production** deployment with **View deployment**, from the job's `environment:` line;
-- a job summary with the version, URL, image digest, commit, how long it took and the
-  rollback command;
+- a job summary with the version, URL, image digest, the image's tags, commit, how long it
+  took and the rollback command;
 - the step outputs `url`, `deployment-id`, `version` and `image`, for later steps.
 
 `concurrency` makes deploys of one app run one at a time: a running deploy is never cancelled
@@ -82,11 +82,39 @@ Use `runs-on: ubuntu-latest`. Windows runners can't build Linux images.
 | `path` | `.` | The folder to build. |
 | `dockerfile` | the Dockerfile in `path` | The Dockerfile to build with, from the repository root or, if it isn't there, from `path`. |
 | `image` | | Deploy an image that's already pushed instead of building one. |
+| `repository` | the app's name | The repository to push to, `registry.kubernetix.ai/<org>/<repository>`. |
 | `environment` | `production` | The name in the commit status, "Kubernetix / production". Use your job's environment name. |
 | `wait` | `true` | `false` stops once the deploy has started. |
 | `timeout` | `18m` | How long to wait for the deploy to go live. |
 | `github-token` | `${{ github.token }}` | The token kx sets the commit status with. |
 | `kx-version` | pinned per Action release | The kx version to run. |
+
+### Version tags
+
+kx also pushes the image under the commit's version tag, such as `1.4.0` for a tag `v1.4.0`
+(see [Image tags and repositories](../README.md#image-tags-and-repositories)). For that, the
+commit's tags must be in the checkout, and `actions/checkout` fetches one commit and no tags by
+default. A run started by pushing the tag has it:
+
+```yaml
+on:
+  push: { tags: ["v*"] }
+```
+
+Start one deploy per commit: a workflow that runs on both branch and tag pushes starts two runs
+when you push a tagged commit to the branch, and the second one rebuilds the image, finds the
+version tag holding the first run's build and fails without deploying. Deploy on tag pushes or
+on branch pushes, not both.
+
+When you deploy on pushes to a branch and tag the commit as well, the Action looks up the
+commit's version tags on `origin` before it builds (that needs the checkout's credentials,
+which `actions/checkout` keeps unless `persist-credentials: false`). Or fetch them in the
+checkout yourself:
+
+```yaml
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }   # or: fetch-tags: true
+```
 
 ### Pin the Action to a commit
 
@@ -244,7 +272,9 @@ kx recognises GitHub Actions, GitLab CI, Bitbucket Pipelines, and any CI that se
   request and external pull request pipelines; Bitbucket: `BITBUCKET_PR_ID` set). Every other
   run deploys the commit it checked out.
 - **Images are tagged with the commit**: the first 12 characters of the commit the CI system
-  is building.
+  is building, and with its version when the commit has a version tag or the run is for one
+  (GitHub's tag pushes and releases, GitLab's `CI_COMMIT_TAG`, Bitbucket's `BITBUCKET_TAG`).
+  CI checkouts are often shallow and without tags; see [Version tags](#version-tags).
 - **Retries never deploy twice.** Every deploy request carries an idempotency key, and when
   kx retries a request after a network or server hiccup it sends the same key, so Kubernetix
   returns the deploy it already started. On GitHub Actions and GitLab CI the key is made from
@@ -276,6 +306,13 @@ started from the dashboard or another computer in the same moment can still race
 
 ## Troubleshooting
 
+- **"registry.kubernetix.ai/acme-corp/shop-api:1.4.0 already holds another image…" (exit 7).**
+  The version tag was pushed before with another build, for example by an earlier run for the
+  same tag (a rebuilt image rarely has the same digest), or by a second run for the same commit
+  (see below). kx doesn't move a version tag, so it deployed nothing. Tag a new version, or
+  deploy what the tag holds with the command the error names,
+  `kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:<digest>` (the Action's
+  `image` input).
 - **"This commit was already pushed; uploaded it as 3f9c2a1b7d4e-20261114081530."** The
   registry keeps image tags it has seen (for example on a re-run of the same commit), so kx
   uploaded the image under a new tag. It deploys exactly the image it just uploaded.
