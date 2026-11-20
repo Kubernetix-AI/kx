@@ -70,22 +70,30 @@ func runLink(ctx context.Context, a *App, cmd *cobra.Command, name string) error
 	if choice.app != nil {
 		proj.App, proj.AppID = choice.app.Name, choice.app.ID
 	}
+	if p := s.Cfg.Project; p != nil && filepath.Dir(s.Cfg.ProjectPath) == filepath.Clean(s.Cfg.Dir) {
+		// Linking again keeps where the folder's images are pushed.
+		proj.Repository = p.Repository
+	}
 	path, err := config.SaveProject(s.Cfg.Dir, proj)
 	if err != nil {
 		return fmt.Errorf("saving .kx.json: %w", err)
 	}
 	if a.jsonOut {
 		return s.P.PrintJSON(struct {
-			App   string `json:"app"`
-			AppID string `json:"app_id,omitempty"`
-			Org   string `json:"org"`
-			Path  string `json:"path"`
-		}{proj.App, proj.AppID, proj.Org, path})
+			App        string `json:"app"`
+			AppID      string `json:"app_id,omitempty"`
+			Org        string `json:"org"`
+			Repository string `json:"repository,omitempty"`
+			Path       string `json:"path"`
+		}{proj.App, proj.AppID, proj.Org, proj.Repository, path})
 	}
 	if choice.newApp != "" {
 		s.P.Info("%s doesn't exist yet; kx deploy will create it.", choice.newApp)
 	}
 	s.P.Info("Linked this folder to %s in %s (saved in .kx.json).", proj.App, org)
+	if proj.Repository != "" {
+		s.P.Info("Its images still go to the repository %s, as .kx.json says.", proj.Repository)
+	}
 	s.P.Info("Next: kx deploy")
 	return nil
 }

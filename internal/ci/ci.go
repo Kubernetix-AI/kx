@@ -61,6 +61,10 @@ type Env struct {
 	Event string
 	// IsPullRequest is true for pull and merge request pipelines.
 	IsPullRequest bool
+	// Tag is the git tag the run was started for (a tag push or a
+	// release), as the CI system names it; "" for a branch run. It is the
+	// tag of CommitSHA.
+	Tag string
 }
 
 // Detect reads the environment through getenv.
@@ -76,6 +80,7 @@ func Detect(getenv func(string) string) Env {
 			RunAttempt:    getenv("GITHUB_RUN_ATTEMPT"),
 			Event:         event,
 			IsPullRequest: githubPullRequestEvents[event],
+			Tag:           githubTag(getenv),
 		}
 	case getenv("GITLAB_CI") == "true":
 		source := getenv("CI_PIPELINE_SOURCE")
@@ -90,6 +95,7 @@ func Detect(getenv func(string) string) Env {
 			// repository (GitLab CI/CD for GitHub repositories).
 			IsPullRequest: source == "merge_request_event" || source == "external_pull_request_event" ||
 				getenv("CI_MERGE_REQUEST_IID") != "" || getenv("CI_EXTERNAL_PULL_REQUEST_IID") != "",
+			Tag: getenv("CI_COMMIT_TAG"),
 		}
 	case getenv("BITBUCKET_BUILD_NUMBER") != "":
 		pr := getenv("BITBUCKET_PR_ID") != ""
@@ -105,6 +111,7 @@ func Detect(getenv func(string) string) Env {
 			RunAttempt:    getenv("BITBUCKET_STEP_UUID"),
 			Event:         event,
 			IsPullRequest: pr,
+			Tag:           getenv("BITBUCKET_TAG"),
 		}
 	}
 	switch strings.ToLower(getenv("CI")) {
@@ -112,6 +119,19 @@ func Detect(getenv func(string) string) Env {
 		return Env{Provider: Generic, Name: "CI", IsCI: true}
 	}
 	return Env{}
+}
+
+// githubTag is the tag a GitHub Actions run is for: GITHUB_REF_NAME when
+// GITHUB_REF_TYPE says it is a tag, or the name after refs/tags/ in
+// GITHUB_REF.
+func githubTag(getenv func(string) string) string {
+	if getenv("GITHUB_REF_TYPE") == "tag" && getenv("GITHUB_REF_NAME") != "" {
+		return getenv("GITHUB_REF_NAME")
+	}
+	if name, ok := strings.CutPrefix(getenv("GITHUB_REF"), "refs/tags/"); ok {
+		return name
+	}
+	return ""
 }
 
 // SkipsDeploy reports whether kx must not deploy in this run because it is

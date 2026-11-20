@@ -172,17 +172,23 @@ var commitRe = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 // local-<UTC time> outside a git repository. In CI the CI system's commit
 // is used as is.
 func ImageTag(ctx context.Context, env ci.Env, dir string, now time.Time) string {
+	tag, _ := imageTag(ctx, env, dir, now)
+	return tag
+}
+
+// imageTag returns ImageTag's tag and, when the tag names a commit as it
+// is (no -dirty- part), that commit; sha is "" otherwise.
+func imageTag(ctx context.Context, env ci.Env, dir string, now time.Time) (tag, sha string) {
 	stamp := now.UTC().Format("20060102150405")
 	sha, err := env.Commit(ctx, dir)
 	sha = strings.ToLower(strings.TrimSpace(sha))
 	if err != nil || !commitRe.MatchString(sha) {
-		return "local-" + stamp
+		return "local-" + stamp, ""
 	}
-	tag := sha[:12]
 	if env.CommitSHA == "" && dirty(ctx, dir) {
-		tag += "-dirty-" + stamp
+		return sha[:12] + "-dirty-" + stamp, ""
 	}
-	return tag
+	return sha[:12], sha
 }
 
 // dirty reports uncommitted changes; when git can't tell, it says yes, so

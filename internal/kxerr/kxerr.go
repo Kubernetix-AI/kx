@@ -360,6 +360,30 @@ func (e *NotRollbackable) Error() string {
 // won't replace it (immutable tags).
 var ErrTagExists = errors.New("the registry already has that image tag")
 
+// TagTaken means the registry already has the tag Tag in the repository
+// Image (registry.kubernetix.ai/acme-corp/shop-api) for another image than
+// the one kx built, and kx never moves it. Digest is what the tag holds,
+// when kx knows. FromFlag says the tag came from --tag, not from the
+// commit's version tag.
+type TagTaken struct {
+	Image, Tag, Digest string
+	FromFlag           bool
+}
+
+func (e *TagTaken) Error() string { return e.Image + ":" + e.Tag + " already holds another image" }
+
+// TagCheckFailed means kx couldn't find out whether the registry already
+// has the tag Tag in the repository Image, so it didn't push it. Err is
+// the cause, for logs; Explain doesn't look inside it.
+type TagCheckFailed struct {
+	Image, Tag string
+	Err        error
+}
+
+func (e *TagCheckFailed) Error() string {
+	return "checking " + e.Image + ":" + e.Tag + ": " + errString(e.Err)
+}
+
 // ErrNoDigest means Docker pushed an image without reporting its digest,
 // so kx can't pin the deploy to the image it uploaded.
 var ErrNoDigest = errors.New("docker did not report the pushed image's digest")

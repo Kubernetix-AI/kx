@@ -379,10 +379,41 @@ func TestAppNameFrom(t *testing.T) {
 	}
 }
 
+func TestValidRepository_MatchesTheRegistry(t *testing.T) {
+	long := strings.Repeat("a", 128)
+	tests := []struct {
+		name string
+		ok   bool
+	}{
+		{"shop-api", true}, {"shop-frontend", true}, {"shop_api", true}, {"shop.api", true},
+		{"web/frontend", true}, {"a/b/c", true}, {"a1", true}, {long, true},
+		{"", false}, {"Shop", false}, {"shop--api", false}, {"shop__api", false}, {"shop-", false},
+		{"-shop", false}, {".shop", false}, {"/shop", false}, {"shop/", false}, {"web//frontend", false},
+		{"web/../x", false}, {"shop api", false}, {"shop:1", false}, {"shop@sha256", false},
+		{long + "a", false},
+	}
+	for _, tt := range tests {
+		if got := ValidRepository(tt.name); got != tt.ok {
+			t.Errorf("ValidRepository(%q) = %v, want %v", tt.name, got, tt.ok)
+		}
+	}
+}
+
+func TestParseProject_Repository(t *testing.T) {
+	p, err := ParseProject([]byte(`{"app":"shop","repository":"shop-frontend"}`))
+	if err != nil || p.Repository != "shop-frontend" {
+		t.Fatalf("ParseProject = %+v, %v", p, err)
+	}
+	if _, err := ParseProject([]byte(`{"app":"shop","repository":"Shop Frontend"}`)); err == nil || !strings.Contains(err.Error(), `"repository"`) {
+		t.Fatalf("ParseProject accepted a bad repository (err %v)", err)
+	}
+}
+
 func TestParseProject_Rejects(t *testing.T) {
 	for _, in := range []string{
 		``, `[]`, `{"app":"../x"}`, `{"app":"Shop API"}`, `{"app_id":"a/b","app":"x"}`, `{"app":"x","org":"a b"}`,
 		`{"app":"x","app_id":"` + string(make([]byte, 100)) + `"}`, `{"app":"x"} trailing`,
+		`{"app":"x","repository":"../x"}`, `{"app":"x","repository":"registry.example.test:5000/x"}`,
 	} {
 		if _, err := ParseProject([]byte(in)); err == nil {
 			t.Errorf("ParseProject(%q) accepted", in)
@@ -476,6 +507,16 @@ func TestSaveProject(t *testing.T) {
 	if string(data) != want {
 		t.Fatalf(".kx.json =\n%s\nwant\n%s", data, want)
 	}
+	if path, err = SaveProject(dir, Project{App: "shop-api", Org: "acme-corp", Repository: "shop-frontend"}); err != nil {
+		t.Fatal(err)
+	}
+	if data, err = os.ReadFile(path); err != nil {
+		t.Fatal(err)
+	}
+	want = "{\n  \"app\": \"shop-api\",\n  \"org\": \"acme-corp\",\n  \"repository\": \"shop-frontend\"\n}\n"
+	if string(data) != want {
+		t.Fatalf(".kx.json =\n%s\nwant\n%s", data, want)
+	}
 }
 
 func TestUserPath(t *testing.T) {
@@ -523,7 +564,8 @@ func FuzzParseProject(f *testing.F) {
 		if err != nil {
 			return
 		}
-		if !validApp(p.App) || (p.AppID != "" && !validAppID(p.AppID)) || (p.Org != "" && !validOrg(p.Org)) {
+		if !validApp(p.App) || (p.AppID != "" && !validAppID(p.AppID)) || (p.Org != "" && !validOrg(p.Org)) ||
+			(p.Repository != "" && !ValidRepository(p.Repository)) {
 			t.Fatalf("accepted invalid project %+v", p)
 		}
 	})

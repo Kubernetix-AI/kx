@@ -50,10 +50,13 @@ var allCodes = []string{
 	"billing_unpaid", "subscription_ended",
 	"docker_missing", "docker_stopped", "docker_windows_containers", "docker_permission", "no_dockerfile",
 	"build_failed", "push_failed", "deploy_failed", "quota_blocked", "wait_timeout", "previous_deploy_running",
-	"nothing_live", "no_rollback_target", "already_live", "tag_exists", "no_digest", "rollback_unconfirmed", "docker_context_unknown",
+	"nothing_live", "no_rollback_target", "already_live", "tag_exists", "tag_taken", "tag_check_failed", "no_digest", "rollback_unconfirmed", "docker_context_unknown",
 	"multi_region_app", "not_linked", "usage", "login_in_ci", "insecure_api_url",
 	"bad_project_file", "bad_settings_file", "network", "server_error", "timeout", "interrupted", "unexpected",
 }
+
+// digestRe matches an image digest.
+var digestRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // dockerContextNameRe is what Docker allows as a context name.
 var dockerContextNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,99}$`)
@@ -108,6 +111,8 @@ func Explain(err error) Problem {
 		notReady  *kxerr.NotRollbackable
 		unknown   *kxerr.RollbackUnconfirmed
 		dockCtx   *kxerr.DockerContextUnknown
+		taken     *kxerr.TagTaken
+		unchecked *kxerr.TagCheckFailed
 	)
 	switch {
 	case errors.As(err, &apiErr):
@@ -193,6 +198,10 @@ func Explain(err error) Problem {
 		return Problem{"rollback_unconfirmed", fmt.Sprintf("kx couldn't confirm the rollback of %s to v%d because Kubernetix didn't answer, so it may or may not have started.", unknown.App, unknown.Version), "Check: kx status", ExitUnexpected}
 	case errors.Is(err, kxerr.ErrTagExists):
 		return Problem{"tag_exists", "The registry already has an image with that tag and won't replace it.", "Wait a minute, then run kx deploy again.", ExitPush}
+	case errors.As(err, &taken):
+		return tagTaken(taken)
+	case errors.As(err, &unchecked):
+		return Problem{"tag_check_failed", "kx couldn't check whether " + unchecked.Image + ":" + unchecked.Tag + " already exists, so nothing was deployed.", "Check your internet connection, then run kx deploy again.", ExitPush}
 	case errors.Is(err, kxerr.ErrNoDigest):
 		return Problem{"no_digest", "Docker didn't report the digest of the image it uploaded, so kx can't be sure what it would deploy.", "Update Docker, then run kx deploy again.", ExitPush}
 	case errors.As(err, &build):
@@ -228,6 +237,21 @@ func Explain(err error) Problem {
 		return Problem{"timeout", "Kubernetix took too long to answer.", "Try again in a minute.", ExitUnexpected}
 	}
 	return Problem{"unexpected", "kx hit an unexpected problem: " + sentence(clean(err.Error(), 200)), "Run the command again; if it keeps happening, open an issue at " + issuesURL, ExitUnexpected}
+}
+
+// tagTaken explains a tag that already holds another image: kx never
+// replaces it, and says how to deploy what it holds instead.
+func tagTaken(e *kxerr.TagTaken) Problem {
+	ref := e.Image + ":" + e.Tag
+	held := ref // by digest when kx knows it, so that image and no other is deployed
+	if digestRe.MatchString(e.Digest) {
+		held = e.Image + "@" + e.Digest
+	}
+	fix := "Tag the commit with a new version, or deploy what " + e.Tag + " holds: kx deploy --image " + held
+	if e.FromFlag {
+		fix = "Choose another --tag, or deploy what " + e.Tag + " holds: kx deploy --image " + held
+	}
+	return Problem{"tag_taken", ref + " already holds another image, so kx left the tag alone and deployed nothing.", fix, ExitPush}
 }
 
 func explainAPI(e *Error) Problem {

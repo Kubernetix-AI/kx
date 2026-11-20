@@ -303,7 +303,8 @@ type harness struct {
 	sleeps    int
 	sleepHook func(n int) error
 
-	docker *fakeDocker
+	docker   *fakeDocker
+	registry *fakeRegistry
 
 	out, err bytes.Buffer
 }
@@ -322,6 +323,7 @@ func newHarness(t *testing.T) *harness {
 		canOpen:   true,
 		docker:    &fakeDocker{},
 	}
+	h.registry = &fakeRegistry{d: h.docker, digests: map[string]string{}}
 	if err := os.MkdirAll(filepath.Join(h.dir, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -350,6 +352,7 @@ func (h *harness) runCtx(ctx context.Context, args ...string) int {
 		OpenBrowser:    func(u string) error { h.opened = append(h.opened, u); return nil },
 		CanOpenBrowser: func() bool { return h.canOpen },
 		Docker:         h.docker,
+		Registry:       h.registry,
 		Sleep: func(ctx context.Context, d time.Duration) error {
 			h.sleeps++
 			if h.sleeps > 2000 {
@@ -620,6 +623,30 @@ func (d *fakeDocker) Push(_ context.Context, ref string, cred api.RegistryCreden
 		return "", err
 	}
 	return testDigest, nil
+}
+
+// fakeRegistry stands in for the registry's tag lookups in command tests;
+// it records each lookup among the Docker calls.
+type fakeRegistry struct {
+	d       *fakeDocker
+	mu      sync.Mutex
+	digests map[string]string // image reference → digest; missing means no such tag
+	err     error
+}
+
+func (r *fakeRegistry) Digest(_ context.Context, ref string, _ api.RegistryCredential) (string, error) {
+	r.d.record("lookup " + ref)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if d, ok := r.digests[ref]; ok || r.err != nil {
+		return d, r.err
+	}
+	for _, c := range r.d.got() {
+		if c == "push "+ref {
+			return testDigest, nil // what the fake Docker pushed
+		}
+	}
+	return "", nil
 }
 
 func (d *fakeDocker) got() []string {

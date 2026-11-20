@@ -298,3 +298,26 @@ func TestCommit_NotARepo(t *testing.T) {
 		t.Fatal("Commit() outside a repository returned no error")
 	}
 }
+
+func TestDetect_Tag(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"GitHub tag push", map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "v1.4.0", "GITHUB_REF": "refs/tags/v1.4.0"}, "v1.4.0"},
+		{"GitHub release", map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "release", "GITHUB_REF": "refs/tags/1.4.0-rc.1"}, "1.4.0-rc.1"},
+		{"GitHub branch push", map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "branch", "GITHUB_REF_NAME": "v1.4.0", "GITHUB_REF": "refs/heads/v1.4.0"}, ""},
+		{"GitLab tag pipeline", map[string]string{"GITLAB_CI": "true", "CI_PIPELINE_SOURCE": "push", "CI_COMMIT_TAG": "v2.0.1"}, "v2.0.1"},
+		{"GitLab branch pipeline", map[string]string{"GITLAB_CI": "true", "CI_PIPELINE_SOURCE": "push", "CI_COMMIT_BRANCH": "main"}, ""},
+		{"Bitbucket tag build", map[string]string{"BITBUCKET_BUILD_NUMBER": "88", "BITBUCKET_TAG": "3.1.0"}, "3.1.0"},
+		{"generic CI", map[string]string{"CI": "true", "CI_COMMIT_TAG": "v9.9.9"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Detect(envOf(tt.env)).Tag; got != tt.want {
+				t.Fatalf("Tag = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
