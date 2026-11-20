@@ -325,6 +325,13 @@ func (d *deployRun) checkPermissions(ctx context.Context) error {
 	return &kxerr.TokenLacks{Permissions: missing, Source: d.s.Cfg.TokenSource, Org: who.Org.ID}
 }
 
+// ownBuild reports whether kx builds the working folder's own Dockerfile,
+// as a plain kx deploy there does: no --dockerfile, and --build is the
+// folder itself.
+func (d *deployRun) ownBuild() bool {
+	return d.o.dockerfile == "" && d.path(d.o.build) == filepath.Clean(d.s.Cfg.Dir)
+}
+
 // path resolves a --build or --dockerfile value against the working folder.
 func (d *deployRun) path(p string) string {
 	if p == "" || filepath.IsAbs(p) {
@@ -417,11 +424,13 @@ func (d *deployRun) offerNewApp(ctx context.Context, notFound error) (*api.App, 
 
 // linkNamedApp saves the app named by --app in .kx.json when the folder
 // has none, so the next kx deploy there needs no --app. Not in CI (the
-// checkout is thrown away), and not for --image, which names no project
-// folder. A new app's ID is added once it exists (rememberAppID).
+// checkout is thrown away), not for --image, which names no project
+// folder, and not when --build or --dockerfile builds something other
+// than the folder's own Dockerfile, which a plain kx deploy would build
+// next time. A new app's ID is added once it exists (rememberAppID).
 func (d *deployRun) linkNamedApp(app *api.App, org string) error {
 	s := d.s
-	if s.Cfg.AppSource != config.SourceFlag || s.Cfg.Project != nil || s.CI.IsCI || d.o.image != "" {
+	if s.Cfg.AppSource != config.SourceFlag || s.Cfg.Project != nil || s.CI.IsCI || d.o.image != "" || !d.ownBuild() {
 		return nil
 	}
 	proj := config.Project{App: d.appName, Org: org}
@@ -469,9 +478,13 @@ func (d *deployRun) firstRun(ctx context.Context) (*api.App, string, error) {
 	if _, err := config.SaveProject(s.Cfg.Dir, proj); err != nil {
 		return nil, "", fmt.Errorf("saving .kx.json: %w", err)
 	}
-	if choice.unasked && choice.newApp != "" {
+	switch {
+	case choice.unasked && choice.newApp != "":
 		s.P.Info("Creating a new app called %s. Saved in .kx.json.", choice.newApp)
-	} else {
+	case !d.ownBuild():
+		// A plain kx deploy would build the folder's own Dockerfile.
+		s.P.Info("Saved in .kx.json.")
+	default:
 		s.P.Info("Saved in .kx.json. Next time, just run kx deploy.")
 	}
 	s.P.Info("")

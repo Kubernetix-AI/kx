@@ -1427,3 +1427,64 @@ func TestDeploy_Expose80_InCI_WarnsAndDeploys(t *testing.T) {
 		t.Fatalf("stderr:\n%s", h.err.String())
 	}
 }
+
+// buildElsewhere gives the harness folder a Dockerfile of its own, an api
+// folder with another, and a Dockerfile.prod.
+func (h *harness) buildElsewhere() {
+	h.t.Helper()
+	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+	if err := os.MkdirAll(filepath.Join(h.dir, "api"), 0o755); err != nil {
+		h.t.Fatal(err)
+	}
+	for _, f := range []string{filepath.Join("api", "Dockerfile"), "Dockerfile.prod"} {
+		if err := os.WriteFile(filepath.Join(h.dir, f), []byte("FROM scratch\nEXPOSE 9000\n"), 0o644); err != nil {
+			h.t.Fatal(err)
+		}
+	}
+}
+
+// With --build or --dockerfile, kx builds something other than the
+// folder's own Dockerfile. A plain kx deploy next time would build the
+// folder's own into the app instead, so kx doesn't link the folder.
+func TestDeploy_AppFlagWithBuildOrDockerfile_WritesNoKxJSON(t *testing.T) {
+	for _, extra := range [][]string{
+		{"--build", "./api"},
+		{"--dockerfile", "Dockerfile.prod"},
+		{"--build", "api", "--dockerfile", "api/Dockerfile"},
+	} {
+		h := newHarness(t)
+		h.loginAs("acme-corp", tokCorp, &dec11)
+		h.buildElsewhere()
+		h.expect(h.run(append([]string{"deploy", "--app", "shop-api"}, extra...)...), 0)
+		if h.kxJSON() != "" || strings.Contains(h.err.String(), "Saved in .kx.json") {
+			t.Fatalf("%v: .kx.json = %q, stderr:\n%s", extra, h.kxJSON(), h.err.String())
+		}
+	}
+
+	// --build . is the folder itself.
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.buildElsewhere()
+	h.expect(h.run("deploy", "--app", "shop-api", "--build", "."), 0)
+	if !strings.Contains(h.kxJSON(), `"app":"shop-api"`) {
+		t.Fatalf(".kx.json = %q", h.kxJSON())
+	}
+}
+
+// The first run still links the folder to the app it picks, but with
+// --build or --dockerfile it doesn't say a plain kx deploy will do next
+// time.
+func TestDeploy_FirstRunWithBuildFolder_DoesNotSayNextTime(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.inFolder("billing-worker")
+	h.buildElsewhere()
+	h.tty, h.stdin = true, "\n"
+	h.expect(h.run("deploy", "--build", "./api"), 0)
+	if strings.Contains(h.err.String(), "Next time, just run kx deploy") || !strings.Contains(h.err.String(), "Choose [1]: Saved in .kx.json.\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	if !strings.Contains(h.kxJSON(), `"app":"billing-worker"`) {
+		t.Fatalf(".kx.json = %q", h.kxJSON())
+	}
+}
