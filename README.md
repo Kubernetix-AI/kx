@@ -37,8 +37,8 @@ installs `kx` to `/usr/local/bin` or `~/.local/bin` (Windows: `%LOCALAPPDATA%\Pr
 Installing can take a second step. On most Macs and Linux machines `/usr/local/bin` needs
 administrator rights, so kx goes to `~/.local/bin`, which often isn't on your `PATH` yet.
 The installer then says so and prints one line to run: it adds the folder for this terminal
-and to your shell's startup file for new ones. Until you run it, start kx by its full path
-(`~/.local/bin/kx deploy`), as the installer's last line shows. On Windows the installer adds
+and to your shell's startup file for new ones. Until you run it, start kx by its full path,
+as the installer's last line shows (`~/.local/bin/kx …`). On Windows the installer adds
 its folder to your `PATH` itself; other terminals see it once you open a new one.
 
 To install a particular version, set `KX_VERSION`:
@@ -67,7 +67,7 @@ If the installer printed a line to add kx to your `PATH`, run that first (see In
 
 ```console
 $ curl -fsSL https://platform.kubernetix.ai/install.sh | sh
-kx is ready. Next: kx deploy
+...
 
 $ cd ~/code/shop-api
 $ kx deploy
@@ -158,7 +158,7 @@ kx login                         # again: replaces this computer's token and rev
 echo "$TOKEN" | kx login --token-stdin
 
 kx deploy                        # build, push, deploy, wait, print the URL
-kx deploy --app web              # deploy this folder to another app (offers to create it)
+kx deploy --app web              # deploy this folder to another app (asks to create it)
 kx deploy --image registry.kubernetix.ai/acme-corp/shop-api:3f9c2a1b7d4e   # skip the build
 kx deploy --build ./api --dockerfile ./api/Dockerfile.prod
 kx deploy --no-wait              # start the deploy and return

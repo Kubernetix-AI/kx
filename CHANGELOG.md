@@ -46,8 +46,8 @@
 - `kx status` right after a deploy says "starting (counts can take a minute to appear)"
   instead of "none running" while replica counts catch up; `--json` adds `"starting": true`
   inside `"replicas"`.
-- A failed deploy shows Kubernetix's own reason when Kubernetix names the kind of failure,
-  instead of kx's guess from the replicas.
+- When Kubernetix reports the kind of failure for a failed deploy, kx shows Kubernetix's own
+  reason instead of its guess from the replicas.
 - When a deployment records no health check, kx names only the port it checks, not a path.
 - When Kubernetix reports that an organization has started the most deploys it may start in a
   day, failed ones included, kx says so instead of using the daily deploy limit's wording,
