@@ -190,6 +190,37 @@ func TestDeploy_AutoLogin_NoTerminal(t *testing.T) {
 	if len(h.opened) != 0 {
 		t.Fatalf("opened %v", h.opened)
 	}
+
+	// The prompt shows, but stdin comes from a file: nobody can paste.
+	h.stderrFile, h.stdinFile = false, true
+	h.expect(h.run("deploy", "--app", "shop-api"), 3)
+	if len(h.opened) != 0 || !strings.Contains(h.err.String(), "You're not logged in to Kubernetix.\nRun: kx login\n") {
+		t.Fatalf("opened %v, stderr:\n%s", h.opened, h.err.String())
+	}
+}
+
+// A run logs in by itself at most once. Here the new token passes the
+// login's own check, then Kubernetix refuses it on the next request (as a
+// token store that hasn't caught up with a brand-new token can): kx stops
+// instead of opening the browser again.
+func TestDeploy_AutoLogin_AtMostOncePerRun(t *testing.T) {
+	h := newHarness(t)
+	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+	n := 0
+	h.api.override = func(r *http.Request, bearer string) (int, string, bool) {
+		if r.URL.Path != "/api/v1/whoami" || bearer != tokCorp {
+			return 0, "", false
+		}
+		if n++; n == 1 {
+			return 0, "", false // the login's own check passes
+		}
+		return 401, `{"error":"invalid_token","message":"This API token is not valid."}`, true
+	}
+	h.tty, h.password = true, tokCorp
+	h.expect(h.run("deploy", "--app", "shop-api"), 3)
+	if len(h.opened) != 1 || strings.Count(h.err.String(), "Token: ") != 1 {
+		t.Fatalf("opened %d times: %v\nstderr:\n%s", len(h.opened), h.opened, h.err.String())
+	}
 }
 
 // A KX_TOKEN that stopped working fails with its own message, even on a
