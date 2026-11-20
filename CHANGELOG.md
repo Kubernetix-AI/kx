@@ -41,8 +41,17 @@
   digest the tag holds (new problem codes `tag_taken` and `tag_check_failed`). It looks again
   after pushing, so of two runs pushing the same new tag at once only the one whose image the
   tag holds deploys. It still deploys by digest.
-- The Pushed line shows the version tag, `--json` adds `"tags"` and `"version_tag"`, and the
-  GitHub job summary lists the image's tags.
+- Deploys of the same commit are idempotent. kx labels the images it builds of a commit as it
+  is (always in CI) with the commit (`org.opencontainers.image.revision`) and where the build
+  sits in the repository, and before building looks at the commit's tag and the version tag:
+  an image built the same way from this commit is deployed again without building
+  (`✓ Reused`), and the missing tag is pointed at it (`✓ Tagged`). So a re-run, or two runs for
+  one tagged push, deploy the same image. Unlabelled images are never reused. A version tag
+  holding another commit's image stops kx before it builds; one holding another build of the
+  same commit is left as it is. `--rebuild` builds anyway: it may move the commit's tag, never
+  a version tag.
+- The Pushed line shows the version tag, `--json` adds `"tags"`, `"version_tag"` and
+  `"reused"`, and the GitHub job summary lists the image's tags.
 - `kx deploy --repository <name>`, or `"repository"` in `.kx.json`, pushes to
   `registry.kubernetix.ai/<org>/<name>` instead of the repository named after the app. `kx link`
   keeps a `.kx.json`'s `"repository"`.

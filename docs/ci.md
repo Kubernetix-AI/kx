@@ -83,6 +83,7 @@ Use `runs-on: ubuntu-latest`. Windows runners can't build Linux images.
 | `dockerfile` | the Dockerfile in `path` | The Dockerfile to build with, from the repository root or, if it isn't there, from `path`. |
 | `image` | | Deploy an image that's already pushed instead of building one. |
 | `repository` | the app's name | The repository to push to, `registry.kubernetix.ai/<org>/<repository>`. |
+| `rebuild` | `false` | `true` builds the image even if kx built this commit before. |
 | `environment` | `production` | The name in the commit status, "Kubernetix / production". Use your job's environment name. |
 | `wait` | `true` | `false` stops once the deploy has started. |
 | `timeout` | `18m` | How long to wait for the deploy to go live. |
@@ -101,10 +102,10 @@ on:
   push: { tags: ["v*"] }
 ```
 
-Start one deploy per commit: a workflow that runs on both branch and tag pushes starts two runs
-when you push a tagged commit to the branch, and the second one rebuilds the image, finds the
-version tag holding the first run's build and fails without deploying. Deploy on tag pushes or
-on branch pushes, not both.
+A commit kx has built before is not built again: kx labels each image with its commit, and a
+re-run, or a second run for the same commit (a workflow on both branch and tag pushes starts
+two when you push a tagged commit to the branch), deploys the image the first run built
+("✓ Reused"). Add `--rebuild` (the Action's `rebuild: true`) to build anyway.
 
 When you deploy on pushes to a branch and tag the commit as well, the Action looks up the
 commit's version tags on `origin` before it builds (that needs the checkout's credentials,
@@ -307,10 +308,9 @@ started from the dashboard or another computer in the same moment can still race
 ## Troubleshooting
 
 - **"registry.kubernetix.ai/acme-corp/shop-api:1.4.0 already holds another image…" (exit 7).**
-  The version tag was pushed before with another build, for example by an earlier run for the
-  same tag (a rebuilt image rarely has the same digest), or by a second run for the same commit
-  (see below). kx doesn't move a version tag, so it deployed nothing. Tag a new version, or
-  deploy what the tag holds with the command the error names,
+  The version tag names an image from another commit, or one without kx's labels (pushed by an
+  earlier kx or by hand). kx doesn't move a version tag, so it deployed nothing. Tag a new
+  version, or deploy what the tag holds with the command the error names,
   `kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:<digest>` (the Action's
   `image` input).
 - **"This commit was already pushed; uploaded it as 3f9c2a1b7d4e-20261114081530."** The
