@@ -28,8 +28,9 @@ const (
 	minStallAfter = 90 * time.Second
 )
 
-// defaultChecks is how Kubernetix checks a deployment that records no
-// health checks: like a new app, GET / on its port.
+// defaultChecks stands in, for timing only, for the health checks of a
+// deployment that records none: how long its containers may take to get
+// ready before kx says they aren't.
 var defaultChecks = &api.HealthCheck{
 	Liveness:  &api.Probe{HTTPGet: &api.HTTPGet{Path: "/"}, InitialDelaySeconds: 30, PeriodSeconds: 10, FailureThreshold: 3},
 	Readiness: &api.Probe{HTTPGet: &api.HTTPGet{Path: "/"}, InitialDelaySeconds: 10, PeriodSeconds: 5, FailureThreshold: 3},
@@ -147,7 +148,8 @@ func (w *stallWatch) check(ctx context.Context, now time.Time, d *api.Deployment
 // likelyCause turns what the replicas say into what kx tells the person:
 // crashing, or not answering the health check on its path at the
 // deployment's port (the port the platform checks, whatever port an older
-// health check stored).
+// health check stored). A deployment that records no health check gets
+// Kubernetix's own, whose path kx doesn't know, so it names none.
 func (r *runner) likelyCause(app *api.App, d *api.Deployment, st *stalled) *kxerr.NotStarting {
 	ns := &kxerr.NotStarting{After: st.after, Port: d.Port, Rollback: r.rollback}
 	if ns.Port == 0 {
@@ -155,7 +157,8 @@ func (r *runner) likelyCause(app *api.App, d *api.Deployment, st *stalled) *kxer
 	}
 	hc := d.HealthCheck
 	if hc == nil {
-		hc = defaultChecks
+		ns.HealthCheck = true
+		return ns
 	}
 	for _, p := range []*api.Probe{hc.Readiness, hc.Liveness, hc.Startup} {
 		if p != nil && p.HTTPGet != nil {

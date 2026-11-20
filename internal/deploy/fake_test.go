@@ -55,7 +55,7 @@ type fakeAPI struct {
 	mints      int
 	logs       map[string]api.DeploymentLogs
 	createFail []int    // statuses POST deployments answers before succeeding
-	createErr  []string // [status, code, limit_name] answered by POST deployments
+	createErr  []string // [status, code, limit_name, reason (optional)] answered by POST deployments
 	getFail    int      // GET /deployments/{id} answers this many 503s first
 	// getLimited and listLimited answer that many GETs of a deployment, or
 	// of the deployment list, with 429 and Retry-After: retryAfter seconds.
@@ -162,7 +162,11 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if f.createErr != nil {
 			var code int
 			fmt.Sscan(f.createErr[0], &code)
-			writeJSON(w, code, map[string]string{"error": f.createErr[1], "limit_name": f.createErr[2], "message": "Plan limit reached"})
+			body := map[string]string{"error": f.createErr[1], "limit_name": f.createErr[2], "message": "Plan limit reached"}
+			if len(f.createErr) > 3 {
+				body["reason"] = f.createErr[3]
+			}
+			writeJSON(w, code, body)
 			return
 		}
 		appID := parts[1]

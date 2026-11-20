@@ -170,12 +170,15 @@ const (
 func (e *NoDockerfile) Error() string { return "no Dockerfile in " + e.Dir }
 
 // DeployLimit means Org has used today's deploys. Plan is optional; Now
-// defaults to the current time.
+// defaults to the current time. TooManyTries means Org has instead started
+// the most deploys a day its plan allows when failed ones are counted too
+// (Limit is still the plan's daily deploys).
 type DeployLimit struct {
-	Org   string
-	Plan  string // e.g. "free"
-	Limit int
-	Now   time.Time
+	Org          string
+	Plan         string // e.g. "free"
+	Limit        int
+	Now          time.Time
+	TooManyTries bool
 }
 
 func (e *DeployLimit) Error() string { return fmt.Sprintf("daily deploy limit of %d reached", e.Limit) }

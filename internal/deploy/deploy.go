@@ -444,7 +444,7 @@ func (r *runner) deployLimit(ctx context.Context, err error) error {
 	if !errors.As(err, &apiErr) || apiErr.Code != "tier_limit_exceeded" || apiErr.LimitName != "max_deployments_per_day" {
 		return err
 	}
-	limit := &kxerr.DeployLimit{Org: r.o.Org, Now: r.o.Now()}
+	limit := &kxerr.DeployLimit{Org: r.o.Org, Now: r.o.Now(), TooManyTries: apiErr.Reason == "too_many_tries"}
 	if r.o.Org != "" {
 		if u, uerr := r.c.Usage(ctx, r.o.Org); uerr == nil {
 			if _, l, ok := u.DeploysToday(); ok {

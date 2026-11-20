@@ -813,7 +813,7 @@ func TestDeploy_GitHubReadyAfterTheSignalIsGreen(t *testing.T) {
 	neverReady(h, 160*time.Second)
 	h.expect(h.run("deploy", "--github"), 0)
 	out := h.err.String()
-	if !strings.Contains(out, "::warning title=Kubernetix deploy::shop-api v16 isn't live yet: for 2 minutes its container has kept crashing or hasn't answered health checks on / at port 8080.%0AMake your app start and answer on / at port 8080; the log lines below may say why it hasn't.\n") {
+	if !strings.Contains(out, "::warning title=Kubernetix deploy::shop-api v16 isn't live yet: for 2 minutes its container has kept crashing or hasn't answered health checks at port 8080.%0AMake your app start and answer health checks at port 8080; the log lines below may say why it hasn't.\n") {
 		t.Fatalf("stderr lacks the warning annotation:\n%s", out)
 	}
 	if strings.Contains(out, "::error") || !strings.Contains(out, "  listening on :3000\n") || !strings.Contains(out, "✓ Live      v16") {
@@ -840,7 +840,7 @@ func TestDeploy_GitHubNeverReadyFailsWithTheCause(t *testing.T) {
 	h.expect(h.run("deploy", "--github"), 8)
 	st := gh.got()
 	last := st[len(st)-1]
-	if last["state"] != "failure" || !strings.HasPrefix(last["description"], "shop-api v16 didn't go live: its container kept crashing or didn't answer health checks on / at port 8080.") {
+	if last["state"] != "failure" || !strings.HasPrefix(last["description"], "shop-api v16 didn't go live: its container kept crashing or didn't answer health checks at port 8080.") {
 		t.Fatalf("final status = %v", last)
 	}
 }

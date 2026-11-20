@@ -1123,3 +1123,19 @@ func TestRun_Expose80_AppLiveOnThatPort_DoesNotAsk(t *testing.T) {
 		t.Fatalf("Run() = %v, asked %v", err, asked)
 	}
 }
+
+// The ceiling on tries a day (failed deploys included) is worded apart
+// from the daily deploy limit, which kx status would contradict.
+func TestRun_ServerTriesCeilingNamesPlan(t *testing.T) {
+	e := newEnv(t)
+	e.api.createErr = []string{"402", "tier_limit_exceeded", "max_deployments_per_day", "too_many_tries"}
+	e.api.usage = &api.Usage{Plan: "free", Usage: map[string]api.UsageItem{"deployments_today": {Current: 2, Limit: 5}}}
+	_, err := e.run(e.options())
+	p := api.Explain(err)
+	want := api.Problem{Code: "deploy_limit_reached",
+		What: "acme-corp has started 25 deploys today, failed ones included, which is the most the Free plan allows in a day.",
+		Fix:  "More are available at 00:00 UTC; fix what makes the deploys fail before trying again.", Exit: api.ExitLimit}
+	if p != want {
+		t.Fatalf("Explain() = %+v\nwant %+v", p, want)
+	}
+}

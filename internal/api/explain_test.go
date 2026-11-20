@@ -595,3 +595,45 @@ func TestExplain_EmptyBody401(t *testing.T) {
 		t.Fatalf("Explain() = %+v", got)
 	}
 }
+
+func TestExplain_DeployFailed_PrefersPlatformReasonWhenClassified(t *testing.T) {
+	const reason = "Nothing is listening on port 8080. Make your app listen on 0.0.0.0:8080 (not only localhost), or change the app's port to the one it uses."
+	seen := &kxerr.NotStarting{After: 2 * time.Minute, Port: 8080, HealthCheck: true}
+	got := Explain(&kxerr.DeployFailed{App: "my-shop", Version: 3, Code: "not_listening", Reason: reason, NotStarting: seen})
+	if !strings.HasPrefix(got.What, "my-shop v3 didn't go live: Nothing is listening on port 8080.") || got.Fix != "See why: kx logs --deployment v3" || got.Exit != ExitDeploy {
+		t.Fatalf("Explain() = %+v", got)
+	}
+	// Without a class, what kx saw stays more specific than the message.
+	got = Explain(&kxerr.DeployFailed{App: "my-shop", Version: 3, Reason: "Deployment failed.", NotStarting: seen})
+	if got.What != "my-shop v3 didn't go live: its container kept crashing or didn't answer health checks at port 8080." {
+		t.Fatalf("Explain() = %+v", got)
+	}
+	// A class without a message: kx words what it saw.
+	got = Explain(&kxerr.DeployFailed{App: "my-shop", Version: 3, Code: "not_ready", NotStarting: seen})
+	if !strings.Contains(got.What, "didn't answer health checks at port 8080") {
+		t.Fatalf("Explain() = %+v", got)
+	}
+}
+
+func TestExplain_TriesCeilingWording(t *testing.T) {
+	const fix = "More are available at 00:00 UTC; fix what makes the deploys fail before trying again."
+	got := Explain(&kxerr.DeployLimit{Org: "acme-corp", Plan: "free", Limit: 5, TooManyTries: true})
+	want := Problem{"deploy_limit_reached", "acme-corp has started 25 deploys today, failed ones included, which is the most the Free plan allows in a day.", fix, ExitLimit}
+	if got != want {
+		t.Fatalf("Explain() =\n  %+v\nwant\n  %+v", got, want)
+	}
+	checkShape(t, got)
+
+	// Straight from the API, which names neither the plan nor the number.
+	got = Explain(&Error{Status: 402, Code: "tier_limit_exceeded", LimitName: "max_deployments_per_day", Reason: "too_many_tries", Ctx: ErrContext{Org: "acme-corp"}})
+	want = Problem{"deploy_limit_reached", "acme-corp has started as many deploys today as its plan allows in a day, failed ones included.", fix, ExitLimit}
+	if got != want {
+		t.Fatalf("Explain() =\n  %+v\nwant\n  %+v", got, want)
+	}
+	checkShape(t, got)
+
+	// The daily limit itself keeps its wording.
+	if got := Explain(&Error{Status: 402, Code: "tier_limit_exceeded", LimitName: "max_deployments_per_day", Ctx: ErrContext{Org: "acme-corp"}}); !strings.HasPrefix(got.What, "acme-corp has used all the deploys its plan includes today") {
+		t.Fatalf("Explain() = %+v", got)
+	}
+}

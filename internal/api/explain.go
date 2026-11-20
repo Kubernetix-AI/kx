@@ -147,6 +147,8 @@ func Explain(err error) Problem {
 		return Problem{"docker_permission", "Docker is running, but this user isn't allowed to use it.", "Add yourself to the docker group (sudo usermod -aG docker $USER), then log in again and run kx deploy.", ExitDocker}
 	case errors.As(err, &noDocker):
 		return noDockerfile(noDocker)
+	case errors.As(err, &limit) && limit.TooManyTries:
+		return tooManyTries(limit.Org, limit.Plan, limit.Limit)
 	case errors.As(err, &limit):
 		return deployLimit(limit.Org, limit.Plan, limit.Limit, limit.Now)
 	case errors.As(err, &pushRate):
@@ -318,6 +320,9 @@ func explainAPI(e *Error) Problem {
 		return Problem{"validation_error", "Kubernetix didn't accept the request: " + sentence(clean(e.Message, maxMessageLen)), checkValuesFix, ExitUsage}
 
 	case "tier_limit_exceeded":
+		if e.LimitName == "max_deployments_per_day" && e.Reason == "too_many_tries" {
+			return tooManyTries(org, "", 0)
+		}
 		if e.LimitName == "max_deployments_per_day" {
 			return deployLimit(org, "", 0, time.Time{})
 		}
@@ -583,6 +588,26 @@ func deployLimit(org, plan string, limit int, now time.Time) Problem {
 	return Problem{"deploy_limit_reached", what, "Upgrade for more deploys a day: " + plansURL, ExitLimit}
 }
 
+// triesPerDeploy is how many deploys a day Kubernetix lets an
+// organization start, failed ones included, for each deploy a day its plan
+// includes.
+const triesPerDeploy = 5
+
+// tooManyTries explains a deploy refused because the organization has
+// started as many deploys today, failed ones included, as its plan allows.
+// It doesn't say "used all its deploys", which kx status, counting only
+// deploys that didn't fail, would contradict. The number and plan come
+// from the plan's daily deploys, when kx knows them.
+func tooManyTries(org, plan string, limit int) Problem {
+	who := orgOr(org, "Your organization")
+	what := who + " has started as many deploys today as its plan allows in a day, failed ones included."
+	if plan != "" && limit > 0 {
+		what = fmt.Sprintf("%s has started %d deploys today, failed ones included, which is the most the %s plan allows in a day.",
+			who, limit*triesPerDeploy, strings.ToUpper(plan[:1])+plan[1:])
+	}
+	return Problem{"deploy_limit_reached", what, "More are available at 00:00 UTC; fix what makes the deploys fail before trying again.", ExitLimit}
+}
+
 func deployFailed(e *kxerr.DeployFailed) Problem {
 	if e.Code == "quota_blocked" {
 		return noRoom(e)
@@ -592,9 +617,10 @@ func deployFailed(e *kxerr.DeployFailed) Problem {
 		reason = "your container is crashing on start"
 	}
 	fix := fmt.Sprintf("See why: kx logs --deployment v%d", e.Version)
-	if ns := e.NotStarting; ns != nil {
+	if ns := e.NotStarting; ns != nil && (e.Code == "" || e.Reason == "") {
 		// What kx saw is more specific than the platform's message for a
-		// version that never got ready.
+		// version that never got ready, unless the platform classified the
+		// failure: then its message says what went wrong.
 		reason, fix = cause(ns, past), failedFix(ns)
 	}
 	what := fmt.Sprintf("%s v%d didn't go live: %s", e.App, e.Version, sentence(clean(reason, maxMessageLen)))
