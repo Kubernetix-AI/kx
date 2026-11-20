@@ -291,7 +291,9 @@ type harness struct {
 	now       time.Time
 
 	stdin        string
+	input        io.Reader // replaces stdin when set
 	tty          bool
+	stderrFile   bool // with tty: stdin is a terminal, stderr isn't (kx … 2>log)
 	password     string
 	readPassword func() (string, error) // overrides password when set
 	canOpen      bool
@@ -338,7 +340,7 @@ func (h *harness) runCtx(ctx context.Context, args ...string) int {
 	h.out.Reset()
 	h.err.Reset()
 	app := &App{
-		Stdin:          strings.NewReader(h.stdin),
+		Stdin:          h.stdinReader(),
 		Stdout:         &h.out,
 		Stderr:         &h.err,
 		Getenv:         func(k string) string { return h.env[k] },
@@ -358,7 +360,7 @@ func (h *harness) runCtx(ctx context.Context, args ...string) int {
 			return ctx.Err()
 		},
 		PreparePrinter: func(p *ui.Printer) {
-			p.InTTY, p.TTY = h.tty, h.tty
+			p.InTTY, p.TTY = h.tty, h.tty && !h.stderrFile
 			// Spinners draw nothing during a test, so output is the same
 			// on a slow machine; only their line-clearing on Stop remains.
 			p.SpinEvery, p.HeartbeatEvery = time.Hour, time.Hour
@@ -381,6 +383,13 @@ func (h *harness) runCtx(ctx context.Context, args ...string) int {
 		}
 	}
 	return code
+}
+
+func (h *harness) stdinReader() io.Reader {
+	if h.input != nil {
+		return h.input
+	}
+	return strings.NewReader(h.stdin)
 }
 
 // norm replaces the test server's address with the public one and drops
@@ -566,6 +575,7 @@ func (f *fakeAPI) findDeployment(id string) *api.Deployment {
 type fakeDocker struct {
 	mu       sync.Mutex
 	calls    []string
+	builds   []docker.BuildOptions
 	checkErr error
 	buildErr error
 	pushErrs []error // returned by successive pushes, then success
@@ -582,6 +592,9 @@ func (d *fakeDocker) Check(context.Context) error { d.record("check"); return d.
 
 func (d *fakeDocker) Build(_ context.Context, o docker.BuildOptions, w io.Writer) error {
 	d.record("build " + o.Tag)
+	d.mu.Lock()
+	d.builds = append(d.builds, o)
+	d.mu.Unlock()
 	if d.buildErr != nil {
 		_, _ = io.WriteString(w, "#5 [2/3] RUN npm ci\n#5 ERROR: npm ci failed\n")
 	}

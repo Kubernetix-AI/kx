@@ -103,6 +103,32 @@ func (p *Printer) Confirm(ctx context.Context, question string) (bool, error) {
 	return false, nil
 }
 
+// ConfirmYes asks a yes/no question on stderr; the default is yes, so
+// Enter alone answers yes. Anything but y or yes is no, and so is input
+// that ends without an answer.
+func (p *Printer) ConfirmYes(ctx context.Context, question string) (bool, error) {
+	if !p.InTTY {
+		return false, ErrNoTTY
+	}
+	p.writeErr(question + " [Y/n] ")
+	line, err := p.ReadLine(ctx)
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	if errors.Is(err, io.EOF) {
+		p.writeErr("\n")
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	switch strings.ToLower(line) {
+	case "", "y", "yes":
+		return true, nil
+	}
+	return false, nil
+}
+
 // ErrNoChoice means a picker without a default ended before anything was
 // chosen.
 var ErrNoChoice = errors.New("nothing was chosen")

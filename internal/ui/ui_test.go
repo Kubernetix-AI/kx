@@ -548,6 +548,25 @@ func TestConfirm(t *testing.T) {
 	}
 }
 
+func TestConfirmYes(t *testing.T) {
+	// Enter alone is yes; input that ends without an answer is no.
+	for in, want := range map[string]bool{"\n": true, "y\n": true, "Yes\n": true, "n\n": false, "NO\n": false, "maybe\n": false, "": false} {
+		p, _, errw := newTest(in)
+		p.InTTY, p.TTY = true, true
+		got, err := p.ConfirmYes(context.Background(), "Create one now?")
+		if err != nil || got != want {
+			t.Errorf("ConfirmYes(%q) = %v, %v", in, got, err)
+		}
+		if !strings.HasPrefix(errw.String(), "Create one now? [Y/n] ") {
+			t.Errorf("prompt = %q", errw.String())
+		}
+	}
+	p, _, _ := newTest("\n")
+	if _, err := p.ConfirmYes(context.Background(), "Create one now?"); !errors.Is(err, ErrNoTTY) {
+		t.Fatalf("without a terminal: %v, want ErrNoTTY", err)
+	}
+}
+
 func TestPrinter_CopiesShareState(t *testing.T) {
 	p, out, _ := newTest("first\nsecond\n")
 	byValue := *p

@@ -1,0 +1,29 @@
+# Written by kx deploy. What's listed here stays out of the image.
+.git
+.env
+.env.*
+node_modules
+__pycache__
+.venv
+*.pem
+*.key
+id_rsa*
+.ssh
+.aws
+.netrc
+.pypirc
+*.tfstate
+.kx.json
+.npmrc
+.yarnrc.yml
+Dockerfile
+.dockerignore
+.DS_Store
+# The same secrets in subfolders.
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/id_rsa*
+**/.npmrc
+**/.yarnrc.yml

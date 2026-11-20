@@ -1,0 +1,23 @@
+kx needs a Dockerfile to build your app, and there isn't one in /Users/sam/code/shop-api.
+This looks like a Node app. Create one now? [Y/n] Wrote /Users/sam/code/shop-api/Dockerfile:
+    # Written by kx deploy for a Node app.
+    FROM node:22-alpine
+    WORKDIR /app
+    COPY package.json package-lock.json ./
+    RUN npm ci
+    COPY . .
+    ENV PORT=8080 HOST=0.0.0.0
+    # npm keeps its cache and logs in /tmp, so the app runs as any user.
+    ENV NPM_CONFIG_CACHE=/tmp/.npm NPM_CONFIG_UPDATE_NOTIFIER=false
+    EXPOSE 8080
+    # Some hosts refuse containers that run as root, and can only check a numeric user.
+    USER 1000
+    CMD ["npm","start"]
+Wrote .dockerignore, which keeps .env files and .git out of the image.
+
+✓ Checked   Dockerfile, port 8080
+✓ Built     shop-api:local-20261112090000
+✓ Pushed    registry.kubernetix.ai/acme-corp/shop-api
+✓ Live      v16  queued → starting → live
+  4 of 5 deploys left today on the Free plan.
+https://6f1c2a9e-3b7d-4e21-9c0a-5d8e7f6a1b2c--acme-corp.apps.example.test

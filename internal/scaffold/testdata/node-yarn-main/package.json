@@ -1,0 +1,7 @@
+{
+  "name": "node-yarn-main",
+  "version": "1.0.0",
+  "private": true,
+  "main": "app.js",
+  "packageManager": "yarn@1.22.22"
+}

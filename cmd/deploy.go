@@ -206,7 +206,15 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 	var tag string
 	if o.image == "" {
 		var err error
-		if df, err = deploy.Preflight(ctx, builder, d.path(o.build), d.dockerfilePath()); err != nil {
+		df, err = deploy.Preflight(ctx, builder, d.path(o.build), d.dockerfilePath())
+		var none *kxerr.NoDockerfile
+		if errors.As(err, &none) {
+			if err := d.writeDockerfile(ctx, none.Dir); err != nil {
+				return nil, err
+			}
+			df, err = deploy.Preflight(ctx, builder, d.path(o.build), d.dockerfilePath())
+		}
+		if err != nil {
 			return nil, err
 		}
 		// Before the picker writes .kx.json, which would count as a change.

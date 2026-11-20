@@ -1,0 +1,36 @@
+# Written by kx deploy. What's listed here stays out of the image.
+.git
+.env
+.env.*
+node_modules
+__pycache__
+.venv
+*.pem
+*.key
+id_rsa*
+.ssh
+.aws
+.netrc
+.pypirc
+*.tfstate
+.kx.json
+{{- if ne .Stack "node"}}
+.npmrc
+.yarnrc.yml
+{{- end}}
+Dockerfile
+.dockerignore
+.DS_Store
+# The same secrets in subfolders.
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/id_rsa*
+{{- if eq .Stack "node"}}
+*/**/.npmrc
+*/**/.yarnrc.yml
+{{- else}}
+**/.npmrc
+**/.yarnrc.yml
+{{- end}}
