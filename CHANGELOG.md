@@ -48,10 +48,10 @@
 - A failed deploy shows Kubernetix's own reason when Kubernetix names the kind of failure,
   instead of kx's guess from the replicas.
 - When a deployment records no health check, kx names only the port it checks, not a path.
-- When the most deploys a day an organization may start, failed ones included, are used up,
-  kx says so ("acme-corp has started 25 deploys today, failed ones included, which is the
-  most the Free plan allows in a day.") instead of the daily deploy limit's wording.
-  Problem code `deploy_limit_reached`, exit 5, as before.
+- When Kubernetix reports that an organization has started the most deploys it may start in a
+  day, failed ones included, kx says so instead of using the daily deploy limit's wording,
+  with the number and plan Kubernetix gives, if any. Problem code `deploy_limit_reached`,
+  exit 5, as before.
 
 ## 1.0.0
 

@@ -56,7 +56,9 @@ type fakeAPI struct {
 	logs       map[string]api.DeploymentLogs
 	createFail []int    // statuses POST deployments answers before succeeding
 	createErr  []string // [status, code, limit_name, reason (optional)] answered by POST deployments
-	getFail    int      // GET /deployments/{id} answers this many 503s first
+	// createErrExtra adds fields to createErr's body.
+	createErrExtra map[string]any
+	getFail        int // GET /deployments/{id} answers this many 503s first
 	// getLimited and listLimited answer that many GETs of a deployment, or
 	// of the deployment list, with 429 and Retry-After: retryAfter seconds.
 	getLimited, listLimited int
@@ -162,9 +164,12 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if f.createErr != nil {
 			var code int
 			fmt.Sscan(f.createErr[0], &code)
-			body := map[string]string{"error": f.createErr[1], "limit_name": f.createErr[2], "message": "Plan limit reached"}
+			body := map[string]any{"error": f.createErr[1], "limit_name": f.createErr[2], "message": "Plan limit reached"}
 			if len(f.createErr) > 3 {
 				body["reason"] = f.createErr[3]
+			}
+			for k, v := range f.createErrExtra {
+				body[k] = v
 			}
 			writeJSON(w, code, body)
 			return

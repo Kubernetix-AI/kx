@@ -618,23 +618,53 @@ func TestExplain_DeployFailed_PrefersPlatformReasonWhenClassified(t *testing.T) 
 
 func TestExplain_TriesCeilingWording(t *testing.T) {
 	const fix = "More are available at 00:00 UTC; fix what makes the deploys fail before trying again."
-	got := Explain(&kxerr.DeployLimit{Org: "acme-corp", Plan: "free", Limit: 5, TooManyTries: true})
-	want := Problem{"deploy_limit_reached", "acme-corp has started 25 deploys today, failed ones included, which is the most the Free plan allows in a day.", fix, ExitLimit}
-	if got != want {
-		t.Fatalf("Explain() =\n  %+v\nwant\n  %+v", got, want)
+	tries := func(limit int, plan string) *Error {
+		return &Error{Status: 402, Code: "tier_limit_exceeded", LimitName: "max_deployments_per_day", Reason: "too_many_tries",
+			TriesLimit: limit, Plan: plan, Ctx: ErrContext{Org: "acme-corp"}}
 	}
-	checkShape(t, got)
-
-	// Straight from the API, which names neither the plan nor the number.
-	got = Explain(&Error{Status: 402, Code: "tier_limit_exceeded", LimitName: "max_deployments_per_day", Reason: "too_many_tries", Ctx: ErrContext{Org: "acme-corp"}})
-	want = Problem{"deploy_limit_reached", "acme-corp has started as many deploys today as its plan allows in a day, failed ones included.", fix, ExitLimit}
-	if got != want {
-		t.Fatalf("Explain() =\n  %+v\nwant\n  %+v", got, want)
+	tests := []struct {
+		err  *Error
+		what string
+	}{
+		// The number and plan only ever come from Kubernetix.
+		{tries(25, "free"), "acme-corp has started 25 deploys today, failed ones included, which is the most the Free plan allows in a day."},
+		{tries(1000, ""), "acme-corp has started 1000 deploys today, failed ones included, which is the most its plan allows in a day."},
+		{tries(0, "free"), "acme-corp has started as many deploys today as its plan allows in a day, failed ones included."},
+		{tries(0, ""), "acme-corp has started as many deploys today as its plan allows in a day, failed ones included."},
 	}
-	checkShape(t, got)
+	for _, tt := range tests {
+		got := Explain(tt.err)
+		want := Problem{"deploy_limit_reached", tt.what, fix, ExitLimit}
+		if got != want {
+			t.Errorf("tries_limit %d, plan %q: Explain() =\n  %+v\nwant\n  %+v", tt.err.TriesLimit, tt.err.Plan, got, want)
+		}
+		checkShape(t, got)
+	}
 
 	// The daily limit itself keeps its wording.
 	if got := Explain(&Error{Status: 402, Code: "tier_limit_exceeded", LimitName: "max_deployments_per_day", Ctx: ErrContext{Org: "acme-corp"}}); !strings.HasPrefix(got.What, "acme-corp has used all the deploys its plan includes today") {
 		t.Fatalf("Explain() = %+v", got)
+	}
+}
+
+// The tries ceiling's 402 names the number of tries and the plan.
+func TestClient_ParsesTheTriesCeiling(t *testing.T) {
+	for body, want := range map[string][2]any{
+		`{"error":"tier_limit_exceeded","limit_name":"max_deployments_per_day","reason":"too_many_tries","tries_limit":25,"plan":"free"}`: {25, "free"},
+		`{"error":"tier_limit_exceeded","limit_name":"max_deployments_per_day","reason":"too_many_tries"}`:                                {0, ""},
+		`{"error":"tier_limit_exceeded","reason":"too_many_tries","tries_limit":2.5,"plan":"Free Plan!"}`:                                 {0, ""},
+		`{"error":"tier_limit_exceeded","reason":"too_many_tries","tries_limit":-3,"plan":"pro"}`:                                         {0, "pro"},
+		`{"error":"tier_limit_exceeded","reason":"too_many_tries","tries_limit":"25"}`:                                                    {0, ""},
+	} {
+		c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusPaymentRequired)
+			_, _ = io.WriteString(w, body)
+		})
+		_, err := c.WhoAmI(context.Background())
+		var apiErr *Error
+		if !errors.As(err, &apiErr) || apiErr.TriesLimit != want[0] || apiErr.Plan != want[1] {
+			t.Errorf("%s: %+v", body, err)
+		}
 	}
 }

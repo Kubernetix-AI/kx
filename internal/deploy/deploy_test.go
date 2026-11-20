@@ -1125,17 +1125,29 @@ func TestRun_Expose80_AppLiveOnThatPort_DoesNotAsk(t *testing.T) {
 }
 
 // The ceiling on tries a day (failed deploys included) is worded apart
-// from the daily deploy limit, which kx status would contradict.
-func TestRun_ServerTriesCeilingNamesPlan(t *testing.T) {
+// from the daily deploy limit, which kx status would contradict, with the
+// number and plan Kubernetix gives, and none of kx's own.
+func TestRun_ServerTriesCeiling_UsesWhatKubernetixSays(t *testing.T) {
+	const fix = "More are available at 00:00 UTC; fix what makes the deploys fail before trying again."
 	e := newEnv(t)
 	e.api.createErr = []string{"402", "tier_limit_exceeded", "max_deployments_per_day", "too_many_tries"}
-	e.api.usage = &api.Usage{Plan: "free", Usage: map[string]api.UsageItem{"deployments_today": {Current: 2, Limit: 5}}}
+	e.api.createErrExtra = map[string]any{"tries_limit": 25, "plan": "free"}
+	e.api.usage = &api.Usage{Plan: "pro", Usage: map[string]api.UsageItem{"deployments_today": {Current: 2, Limit: 50}}}
 	_, err := e.run(e.options())
-	p := api.Explain(err)
 	want := api.Problem{Code: "deploy_limit_reached",
 		What: "acme-corp has started 25 deploys today, failed ones included, which is the most the Free plan allows in a day.",
-		Fix:  "More are available at 00:00 UTC; fix what makes the deploys fail before trying again.", Exit: api.ExitLimit}
-	if p != want {
+		Fix:  fix, Exit: api.ExitLimit}
+	if p := api.Explain(err); p != want {
+		t.Fatalf("Explain() = %+v\nwant %+v", p, want)
+	}
+
+	// Without them, no number, even though kx knows the plan's daily deploys.
+	e = newEnv(t)
+	e.api.createErr = []string{"402", "tier_limit_exceeded", "max_deployments_per_day", "too_many_tries"}
+	e.api.usage = &api.Usage{Plan: "free", Usage: map[string]api.UsageItem{"deployments_today": {Current: 2, Limit: 5}}}
+	_, err = e.run(e.options())
+	want.What = "acme-corp has started as many deploys today as its plan allows in a day, failed ones included."
+	if p := api.Explain(err); p != want {
 		t.Fatalf("Explain() = %+v\nwant %+v", p, want)
 	}
 }

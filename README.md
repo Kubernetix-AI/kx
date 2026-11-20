@@ -329,7 +329,6 @@ The messages you are most likely to meet:
 | Docker is installed but not running. | Start Docker Desktop, then run kx deploy again. | 10 |
 | kx needs a Dockerfile to build your app, and there isn't one in /Users/sam/code/shop-api. | Add a Dockerfile to this folder, or cd to the folder that has one. To have kx write one, run kx deploy in a terminal. | 2 |
 | acme-corp has used all 5 deploys the Free plan includes today; more are available at 00:00 UTC (in 3 h 12 min). | Upgrade for more deploys a day: platform.kubernetix.ai/plans | 5 |
-| acme-corp has started 25 deploys today, failed ones included, which is the most the Free plan allows in a day. | More are available at 00:00 UTC; fix what makes the deploys fail before trying again. | 5 |
 | This token has uploaded images too often in the last hour. | Wait 6 minutes, then run kx deploy again. | 5 |
 | Payment for this organization is overdue. New deployments and new resources are paused until the balance is paid. Your running apps are not affected. | Pay the overdue balance on acme-corp's Billing page in the dashboard: platform.kubernetix.ai/settings?tab=billing | 5 |
 | Your subscription has ended. Your apps keep running, but new deployments are paused until you subscribe again or change your usage to fit the Free plan. | Subscribe again on acme-corp's Billing page in the dashboard: platform.kubernetix.ai/settings?tab=billing | 5 |
