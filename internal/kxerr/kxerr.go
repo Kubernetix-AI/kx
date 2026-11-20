@@ -45,6 +45,16 @@ var ErrDockerWindowsContainers = errors.New("docker is in windows containers mod
 // ErrNotLinked means no app was given and the folder has no .kx.json.
 var ErrNotLinked = errors.New("folder is not linked to an app")
 
+// Unlinked means the folder isn't linked to an app and Command (status,
+// logs, open) can't use the organization's only app: Org has none, or
+// has several, named in Apps.
+type Unlinked struct {
+	Org, Command string
+	Apps         []string
+}
+
+func (e *Unlinked) Error() string { return "folder is not linked to an app" }
+
 // ErrLoginInCI means kx login was run inside a CI job.
 var ErrLoginInCI = errors.New("kx login does not run in CI")
 

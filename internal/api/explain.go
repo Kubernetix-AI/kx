@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -80,6 +81,7 @@ func Explain(err error) Problem {
 		ended     *kxerr.LoginEnded
 		orgNot    *kxerr.OrgNotLoggedIn
 		elsewhere *kxerr.LoggedInElsewhere
+		unlinked  *kxerr.Unlinked
 		mismatch  *kxerr.TokenAppMismatch
 		lacks     *kxerr.TokenLacks
 		orgMis    *kxerr.TokenOrgMismatch
@@ -199,6 +201,8 @@ func Explain(err error) Problem {
 		return Problem{"version_not_found", noVer.App + " has no " + noVer.Version + ".", "See recent versions: kx status", ExitNotFound}
 	case errors.As(err, &noTok):
 		return Problem{"token_not_found", "There's no token " + noTok.Which + " in " + orgOr(noTok.Org, "this organization") + ".", "See your tokens: kx token list", ExitNotFound}
+	case errors.As(err, &unlinked):
+		return explainUnlinked(unlinked)
 	case errors.Is(err, kxerr.ErrNotLinked):
 		return Problem{"not_linked", "This folder isn't linked to an app yet.", "Run: kx link", ExitUsage}
 	case errors.Is(err, kxerr.ErrLoginInCI):
@@ -400,6 +404,24 @@ func explainInvalidToken(e *kxerr.InvalidToken) Problem {
 		return Problem{"invalid_token", "The token saved on this computer is damaged.", "Run: kx login", ExitAuth}
 	}
 	return Problem{"invalid_token", "That doesn't look like a whole Kubernetix token.", "Copy it again with the Copy button and paste it: kx login", ExitAuth}
+}
+
+// shownApps is how many app names the fix for an unlinked folder lists.
+const shownApps = 5
+
+// explainUnlinked says how to go on in a folder that isn't linked when the
+// organization has no apps, or several (listing a few, sorted).
+func explainUnlinked(e *kxerr.Unlinked) Problem {
+	if len(e.Apps) == 0 {
+		return Problem{"not_linked", "There are no apps in " + orgOr(e.Org, "this organization") + " yet.", "Deploy this folder: kx deploy", ExitUsage}
+	}
+	names := slices.Sorted(slices.Values(e.Apps))
+	list := strings.Join(names[:min(len(names), shownApps)], ", ")
+	if more := len(names) - shownApps; more > 0 {
+		list += fmt.Sprintf(" and %d more", more)
+	}
+	return Problem{"not_linked", "This folder isn't linked to an app, so kx doesn't know which one you mean.",
+		"Run: kx " + e.Command + " --app <name>. Your apps: " + list, ExitUsage}
 }
 
 func explainInsecure(e *kxerr.InsecureURL) Problem {

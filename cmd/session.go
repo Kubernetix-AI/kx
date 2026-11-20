@@ -3,9 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/url"
-	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -276,12 +274,9 @@ func (s *Session) ResolveAppOrOnly(ctx context.Context, command string) (*api.Ap
 	return app, err
 }
 
-// shownApps is how many app names a fix line lists.
-const shownApps = 5
-
 // onlyApp is the app a command uses in a folder that isn't linked: the
 // organization's only app, which it names. With none, or several, it says
-// how to go on, listing a few of the apps.
+// how to go on (kxerr.Unlinked).
 func (s *Session) onlyApp(ctx context.Context, command string) (*api.App, error) {
 	c, err := s.Client(ctx)
 	if err != nil {
@@ -295,10 +290,7 @@ func (s *Session) onlyApp(ctx context.Context, command string) (*api.App, error)
 	if err != nil {
 		return nil, err
 	}
-	switch len(apps) {
-	case 0:
-		return nil, &kxerr.Usage{What: "There are no apps in " + org + " yet.", Fix: "Deploy this folder: kx deploy"}
-	case 1:
+	if len(apps) == 1 {
 		s.P.Info("Using %s, the only app in %s.", apps[0].Name, org)
 		c.Ctx.App = apps[0].Name
 		return &apps[0], nil
@@ -307,15 +299,7 @@ func (s *Session) onlyApp(ctx context.Context, command string) (*api.App, error)
 	for _, a := range apps {
 		names = append(names, a.Name)
 	}
-	sort.Strings(names)
-	list := strings.Join(names[:min(len(names), shownApps)], ", ")
-	if more := len(names) - shownApps; more > 0 {
-		list += fmt.Sprintf(" and %d more", more)
-	}
-	return nil, &kxerr.Usage{
-		What: "This folder isn't linked to an app, so kx doesn't know which one you mean.",
-		Fix:  "Run: kx " + command + " --app <name>. Your apps: " + list,
-	}
+	return nil, &kxerr.Unlinked{Org: org, Command: command, Apps: names}
 }
 
 // FindApp looks an app up by name (or ID), trying the known ID first.

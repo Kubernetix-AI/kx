@@ -305,3 +305,21 @@ func TestRollback_NotLinked_StillNeedsApp(t *testing.T) {
 		t.Fatalf("stderr = %q", h.err.String())
 	}
 }
+
+// Scripts that read --json keep seeing not_linked for a folder that isn't
+// linked, with the new wording.
+func TestNotLinked_KeepsItsProblemCode(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.expect(h.run("logs", "--json"), 2)
+	want := `{"error":{"code":"not_linked","message":"This folder isn't linked to an app, so kx doesn't know which one you mean.","fix":"Run: kx logs --app <name>. Your apps: shop-api, web"}}` + "\n"
+	if h.out.String() != want {
+		t.Fatalf("stdout = %q\nwant     %q", h.out.String(), want)
+	}
+	h.api.apps = nil
+	h.expect(h.run("open", "--json"), 2)
+	want = `{"error":{"code":"not_linked","message":"There are no apps in acme-corp yet.","fix":"Deploy this folder: kx deploy"}}` + "\n"
+	if h.out.String() != want {
+		t.Fatalf("stdout = %q\nwant     %q", h.out.String(), want)
+	}
+}

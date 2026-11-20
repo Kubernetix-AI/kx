@@ -120,6 +120,9 @@ func explainCases() []explainCase {
 		{"API URL from elsewhere", &kxerr.InsecureURL{URL: "http://x"}, Problem{"insecure_api_url", "kx only talks to Kubernetix over https, and the API address isn't an https address.", "Use an https:// API address.", 2}},
 		{"insecure URL config", &kxerr.InsecureURL{URL: "http://x", Source: "config"}, Problem{"insecure_api_url", "kx only talks to Kubernetix over https, and the api_url in kx's settings file isn't an https address.", "Remove api_url from kx's settings file, or make it an https:// address.", 2}},
 		{"usage", &kxerr.Usage{What: "kx logs takes no arguments.", Fix: "See examples: kx logs --help"}, Problem{"usage", "kx logs takes no arguments.", "See examples: kx logs --help", 2}},
+		{"not linked, no apps", &kxerr.Unlinked{Org: "acme-corp", Command: "status"}, Problem{"not_linked", "There are no apps in acme-corp yet.", "Deploy this folder: kx deploy", 2}},
+		{"not linked, several apps", &kxerr.Unlinked{Org: "acme-corp", Command: "logs", Apps: []string{"web", "shop-api", "zeta", "docs", "api", "yak", "admin"}},
+			Problem{"not_linked", "This folder isn't linked to an app, so kx doesn't know which one you mean.", "Run: kx logs --app <name>. Your apps: admin, api, docs, shop-api, web and 2 more", 2}},
 		{"not linked", kxerr.ErrNotLinked, Problem{"not_linked", "This folder isn't linked to an app yet.", "Run: kx link", 2}},
 		{"multi-region", &kxerr.MultiRegion{App: "shop-api"}, Problem{"multi_region_app", "shop-api runs in several regions, and kx can't deploy those yet.", "Deploy it from the dashboard: platform.kubernetix.ai", 2}},
 		{"login in CI", kxerr.ErrLoginInCI, Problem{"login_in_ci", "kx login saves a token on this computer, so it doesn't run in CI.", "Save a deploy token as the KX_TOKEN secret instead.", 2}},
@@ -256,9 +259,14 @@ func checkShape(t *testing.T, p Problem) {
 		t.Errorf("line one has %d sentences: %q", sentences, p.What)
 	}
 	maxFixSentences := 1
-	if p.Code == "no_dockerfile" {
+	switch p.Code {
+	case "no_dockerfile":
 		// "Add a Dockerfile …, or cd to the folder that has one." is the
 		// fix; the second sentence says how kx can write one instead.
+		maxFixSentences = 2
+	case "not_linked":
+		// "Run: kx logs --app <name>." is the fix; the second sentence
+		// lists the names to choose from.
 		maxFixSentences = 2
 	}
 	if strings.Count(p.Fix, ". ")+1 > maxFixSentences {
