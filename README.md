@@ -4,13 +4,13 @@ kx is the Kubernetix command line. Run `kx deploy` in any folder with a Dockerfi
 last thing you see is your app's live URL.
 
 ```console
-$ kx login
 $ kx deploy
 ...
 https://<your app's address>
 ```
 
-- One command each to install, log in and deploy. No flags on the happy path.
+- One command to install, one to deploy: the first `kx deploy` logs you in. No flags on the
+  happy path.
 - Works the same on your laptop and in CI (GitHub Actions, GitLab CI, Bitbucket Pipelines or
   any other).
 - When something goes wrong you get two lines: what happened, then the one thing to do.
@@ -38,7 +38,7 @@ Installing can take a second step. On most Macs and Linux machines `/usr/local/b
 administrator rights, so kx goes to `~/.local/bin`, which often isn't on your `PATH` yet.
 The installer then says so and prints one line to run: it adds the folder for this terminal
 and to your shell's startup file for new ones. Until you run it, start kx by its full path
-(`~/.local/bin/kx login`), as the installer's last line shows. On Windows the installer adds
+(`~/.local/bin/kx deploy`), as the installer's last line shows. On Windows the installer adds
 its folder to your `PATH` itself; other terminals see it once you open a new one.
 
 To install a particular version, set `KX_VERSION`:
@@ -67,22 +67,19 @@ If the installer printed a line to add kx to your `PATH`, run that first (see In
 
 ```console
 $ curl -fsSL https://platform.kubernetix.ai/install.sh | sh
-kx is ready. Next: kx login
-
-$ kx login
-Opening platform.kubernetix.ai so you can create a token for this computer.
-If your browser didn't open, go to https://platform.kubernetix.ai/settings?tab=tokens&new=cli
-Click "Create token", then "Copy", and paste it here.
-Token: ••••••••••••••••
-Logged in to acme-corp as sam@acme.dev. This token can deploy every app in acme-corp until 11 Dec 2026.
-Next: open your project folder and run kx deploy
+kx is ready. Next: kx deploy
 
 $ cd ~/code/shop-api
 $ kx deploy
-Which app should this folder deploy to?
-> (new app: shop-api)
-  billing-worker
-Saved in .kx.json. Next time, just run kx deploy.
+First, let's connect this computer to Kubernetix. Opening your browser…
+Opening platform.kubernetix.ai so you can create a token for this computer.
+If your browser didn't open, go to https://platform.kubernetix.ai/settings?tab=tokens&new=cli
+Click "Create token", then "Copy", and paste it here.
+If the page says "Awaiting approval", your account isn't approved yet; we'll email you, then run kx deploy again. Press Ctrl-C to stop.
+Token: ••••••••••••••••
+Logged in to acme-corp as sam@acme.dev. This token can deploy every app in acme-corp until 11 Dec 2026.
+
+Creating a new app called shop-api. Saved in .kx.json.
 
 ✓ Checked   Dockerfile, port 8080
 ✓ Built     shop-api:3f9c2a1b7d4e                        1m 12s
@@ -93,14 +90,30 @@ Saved in .kx.json. Next time, just run kx deploy.
 https://<your app's address>
 ```
 
-The first choice is always a new app named after the folder (in lowercase, with other
-characters turned into hyphens), so pressing Enter never deploys over an app you already
-have; to deploy to an existing app, move to it with the arrow keys or type its number. The
-next `kx deploy` in that folder asks nothing. Run `kx` on its own at any time to see these
-steps again, and `kx <command> --help` for examples of any command.
+**Logging in.** The first `kx deploy` (or `kx status`, `kx logs`, and the other commands
+that need a login) logs in the way `kx login` does, then carries on. It does the same when
+your login has ended, or when Kubernetix says the saved token expired or was revoked. It
+does this only on a terminal, at most once per run, and never in CI, with `--json` or when
+`KX_TOKEN` is set: then it stops with the message and exit 3, as before. `kx login` stays
+for logging in to another organization or replacing this computer's token.
 
-**Ports and health checks.** A new app gets the port in your Dockerfile's first `EXPOSE` line
-(8080 if there is none). Kubernetix sends traffic to that port, and a version is live once
+**Which app.** In an organization with no apps yet, the first `kx deploy` creates one named
+after the folder (in lowercase, with other characters turned into hyphens), without asking.
+If the folder's name says nothing about the app (`src`, `app`, `code`, `Desktop`, your home
+folder and the like), kx asks for a name instead and suggests the git repository's. Once
+there are apps, kx asks which one: the first choice is always a new app named after the
+folder, so pressing Enter never deploys over an app you already have; to deploy to an
+existing app, move to it with the arrow keys or type its number. `kx deploy --app web`
+deploys to `web`, offers to create it if there's no such app, and saves it in `.kx.json`
+when the folder has none. The next `kx deploy` in that folder asks nothing. Run `kx` on its
+own at any time to see these steps again, and `kx <command> --help` for examples of any
+command.
+
+**Ports and health checks.** A new app gets the port in your Dockerfile's first `EXPOSE` line.
+If there is none, kx asks which port your app listens on (8080 if you press Enter, or
+without a terminal). If the Dockerfile exposes a port below 1024, kx says your app may not
+be able to listen there, since apps on Kubernetix don't run as root, and asks before it
+builds anything (in CI it only warns). Kubernetix sends traffic to that port, and a version is live once
 your app answers HTTP requests on `/` there (any status below 400). If a new version's
 container keeps crashing or doesn't answer, kx says so after about two minutes (longer if the
 app's health checks allow more time), with the container's last log lines, and keeps
@@ -131,9 +144,9 @@ Every command takes `--json` (machine-readable output with stable keys) and `--o
 
 | Command | What it does |
 |---|---|
-| `kx` | Prints the three-step quickstart. |
+| `kx` | Prints the two-step quickstart. |
+| `kx deploy` | Logs in if needed, builds the folder's Dockerfile (or offers to write one), pushes the image, deploys it, waits until it's live and prints the URL. |
 | `kx login` | Opens the dashboard so you can create a token for this computer, then asks you to paste it. |
-| `kx deploy` | Builds the folder's Dockerfile (or offers to write one), pushes the image, deploys it, waits until it's live and prints the URL. |
 | `kx link [app]` | Saves which app this folder deploys to in `.kx.json`. Also called `kx init`. |
 
 ```sh
@@ -144,7 +157,7 @@ kx login                         # again: replaces this computer's token and rev
 echo "$TOKEN" | kx login --token-stdin
 
 kx deploy                        # build, push, deploy, wait, print the URL
-kx deploy --app web              # deploy this folder to another app
+kx deploy --app web              # deploy this folder to another app (offers to create it)
 kx deploy --image registry.kubernetix.ai/acme-corp/shop-api:3f9c2a1b7d4e   # skip the build
 kx deploy --build ./api --dockerfile ./api/Dockerfile.prod
 kx deploy --no-wait              # start the deploy and return
@@ -198,6 +211,9 @@ build and push the image yourself, then deploy it:
 | `kx open` | Opens the live URL in your browser (and prints it). |
 | `kx rollback` | Redeploys the newest earlier version that went live with a different image. |
 | `kx apps list`, `kx apps get <app>` | Lists your apps, or shows one. |
+
+In a folder that isn't linked, `kx status`, `kx logs` and `kx open` use your organization's
+only app, and say so; with several apps, add `--app`.
 
 ```sh
 kx status
@@ -313,6 +329,7 @@ The messages you are most likely to meet:
 | Docker is installed but not running. | Start Docker Desktop, then run kx deploy again. | 10 |
 | kx needs a Dockerfile to build your app, and there isn't one in /Users/sam/code/shop-api. | Add a Dockerfile to this folder, or cd to the folder that has one. To have kx write one, run kx deploy in a terminal. | 2 |
 | acme-corp has used all 5 deploys the Free plan includes today; more are available at 00:00 UTC (in 3 h 12 min). | Upgrade for more deploys a day: platform.kubernetix.ai/plans | 5 |
+| acme-corp has started 25 deploys today, failed ones included, which is the most the Free plan allows in a day. | More are available at 00:00 UTC; fix what makes the deploys fail before trying again. | 5 |
 | This token has uploaded images too often in the last hour. | Wait 6 minutes, then run kx deploy again. | 5 |
 | Payment for this organization is overdue. New deployments and new resources are paused until the balance is paid. Your running apps are not affected. | Pay the overdue balance on acme-corp's Billing page in the dashboard: platform.kubernetix.ai/settings?tab=billing | 5 |
 | Your subscription has ended. Your apps keep running, but new deployments are paused until you subscribe again or change your usage to fit the Free plan. | Subscribe again on acme-corp's Billing page in the dashboard: platform.kubernetix.ai/settings?tab=billing | 5 |

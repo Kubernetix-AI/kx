@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -44,6 +45,37 @@ func TestHelp_OpensWithExamples(t *testing.T) {
 		if !strings.Contains(h.out.String(), "Examples:") {
 			t.Errorf("kx %s --help has no examples:\n%s", sub, h.out.String())
 		}
+	}
+}
+
+// Help's first screen: what most people need under "Get started:",
+// everything else under "More commands:".
+func TestHelp_FirstScreen_Golden(t *testing.T) {
+	h := newHarness(t)
+	h.expect(h.run("--help"), 0)
+	golden(t, "help", h.out.String())
+
+	groups := map[string][]string{}
+	var current string
+	for _, line := range strings.Split(h.out.String(), "\n") {
+		switch {
+		case strings.HasSuffix(line, ":") && !strings.HasPrefix(line, " "):
+			current = strings.TrimSuffix(line, ":")
+		case strings.HasPrefix(line, "  ") && current != "" && current != "Examples" && current != "Usage" && current != "Options":
+			groups[current] = append(groups[current], strings.Fields(line)[0])
+		case line == "":
+			current = ""
+		}
+	}
+	want := map[string][]string{
+		"Get started":   {"deploy", "status", "logs", "rollback", "open"},
+		"More commands": {"apps", "link", "login", "logout", "token", "whoami", "version"},
+	}
+	if fmt.Sprint(groups) != fmt.Sprint(want) {
+		t.Fatalf("groups = %v\nwant     %v", groups, want)
+	}
+	if strings.Contains(h.out.String(), "kx login ") {
+		t.Fatalf("the examples still start with kx login:\n%s", h.out.String())
 	}
 }
 

@@ -12,11 +12,11 @@ import (
 	"github.com/kubernetix-ai/kx/internal/kxerr"
 )
 
-// Command groups, in the order --help shows them.
+// Command groups, in the order --help shows them: what most people need,
+// then the rest.
 const (
-	groupStart   = "start"
-	groupApps    = "apps"
-	groupAccount = "account"
+	groupStart = "start"
+	groupMore  = "more"
 )
 
 // registry holds every command constructor; each command file adds its
@@ -60,8 +60,7 @@ func newRoot(a *App) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "kx",
 		Short: "kx puts the app in this folder on Kubernetix.",
-		Example: `  kx login                 connect this computer to Kubernetix
-  kx deploy                build this folder and put it live
+		Example: `  kx deploy                build this folder and put it live (logs in first if needed)
   kx status                see what's live
   kx logs --follow         watch your app's output
   kx open                  open your app in the browser`,
@@ -89,8 +88,7 @@ func newRoot(a *App) *cobra.Command {
 
 	root.AddGroup(
 		&cobra.Group{ID: groupStart, Title: "Get started:"},
-		&cobra.Group{ID: groupApps, Title: "Your apps:"},
-		&cobra.Group{ID: groupAccount, Title: "Your account:"},
+		&cobra.Group{ID: groupMore, Title: "More commands:"},
 	)
 	cmds := make([]*cobra.Command, 0, len(registry))
 	for _, newCmd := range registry {
@@ -115,7 +113,7 @@ func newRoot(a *App) *cobra.Command {
 
 // commandOrder is the order --help lists commands in (the order people
 // need them); commands not listed follow alphabetically.
-var commandOrder = []string{"login", "deploy", "link", "status", "logs", "open", "rollback", "apps", "whoami", "token", "logout", "version"}
+var commandOrder = []string{"deploy", "github", "status", "logs", "rollback", "open", "apps", "link", "login", "logout", "token", "whoami", "version"}
 
 func commandRank(name string) string {
 	for i, n := range commandOrder {
@@ -140,18 +138,17 @@ func quickstart(a *App, cmd *cobra.Command) error {
 		return p.PrintJSON(struct {
 			Steps    []string `json:"steps"`
 			LoggedIn []string `json:"logged_in"`
-		}{[]string{"kx login", "kx deploy"}, append([]string{}, orgs...)})
+		}{[]string{"kx deploy"}, append([]string{}, orgs...)})
 	}
-	login := "connect this computer to your Kubernetix account"
+	deploy := "log in, then build this folder and put it live"
 	if len(orgs) > 0 {
-		login = "✓ logged in to " + joinAnd(orgs)
+		deploy = "build this folder and put it live (✓ logged in to " + joinAnd(orgs) + ")"
 	}
 	p.Result(strings.Join([]string{
-		"kx puts the app in this folder on Kubernetix, in three steps:",
+		"kx puts the app in this folder on Kubernetix, in two steps:",
 		"",
 		"  1. Install kx    ✓ done",
-		"  2. kx login      " + login,
-		"  3. kx deploy     build this folder and put it live",
+		"  2. kx deploy     " + deploy,
 		"",
 		"Then: kx status, kx logs, kx open. Every command: kx --help",
 	}, "\n"))

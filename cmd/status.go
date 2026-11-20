@@ -18,7 +18,7 @@ func newStatusCmd(a *App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "status",
 		Short:   "See what's live: version, URL, replicas, deploys left today",
-		GroupID: groupApps,
+		GroupID: groupStart,
 		Example: `  kx status
   kx status --app shop-api
   kx status --json`,

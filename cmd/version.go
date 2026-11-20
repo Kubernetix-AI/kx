@@ -12,7 +12,7 @@ func newVersionCmd(a *App) *cobra.Command {
 	return &cobra.Command{
 		Use:     "version",
 		Short:   "Show which kx this is",
-		GroupID: groupAccount,
+		GroupID: groupMore,
 		Example: `  kx version
   kx version --json`,
 		Args: usageArgs(0, 0, ""),

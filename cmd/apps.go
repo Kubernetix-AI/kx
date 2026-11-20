@@ -36,7 +36,7 @@ func newAppsCmd(a *App) *cobra.Command {
 	apps := &cobra.Command{
 		Use:     "apps",
 		Short:   "List and inspect apps",
-		GroupID: groupApps,
+		GroupID: groupMore,
 		Example: "  kx apps                list your apps\n  kx apps get shop-api   show one app",
 		Args:    usageArgs(0, 0, ""),
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -18,7 +18,7 @@ func newTokenCmd(a *App) *cobra.Command {
 	tok := &cobra.Command{
 		Use:     "token",
 		Short:   "List and revoke API tokens",
-		GroupID: groupAccount,
+		GroupID: groupMore,
 		Long: `List and revoke API tokens. Tokens are created in the dashboard, by people
 signed in: Settings → API tokens, or for CI, the app's Deploy tab.`,
 		Example: `  kx token list

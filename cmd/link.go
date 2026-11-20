@@ -25,7 +25,7 @@ func newLinkCmd(a *App) *cobra.Command {
 		Use:     "link [app]",
 		Aliases: []string{"init"},
 		Short:   "Choose the app this folder deploys to",
-		GroupID: groupStart,
+		GroupID: groupMore,
 		Long: `Save the app this folder deploys to in .kx.json, so later commands need no --app.
 .kx.json holds no secret, so you can commit it for your team and CI.`,
 		Example: `  kx link              pick an app, or a new one named after the folder

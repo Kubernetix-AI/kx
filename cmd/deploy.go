@@ -46,9 +46,10 @@ func newDeployCmd(a *App) *cobra.Command {
 		GroupID: groupStart,
 		Long: `Build this folder's Dockerfile for linux/amd64, push the image, deploy it and wait
 until it's live. The URL comes last, alone on standard output, so URL=$(kx deploy) works.
-The first run asks which app the folder deploys to and saves it in .kx.json.`,
+The first run logs in if needed and saves the app the folder deploys to in .kx.json,
+asking which one only when there's a choice.`,
 		Example: `  kx deploy                          build, push, deploy, wait, print the URL
-  kx deploy --app web                deploy this folder to another app
+  kx deploy --app web                deploy this folder to another app (or create it)
   kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:...   skip the build
   kx deploy --build ./api --dockerfile ./api/Dockerfile.prod
   kx deploy --no-wait                start the deploy and return`,

@@ -28,9 +28,10 @@ func newLoginCmd(a *App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "login",
 		Short:   "Connect this computer to Kubernetix",
-		GroupID: groupStart,
+		GroupID: groupMore,
 		Long: `Log in by creating a token for this computer in your browser and pasting it here.
-Logging in to another organization adds it beside the first.`,
+Logging in to another organization adds it beside the first. kx deploy and the
+other commands log in this way by themselves when there's no login on a terminal.`,
 		Example: `  kx login                          open the dashboard, then paste the token
   kx login --org acme-labs          log in to another organization
   kx login --expires 1d             make a token that lasts one day
@@ -249,7 +250,7 @@ func newLogoutCmd(a *App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "logout",
 		Short:   "Revoke this computer's token and forget it",
-		GroupID: groupAccount,
+		GroupID: groupMore,
 		Long: `Revoke the saved token on Kubernetix, then delete it from this computer.
 
 Revoking a token also revokes any tokens that were made with it. If there
@@ -543,7 +544,7 @@ func newWhoamiCmd(a *App) *cobra.Command {
 	return &cobra.Command{
 		Use:     "whoami",
 		Short:   "Show where this computer is logged in",
-		GroupID: groupAccount,
+		GroupID: groupMore,
 		Example: `  kx whoami
   kx whoami --json`,
 		Args: usageArgs(0, 0, ""),
