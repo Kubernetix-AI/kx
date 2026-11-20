@@ -240,9 +240,7 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 	if app != nil {
 		d.appName = app.Name
 	}
-	if err := d.linkNamedApp(app, org); err != nil {
-		return nil, err
-	}
+	d.linkNamedApp(app, org)
 	key := s.CI.IdempotencyKey(d.appName)
 	if key == "" {
 		if key, err = uuid.V4(); err != nil {
@@ -428,22 +426,23 @@ func (d *deployRun) offerNewApp(ctx context.Context, notFound error) (*api.App, 
 // checkout is thrown away), not for --image, which names no project
 // folder, and not when --build or --dockerfile builds something other
 // than the folder's own Dockerfile, which a plain kx deploy would build
-// next time. A new app's ID is added once it exists (rememberAppID).
-func (d *deployRun) linkNamedApp(app *api.App, org string) error {
+// next time. A new app's ID is added once it exists (rememberAppID). Not
+// being able to save it is only a warning: nobody asked for the file.
+func (d *deployRun) linkNamedApp(app *api.App, org string) {
 	s := d.s
 	if s.Cfg.AppSource != config.SourceFlag || s.Cfg.Project != nil || s.CI.IsCI || d.o.image != "" || !d.ownBuild() {
-		return nil
+		return
 	}
 	proj := config.Project{App: d.appName, Org: org}
 	if app != nil {
 		proj.AppID = app.ID
 	}
 	if _, err := config.SaveProject(s.Cfg.Dir, proj); err != nil {
-		return fmt.Errorf("saving .kx.json: %w", err)
+		s.P.Warn("kx couldn't save %s in .kx.json: %s.", d.appName, fileErrReason(err))
+		return
 	}
 	s.P.Info("Saved in .kx.json. Next time, just run kx deploy.")
 	s.P.Info("")
-	return nil
 }
 
 // linkedToNewApp reports whether the app comes from a .kx.json that kx

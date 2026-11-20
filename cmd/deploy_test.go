@@ -1496,3 +1496,22 @@ func TestDeploy_FirstRunWithBuildFolder_DoesNotSayNextTime(t *testing.T) {
 		t.Fatalf(".kx.json = %q", h.kxJSON())
 	}
 }
+
+// .kx.json from --app is a convenience nobody asked for: a folder kx
+// can't write to still deploys, with a warning.
+func TestDeploy_AppFlag_KxJSONNotWritable_Warns(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions and a user that isn't root")
+	}
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+	if err := os.Chmod(h.dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(h.dir, 0o755) })
+	h.expect(h.run("deploy", "--app", "shop-api"), 0)
+	if !strings.HasPrefix(h.err.String(), "! kx couldn't save shop-api in .kx.json: permission denied.\n✓ Checked ") || len(h.api.deployPosts) != 1 {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+}
