@@ -347,7 +347,8 @@ func TestDeploy_AutoLogin_TokenForAnotherOrg_Stops(t *testing.T) {
 	h.expect(h.run("deploy"), 3)
 	want := "! This token is for acme-labs, not acme-corp, so kx saved it for acme-labs.\n" +
 		"Logged in to acme-labs as sam@acme.dev. This token can deploy every app in acme-labs and never expires.\n\n" +
-		"The token you pasted is for acme-labs, but this command is for acme-corp.\nRun: kx login --org acme-corp\n"
+		"The token you pasted is for acme-labs, but kx was going to use acme-corp, where this computer was last logged in.\n" +
+		"Run kx deploy again to use acme-labs, or log in to acme-corp: kx login --org acme-corp\n"
 	if !strings.HasSuffix(h.err.String(), want) {
 		t.Fatalf("stderr:\n%s", h.err.String())
 	}
@@ -356,6 +357,15 @@ func TestDeploy_AutoLogin_TokenForAnotherOrg_Stops(t *testing.T) {
 	}
 	if h.user().Orgs["acme-labs"].Token != tokLabs {
 		t.Fatal("the pasted token wasn't saved")
+	}
+
+	// The same from another command names that command.
+	h = newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &ended)
+	h.tty, h.password = true, tokLabs
+	h.expect(h.run("apps", "list"), 3)
+	if !strings.HasSuffix(h.err.String(), "Run kx apps list again to use acme-labs, or log in to acme-corp: kx login --org acme-corp\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
 	}
 
 	// A folder linked to acme-labs, and a token for acme-corp.

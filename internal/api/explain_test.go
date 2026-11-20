@@ -77,6 +77,8 @@ func explainCases() []explainCase {
 		{"KX_TOKEN invalid (API)", apiErr(401, "invalid_token", envCtx), Problem{"invalid_token", "Kubernetix doesn't recognise the token in the KX_TOKEN secret.", "Create a new deploy token on the app's Deploy tab and replace the KX_TOKEN secret.", 3}},
 		{"pasted token invalid (API)", apiErr(401, "invalid_token", pasteCtx), Problem{"invalid_token", "Kubernetix doesn't recognise that token.", "Create a new token and paste it: kx login", 3}},
 		{"unauthenticated (API)", apiErr(401, "not_authenticated", loginCtx), Problem{"invalid_token", "Kubernetix doesn't recognise the token this computer uses for acme-corp.", "Run: kx login --org acme-corp", 3}},
+		{"automatic login for another org than the last login's", &kxerr.LoggedInElsewhere{Org: "acme-corp", TokenOrg: "acme-labs", LastLogin: true, Command: "kx status"},
+			Problem{"org_not_logged_in", "The token you pasted is for acme-labs, but kx was going to use acme-corp, where this computer was last logged in.", "Run kx status again to use acme-labs, or log in to acme-corp: kx login --org acme-corp", 3}},
 		{"automatic login for another org", &kxerr.LoggedInElsewhere{Org: "acme-corp", TokenOrg: "acme-labs"}, Problem{"org_not_logged_in", "The token you pasted is for acme-labs, but this command is for acme-corp.", "Run: kx login --org acme-corp", 3}},
 		{"401 without a reason", &Error{Status: 401, Method: "GET", Path: "/whoami", Ctx: loginCtx}, Problem{"token_not_accepted", "Kubernetix didn't accept the token this computer uses for acme-corp.", "If it worked before, Kubernetix may be being updated: try again in a few minutes.", 3}},
 		{"generic 401 for KX_TOKEN", &Error{Status: 401, Code: "invalid_token", Message: "Invalid or expired token", Ctx: envCtx}, Problem{"token_not_accepted", "Kubernetix didn't accept the token in the KX_TOKEN secret.", "If it worked before, Kubernetix may be being updated: try again in a few minutes.", 3}},
@@ -621,6 +623,21 @@ func TestExplain_DeployFailed_PrefersPlatformReasonWhenClassified(t *testing.T) 
 	got = Explain(&kxerr.DeployFailed{App: "my-shop", Version: 3, Code: "not_ready", NotStarting: seen})
 	if !strings.Contains(got.What, "didn't answer health checks at port 8080") {
 		t.Fatalf("Explain() = %+v", got)
+	}
+
+	// not_ready only says the version never got ready: what kx saw says
+	// more, when it saw something; otherwise the platform's message.
+	const notReady = "Version 3 didn't become ready within 5 minutes. Check the deployment logs for errors."
+	got = Explain(&kxerr.DeployFailed{App: "my-shop", Version: 3, ServingVersion: 2, Code: "not_ready", Reason: notReady, NotStarting: seen})
+	want := Problem{"deploy_failed", "my-shop v3 didn't go live: its container kept crashing or didn't answer health checks at port 8080. Version 2 is still serving.",
+		"Make your app start and answer health checks at port 8080 (the log lines above may say why it didn't), then run kx deploy again.", ExitDeploy}
+	if got != want {
+		t.Fatalf("Explain() =\n  %+v\nwant\n  %+v", got, want)
+	}
+	got = Explain(&kxerr.DeployFailed{App: "my-shop", Version: 3, Code: "not_ready", Reason: notReady})
+	want = Problem{"deploy_failed", "my-shop v3 didn't go live: " + notReady, "See why: kx logs --deployment v3", ExitDeploy}
+	if got != want {
+		t.Fatalf("Explain() =\n  %+v\nwant\n  %+v", got, want)
 	}
 }
 

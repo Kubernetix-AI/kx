@@ -124,6 +124,12 @@ func Explain(err error) Problem {
 			what = "This folder deploys to " + orgNot.Org
 		}
 		return Problem{"org_not_logged_in", what + ", but this computer is only logged in to " + joinAnd(orgNot.LoggedIn) + ".", "Run: kx login --org " + orgNot.Org, ExitAuth}
+	case errors.As(err, &elsewhere) && elsewhere.LastLogin:
+		// The new login is now the last one, so running the command again
+		// uses it.
+		return Problem{"org_not_logged_in",
+			"The token you pasted is for " + elsewhere.TokenOrg + ", but kx was going to use " + elsewhere.Org + ", where this computer was last logged in.",
+			"Run " + elsewhere.Command + " again to use " + elsewhere.TokenOrg + ", or log in to " + elsewhere.Org + ": kx login --org " + elsewhere.Org, ExitAuth}
 	case errors.As(err, &elsewhere):
 		return Problem{"org_not_logged_in", "The token you pasted is for " + elsewhere.TokenOrg + ", but this command is for " + elsewhere.Org + ".", "Run: kx login --org " + elsewhere.Org, ExitAuth}
 	case errors.Is(err, kxerr.ErrTokenCreateMoved):
@@ -638,10 +644,11 @@ func deployFailed(e *kxerr.DeployFailed) Problem {
 		reason = "your container is crashing on start"
 	}
 	fix := fmt.Sprintf("See why: kx logs --deployment v%d", e.Version)
-	if ns := e.NotStarting; ns != nil && (e.Code == "" || e.Reason == "") {
+	if ns := e.NotStarting; ns != nil && (e.Code == "" || e.Code == "not_ready" || e.Reason == "") {
 		// What kx saw is more specific than the platform's message for a
-		// version that never got ready, unless the platform classified the
-		// failure: then its message says what went wrong.
+		// version that never got ready, unless the platform named a
+		// specific cause: then its message says what went wrong. not_ready
+		// only says the version never got ready.
 		reason, fix = cause(ns, past), failedFix(ns)
 	}
 	what := fmt.Sprintf("%s v%d didn't go live: %s", e.App, e.Version, sentence(clean(reason, maxMessageLen)))

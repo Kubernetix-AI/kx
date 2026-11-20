@@ -27,6 +27,7 @@ type Session struct {
 
 	flags   config.Flags // what Cfg was resolved from, to resolve it again after a login
 	command string       // the command's name under kx, like "deploy" or "token"
+	path    string       // the whole command, like "kx apps list"
 
 	client *api.Client
 	who    *api.WhoAmI
@@ -40,7 +41,7 @@ func (a *App) session(cmd *cobra.Command, appFlag string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Session{App: a, P: a.printer(), Cfg: cfg, CI: cfg.CI, flags: flags, command: topCommand(cmd)}, nil
+	return &Session{App: a, P: a.printer(), Cfg: cfg, CI: cfg.CI, flags: flags, command: topCommand(cmd), path: cmd.CommandPath()}, nil
 }
 
 // topCommand is the name of cmd's command right under kx: "token" for
@@ -132,7 +133,7 @@ func (s *Session) canAutoLogin() bool {
 // when its organization was only the last one this computer logged in to.
 func (s *Session) autoLogin(ctx context.Context) error {
 	s.App.autoLoggedIn = true
-	org := s.askedOrg()
+	org, lastLogin := s.askedOrg(), s.Cfg.OrgSource == config.SourceConfig
 	if !config.ValidOrgName(org) {
 		org = ""
 	}
@@ -141,7 +142,7 @@ func (s *Session) autoLogin(ctx context.Context) error {
 		return err
 	}
 	if org != "" && saved != org {
-		return &kxerr.LoggedInElsewhere{Org: org, TokenOrg: saved}
+		return &kxerr.LoggedInElsewhere{Org: org, TokenOrg: saved, LastLogin: lastLogin, Command: s.path}
 	}
 	cfg, err := config.Resolve(s.flags, s.App.Getenv)
 	if err != nil {

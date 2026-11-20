@@ -74,8 +74,14 @@ type OrgNotLoggedIn struct {
 func (e *OrgNotLoggedIn) Error() string { return "not logged in to " + e.Org }
 
 // LoggedInElsewhere means a command logged in by itself for Org, but the
-// token pasted was for TokenOrg (and was saved for it).
-type LoggedInElsewhere struct{ Org, TokenOrg string }
+// token pasted was for TokenOrg (and was saved for it). LastLogin means
+// Org came only from this computer's last login, not from the folder, a
+// flag or KX_ORG; Command is then the command to run again ("kx deploy").
+type LoggedInElsewhere struct {
+	Org, TokenOrg string
+	LastLogin     bool
+	Command       string
+}
 
 func (e *LoggedInElsewhere) Error() string {
 	return "logged in to " + e.TokenOrg + ", not " + e.Org
