@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/kubernetix-ai/kx/internal/config"
+	imageregistry "github.com/kubernetix-ai/kx/internal/registry"
 )
 
 // gitlabTagRun makes the harness a GitLab pipeline for the tag tag.
@@ -78,7 +79,7 @@ func TestDeploy_VersionTagHoldingAnotherImage(t *testing.T) {
 	h := newHarness(t)
 	gitlabTagRun(h, "v0.0.11")
 	h.dockerfile("FROM scratch\n")
-	h.registry.digests["registry.kubernetix.ai/acme-corp/shop-api:0.0.11"] = "sha256:" + strings.Repeat("ee", 32)
+	h.registry.images["registry.kubernetix.ai/acme-corp/shop-api:0.0.11"] = imageregistry.Image{Digest: "sha256:" + strings.Repeat("ee", 32)}
 	h.expect(h.run("deploy"), 7)
 	lines := strings.Split(strings.TrimRight(h.err.String(), "\n"), "\n")
 	got := strings.Join(lines[len(lines)-2:], "\n")
@@ -111,7 +112,7 @@ func TestDeploy_TagFlag(t *testing.T) {
 	}
 
 	// --tag that holds another image: the fix talks about --tag.
-	h.registry.digests["registry.kubernetix.ai/acme-corp/shop-api:stable"] = "sha256:" + strings.Repeat("ee", 32)
+	h.registry.images["registry.kubernetix.ai/acme-corp/shop-api:stable"] = imageregistry.Image{Digest: "sha256:" + strings.Repeat("ee", 32)}
 	h.expect(h.run("deploy", "--tag", "stable"), 7)
 	if !strings.Contains(h.err.String(), "Choose another --tag, or deploy what stable holds: kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:"+strings.Repeat("ee", 32)) {
 		t.Fatalf("stderr:\n%s", h.err.String())
@@ -257,8 +258,9 @@ func TestDeploy_TagAndRepositoryFlagErrors(t *testing.T) {
 		{[]string{"deploy", "--tag", "bad tag"}, `"bad tag" isn't an image tag:`, "Run: kx deploy --tag 1.4.0"},
 		{[]string{"deploy", "--tag", "-v"}, `"-v" isn't an image tag:`, "Run: kx deploy --tag 1.4.0"},
 		{[]string{"deploy", "--tag", strings.Repeat("a", 129)}, "isn't an image tag:", "Run: kx deploy --tag 1.4.0"},
-		{[]string{"deploy", "--image", image, "--tag", "1.4.0"}, "--image deploys an image that's already pushed, so it can't be used with --tag or --repository.", "Run: kx deploy --image <image>"},
-		{[]string{"deploy", "--image", image, "--repository", "shop-frontend"}, "--image deploys an image that's already pushed, so it can't be used with --tag or --repository.", "Run: kx deploy --image <image>"},
+		{[]string{"deploy", "--image", image, "--tag", "1.4.0"}, "--image deploys an image that's already pushed, so it can't be used with --tag, --repository or --rebuild.", "Run: kx deploy --image <image>"},
+		{[]string{"deploy", "--image", image, "--repository", "shop-frontend"}, "--image deploys an image that's already pushed, so it can't be used with --tag, --repository or --rebuild.", "Run: kx deploy --image <image>"},
+		{[]string{"deploy", "--image", image, "--rebuild"}, "--image deploys an image that's already pushed, so it can't be used with --tag, --repository or --rebuild.", "Run: kx deploy --image <image>"},
 		{[]string{"deploy", "--repository", "Shop Frontend"}, `"Shop Frontend" isn't a repository name:`, "Run: kx deploy --repository shop-frontend"},
 		{[]string{"deploy", "--repository", "shop--frontend"}, `"shop--frontend" isn't a repository name:`, "Run: kx deploy --repository shop-frontend"},
 		{[]string{"deploy", "--repository", "registry.kubernetix.ai/acme-corp/shop-frontend"}, "--repository takes a repository's name, without the registry's address and organization.", "Run: kx deploy --repository shop-frontend"},

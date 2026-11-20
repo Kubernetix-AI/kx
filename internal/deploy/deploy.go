@@ -25,6 +25,7 @@ import (
 	"github.com/kubernetix-ai/kx/internal/config"
 	"github.com/kubernetix-ai/kx/internal/docker"
 	"github.com/kubernetix-ai/kx/internal/kxerr"
+	"github.com/kubernetix-ai/kx/internal/registry"
 	"github.com/kubernetix-ai/kx/internal/safetext"
 	"github.com/kubernetix-ai/kx/internal/ui"
 )
@@ -50,11 +51,17 @@ type Builder interface {
 	Push(ctx context.Context, ref string, cred api.RegistryCredential, w io.Writer) (string, error)
 }
 
-// Registry tells what a tag in the registry holds; registry.Client
-// implements it. Digest returns "" when there is no such tag.
+// Registry looks tags up and points tags at images the registry already
+// has; registry.Client implements it. Lookup returns an empty Image when
+// there is no such tag.
 type Registry interface {
-	Digest(ctx context.Context, ref string, cred api.RegistryCredential) (string, error)
+	Lookup(ctx context.Context, ref string, cred api.RegistryCredential) (registry.Image, error)
+	Tag(ctx context.Context, repo, digest, tag string, cred api.RegistryCredential) error
 }
+
+// credentialMargin is how much time a registry credential minted before
+// the build must have left to push with afterwards.
+const credentialMargin = 10 * time.Minute
 
 // CredentialStore keeps a registry credential between runs (laptops
 // only); docker.CredentialCache implements it.
@@ -88,6 +95,13 @@ type Options struct {
 	// Repository is the repository in the organization's registry that kx
 	// pushes to; "" means the app's name.
 	Repository string
+	// Provenance, when the build is of a commit as it is (ProvenanceOf),
+	// goes on the image as labels, and lets kx deploy the image it built
+	// the same way for this commit before instead of building again (it
+	// needs Registry). Rebuild builds anyway; it may move the commit's tag,
+	// never a version tag.
+	Provenance *Provenance
+	Rebuild    bool
 
 	// IdempotencyKey is sent with the deployment request and reused on
 	// every retry, so a retry never deploys twice.
@@ -146,6 +160,9 @@ type Result struct {
 	// are empty with Image.
 	Tags       []string
 	VersionTag string
+	// Reused means kx deployed the image it had built for this commit
+	// before, instead of building it again.
+	Reused bool
 	// Replayed means Kubernetix handed back a deployment this CI run had
 	// already started (same idempotency key); Image is that one's.
 	Replayed bool
@@ -194,6 +211,10 @@ func (o *Options) prepare() error {
 		return errors.New("deploy: a version tag needs Registry")
 	case o.Repository != "" && !config.ValidRepository(o.Repository):
 		return fmt.Errorf("deploy: %q is not a repository name", o.Repository)
+	case o.Image != "" && (o.Provenance != nil || o.Rebuild):
+		return errors.New("deploy: Provenance and Rebuild are for images kx builds")
+	case o.Provenance != nil && (!o.Provenance.valid() || o.Registry == nil):
+		return errors.New("deploy: Provenance needs a full commit, relative paths and Registry")
 	}
 	return nil
 }
@@ -257,11 +278,11 @@ func (r *runner) deploy(ctx context.Context) (*Result, error) {
 
 	image := o.Image
 	if image == "" {
-		built, tags, err := r.buildAndPush(ctx, res.App)
+		built, tags, reused, err := r.image(ctx, res.App)
 		if err != nil {
 			return nil, err
 		}
-		image, res.Tags = built, tags
+		image, res.Tags, res.Reused = built, tags, reused
 		if len(tags) > 1 {
 			res.VersionTag = tags[1]
 		}
@@ -512,17 +533,129 @@ func (r *runner) deployLimit(ctx context.Context, err error) error {
 	return limit
 }
 
-// buildAndPush builds the image as name:<tag> and pushes it to the
-// repository (o.Repository, or name) under the commit's tag and then the
-// version tag. It returns the image by digest and the tags it is under.
-func (r *runner) buildAndPush(ctx context.Context, name string) (string, []string, error) {
+// image returns the image to deploy, by digest, the tags it is under and
+// whether it was built before: when the build is of a commit as it is,
+// kx first looks for the image it built the same way for that commit
+// (under the commit's tag, or the version tag) and deploys that. Otherwise
+// it builds the image as name:<tag> and pushes it to the repository
+// (o.Repository, or name) under the commit's tag and the version tag.
+func (r *runner) image(ctx context.Context, name string) (string, []string, bool, error) {
+	o := r.o
+	repoName := name
+	if o.Repository != "" {
+		repoName = o.Repository
+	}
+	var cred *api.RegistryCredential
+	var cached bool
+	if o.Provenance != nil {
+		var err error
+		if cred, cached, err = r.credential(ctx); err != nil {
+			return "", nil, false, err
+		}
+		image, tags, err := r.reuse(ctx, cred.RegistryURL+"/"+repoName, cred)
+		if err != nil || image != "" {
+			return image, tags, image != "", err
+		}
+	}
+	image, tags, err := r.buildAndPush(ctx, name, repoName, cred, cached)
+	return image, tags, false, err
+}
+
+// reuse looks, before building, at what the commit's tag and the version
+// tag hold. A version tag holding another commit's image (or one kx can't
+// tell) stops the deploy at once, since kx never moves it. Then, unless
+// Rebuild, an image built the same way for this commit is deployed again
+// and both tags are made to name it; image is "" when kx has to build.
+func (r *runner) reuse(ctx context.Context, repo string, cred *api.RegistryCredential) (string, []string, error) {
+	o, p := r.o, r.o.Provenance
+	commit, cerr := o.Registry.Lookup(ctx, repo+":"+o.Tag, *cred)
+	if ctx.Err() != nil {
+		return "", nil, ctx.Err()
+	}
+	v := o.VersionTag
+	if v == o.Tag {
+		v = ""
+	}
+	var version registry.Image
+	var verr error
+	if v != "" {
+		version, verr = o.Registry.Lookup(ctx, repo+":"+v, *cred)
+		if ctx.Err() != nil {
+			return "", nil, ctx.Err()
+		}
+		if verr == nil && version.Digest != "" && !p.sameCommit(version.Labels) {
+			return "", nil, &kxerr.TagTaken{Image: repo, Tag: v, Digest: version.Digest, FromFlag: o.TagFromFlag}
+		}
+	}
+	if o.Rebuild {
+		return "", nil, nil
+	}
+	var from, digest string
+	switch {
+	case cerr == nil && commit.Digest != "" && p.sameBuild(commit.Labels):
+		from, digest = o.Tag, commit.Digest
+	case verr == nil && version.Digest != "" && p.sameBuild(version.Labels):
+		from, digest = v, version.Digest
+	}
+	if digest == "" {
+		if cerr != nil {
+			r.p.Info("kx couldn't check whether this commit was built before, so it builds it.")
+		}
+		return "", nil, nil
+	}
+	r.p.Step("Reused", repo+":"+from, 0)
+
+	var tags []string
+	if cerr == nil && commit.Digest == digest {
+		tags = append(tags, o.Tag)
+	} else if err := o.Registry.Tag(ctx, repo, digest, o.Tag, *cred); err == nil {
+		tags = append(tags, o.Tag)
+	} else if ctx.Err() != nil {
+		return "", nil, ctx.Err()
+	} else {
+		r.p.Warn("kx couldn't tag %s:%s as %s too.", repo, from, o.Tag)
+	}
+	if v != "" {
+		held := version.Digest == digest
+		if !held {
+			var err error
+			known := &version
+			if verr != nil {
+				known = nil
+			}
+			held, err = r.version(ctx, repo, v, digest, cred, known, func() error {
+				if err := o.Registry.Tag(ctx, repo, digest, v, *cred); err != nil {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					return &kxerr.PushFailed{Err: err}
+				}
+				r.p.Step("Tagged", repo+":"+v, 0)
+				return nil
+			})
+			if err != nil {
+				return "", nil, err
+			}
+		}
+		if held {
+			tags = append(tags, v)
+		}
+	}
+	return repo + "@" + digest, tags, nil
+}
+
+// buildAndPush builds the image as name:<tag>, with its provenance as
+// labels, and pushes it to repoName under the commit's tag and then the
+// version tag. cred, from before the build, is used if it still has time
+// left. It returns the image by digest and the tags that name it.
+func (r *runner) buildAndPush(ctx context.Context, name, repoName string, cred *api.RegistryCredential, cached bool) (string, []string, error) {
 	o := r.o
 	o.OnBuild()
 	local := name + ":" + o.Tag
 	out := newTail(shownDockerLines)
 	start := o.Now()
 	spin := r.p.Spinner("Building " + local)
-	err := o.Builder.Build(ctx, docker.BuildOptions{Dir: o.Build.Dir, Dockerfile: o.Build.Path, Tag: local}, out)
+	err := o.Builder.Build(ctx, docker.BuildOptions{Dir: o.Build.Dir, Dockerfile: o.Build.Path, Tag: local, Labels: o.Provenance.labels()}, out)
 	spin.Stop()
 	if err != nil {
 		r.showDocker(err, out)
@@ -530,14 +663,11 @@ func (r *runner) buildAndPush(ctx context.Context, name string) (string, []strin
 	}
 	r.p.Step("Built", local, o.Now().Sub(start))
 
-	repoName := name
-	if o.Repository != "" {
-		repoName = o.Repository
-	}
 	start = o.Now()
-	cred, cached, err := r.credential(ctx)
-	if err != nil {
-		return "", nil, err
+	if cred == nil || (!cred.ExpiresAt.IsZero() && cred.ExpiresAt.Before(o.Now().Add(credentialMargin))) {
+		if cred, cached, err = r.credential(ctx); err != nil {
+			return "", nil, err
+		}
 	}
 	repo := cred.RegistryURL + "/" + repoName
 	pushed := o.Tag
@@ -572,62 +702,84 @@ func (r *runner) buildAndPush(ctx context.Context, name string) (string, []strin
 	}
 	tags, shown := []string{pushed}, repo
 	if v := o.VersionTag; v != "" && v != o.Tag {
-		if err := r.pushVersion(ctx, local, repo, v, digest, cred); err != nil {
+		held, err := r.version(ctx, repo, v, digest, cred, nil, func() error {
+			_, out, err := r.push(ctx, local, repo, v, cred)
+			if err != nil && !errors.Is(err, kxerr.ErrTagExists) {
+				r.showDocker(err, out)
+			}
+			return err
+		})
+		if err != nil {
 			return "", nil, err
 		}
-		tags, shown = append(tags, v), repo+":"+v
+		if held {
+			tags, shown = append(tags, v), repo+":"+v
+		}
 	}
 	r.p.Step("Pushed", shown, o.Now().Sub(start))
 	return repo + "@" + digest, tags, nil
 }
 
-// pushVersion pushes the image kx just pushed as digest under the version
-// tag too, after looking the tag up: when it already holds this image
-// there's nothing to do, and when it holds another one kx stops, since it
-// never moves such a tag. Without an answer kx doesn't push it either.
-// After the push kx looks again: the registry's tags can change, and when
-// two runs push the same new tag at once, the one whose image the tag ends
-// up holding is the one that deploys.
-func (r *runner) pushVersion(ctx context.Context, local, repo, tag, digest string, cred *api.RegistryCredential) error {
+// version makes the version tag tag name the image digest that kx
+// deploys. known is what the tag held at the last look, if kx just looked;
+// otherwise it looks now. A tag already naming digest is fine. A free tag
+// is placed (a push, or a tag in the registry), then looked at again: the
+// registry's tags can change, and when two runs place the same new tag at
+// once, the image the tag ends up naming is the one that counts. A tag
+// naming another build of this commit is left alone (held is false); one
+// naming another commit's image, or an image kx can't tell, stops the
+// deploy, since kx never moves it. Without an answer kx places nothing.
+func (r *runner) version(ctx context.Context, repo, tag, digest string, cred *api.RegistryCredential, known *registry.Image, place func() error) (held bool, err error) {
+	o := r.o
 	ref := repo + ":" + tag
-	taken := func(held string) error {
-		return &kxerr.TagTaken{Image: repo, Tag: tag, Digest: held, FromFlag: r.o.TagFromFlag}
+	taken := func(other string) error {
+		return &kxerr.TagTaken{Image: repo, Tag: tag, Digest: other, FromFlag: o.TagFromFlag}
 	}
-	held, err := r.o.Registry.Digest(ctx, ref, *cred)
+	var cur registry.Image
+	if known != nil {
+		cur = *known
+	} else {
+		cur, err = o.Registry.Lookup(ctx, ref, *cred)
+		switch {
+		case ctx.Err() != nil:
+			return false, ctx.Err()
+		case errors.Is(err, context.Canceled):
+			return false, err
+		case err != nil:
+			return false, &kxerr.TagCheckFailed{Image: repo, Tag: tag, Err: err}
+		}
+	}
 	switch {
-	case ctx.Err() != nil:
-		return ctx.Err()
-	case errors.Is(err, context.Canceled):
-		return err
-	case err != nil:
-		return &kxerr.TagCheckFailed{Image: repo, Tag: tag, Err: err}
-	case held == digest:
+	case cur.Digest == digest:
 		r.p.Info("%s already holds this image.", ref)
-		return nil
-	case held != "":
-		return taken(held)
+		return true, nil
+	case cur.Digest != "" && o.Provenance.sameCommit(cur.Labels):
+		r.p.Info("%s holds another build of this commit, so kx leaves it.", ref)
+		return false, nil
+	case cur.Digest != "":
+		return false, taken(cur.Digest)
 	}
-	pushed, out, err := r.push(ctx, local, repo, tag, cred)
-	if errors.Is(err, kxerr.ErrTagExists) {
-		// Immutable tags: the tag appeared after kx looked.
-		return taken("")
+	if err := place(); err != nil {
+		if errors.Is(err, kxerr.ErrTagExists) {
+			// Immutable tags: the tag appeared after kx looked.
+			return false, taken("")
+		}
+		return false, err
 	}
-	if err != nil {
-		r.showDocker(err, out)
-		return err
-	}
-	// The same local image pushes the same manifest, so the tag should
-	// hold the digest kx deploys.
-	held, err = r.o.Registry.Digest(ctx, ref, *cred)
+	after, err := o.Registry.Lookup(ctx, ref, *cred)
 	switch {
 	case ctx.Err() != nil:
-		return ctx.Err()
-	case err == nil && held != "" && held != digest:
-		return taken(held)
-	case err != nil || held != digest || (pushed != "" && pushed != digest):
-		r.p.Warn("kx couldn't confirm that %s holds the image it deploys.", ref)
+		return false, ctx.Err()
+	case err == nil && after.Digest == digest:
+		return true, nil
+	case err == nil && after.Digest != "" && o.Provenance.sameCommit(after.Labels):
+		r.p.Info("%s holds another build of this commit, so kx leaves it.", ref)
+		return false, nil
+	case err == nil && after.Digest != "":
+		return false, taken(after.Digest)
 	}
-	return nil
+	r.p.Warn("kx couldn't confirm that %s holds the image it deploys.", ref)
+	return true, nil
 }
 
 // push gives the local image the registry name repo:tag and pushes it. It

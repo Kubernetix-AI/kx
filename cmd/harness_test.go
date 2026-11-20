@@ -20,6 +20,7 @@ import (
 	"github.com/kubernetix-ai/kx/internal/api"
 	"github.com/kubernetix-ai/kx/internal/config"
 	"github.com/kubernetix-ai/kx/internal/docker"
+	imageregistry "github.com/kubernetix-ai/kx/internal/registry"
 	"github.com/kubernetix-ai/kx/internal/ui"
 )
 
@@ -323,7 +324,7 @@ func newHarness(t *testing.T) *harness {
 		canOpen:   true,
 		docker:    &fakeDocker{},
 	}
-	h.registry = &fakeRegistry{d: h.docker, digests: map[string]string{}}
+	h.registry = &fakeRegistry{d: h.docker, images: map[string]imageregistry.Image{}}
 	if err := os.MkdirAll(filepath.Join(h.dir, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -625,28 +626,52 @@ func (d *fakeDocker) Push(_ context.Context, ref string, cred api.RegistryCreden
 	return testDigest, nil
 }
 
-// fakeRegistry stands in for the registry's tag lookups in command tests;
-// it records each lookup among the Docker calls.
+// fakeRegistry stands in for the registry in command tests; it records
+// each lookup and tag among the Docker calls. A tag it doesn't know holds
+// what the fake Docker pushed under it, with the last build's labels.
 type fakeRegistry struct {
-	d       *fakeDocker
-	mu      sync.Mutex
-	digests map[string]string // image reference → digest; missing means no such tag
-	err     error
+	d      *fakeDocker
+	mu     sync.Mutex
+	images map[string]imageregistry.Image // image reference → what it holds
+	err    error
 }
 
-func (r *fakeRegistry) Digest(_ context.Context, ref string, _ api.RegistryCredential) (string, error) {
+func (r *fakeRegistry) Lookup(_ context.Context, ref string, _ api.RegistryCredential) (imageregistry.Image, error) {
 	r.d.record("lookup " + ref)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if d, ok := r.digests[ref]; ok || r.err != nil {
-		return d, r.err
+	if img, ok := r.images[ref]; ok || r.err != nil {
+		return img, r.err
 	}
 	for _, c := range r.d.got() {
 		if c == "push "+ref {
-			return testDigest, nil // what the fake Docker pushed
+			return imageregistry.Image{Digest: testDigest, Labels: r.d.lastLabels()}, nil
 		}
 	}
-	return "", nil
+	return imageregistry.Image{}, nil
+}
+
+func (r *fakeRegistry) Tag(_ context.Context, repo, digest, tag string, _ api.RegistryCredential) error {
+	r.d.record("retag " + repo + ":" + tag + " " + digest)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	img := imageregistry.Image{Digest: digest}
+	for _, known := range r.images {
+		if known.Digest == digest {
+			img = known
+		}
+	}
+	r.images[repo+":"+tag] = img
+	return nil
+}
+
+func (d *fakeDocker) lastLabels() map[string]string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.builds) == 0 {
+		return nil
+	}
+	return d.builds[len(d.builds)-1].Labels
 }
 
 func (d *fakeDocker) got() []string {

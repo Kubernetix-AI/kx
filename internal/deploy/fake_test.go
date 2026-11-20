@@ -369,6 +369,7 @@ type fakeBuilder struct {
 	creds    []api.RegistryCredential
 	onPush   func()
 	tagErr   error
+	labels   map[string]string // the labels of the last build
 }
 
 func (b *fakeBuilder) record(s string) {
@@ -381,6 +382,9 @@ func (b *fakeBuilder) Check(context.Context) error { b.record("check"); return b
 
 func (b *fakeBuilder) Build(_ context.Context, o docker.BuildOptions, w io.Writer) error {
 	b.record("build " + o.Tag + " " + o.Dir + " " + o.Dockerfile)
+	b.mu.Lock()
+	b.labels = o.Labels
+	b.mu.Unlock()
 	_, _ = io.WriteString(w, b.buildOut)
 	return b.buildErr
 }

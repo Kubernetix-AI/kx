@@ -19,25 +19,35 @@ var versionRe = regexp.MustCompile(`^v?((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?
 // maxTagLen is the longest image tag a registry takes.
 const maxTagLen = 128
 
-// BuildTags returns the tags kx pushes a build under: commit, the tag
-// ImageTag gives, and version, the highest version among the git tags of
-// the commit being built (and the tag the CI run is for), without its v:
-// "0.0.11" for v0.0.11. version is "" when the commit has no version tag,
-// when the folder isn't a git repository, and outside CI when it has
+// Tags are the tags kx pushes a build under, and the commit it is of.
+type Tags struct {
+	// Commit is the tag ImageTag gives.
+	Commit string
+	// Version is the highest version among the git tags of the commit
+	// being built (and the tag the CI run is for), without its v: "0.0.11"
+	// for v0.0.11; "" when there is none.
+	Version string
+	// Revision is the full commit when the build is of it as it is, else
+	// "" (and Version is "" too).
+	Revision string
+}
+
+// BuildTags returns the tags of a build of dir. Version and Revision are
+// "" when the folder isn't a git repository, and outside CI when it has
 // uncommitted changes, since the image then isn't the tagged commit's
 // code. In CI the CI system's commit is taken as it is, as for the
 // commit's own tag.
-func BuildTags(ctx context.Context, env ci.Env, dir string, now time.Time) (commit, version string) {
+func BuildTags(ctx context.Context, env ci.Env, dir string, now time.Time) Tags {
 	commit, sha := imageTag(ctx, env, dir, now)
 	if sha == "" {
-		return commit, ""
+		return Tags{Commit: commit}
 	}
 	var tags []string
 	if env.Tag != "" {
 		tags = append(tags, env.Tag)
 	}
 	tags = append(tags, gitTagsAt(ctx, dir, sha)...)
-	return commit, highestVersion(tags)
+	return Tags{Commit: commit, Version: highestVersion(tags), Revision: sha}
 }
 
 // gitTagsAt lists the tags of commit sha in dir's repository, annotated or

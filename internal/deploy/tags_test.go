@@ -11,52 +11,91 @@ import (
 	"github.com/kubernetix-ai/kx/internal/api"
 	"github.com/kubernetix-ai/kx/internal/docker"
 	"github.com/kubernetix-ai/kx/internal/kxerr"
+	"github.com/kubernetix-ai/kx/internal/registry"
 )
 
-// fakeRegistry answers tag lookups and records them in the builder's call
-// list, so tests see the order of lookups and pushes. A lookup takes the
-// next answer in seq for the reference, then digests, then what the
-// builder pushed under it, as a registry would.
+// fakeRegistry answers tag lookups and records them, and the tags it
+// adds, in the builder's call list, so tests see the order of lookups,
+// tags and pushes. A lookup takes the next answer in seq for the reference
+// (a digest, or "err"), then images, then digests (unlabelled), then what
+// the builder pushed under it (with the build's labels), as a registry
+// would.
 type fakeRegistry struct {
 	mu      sync.Mutex
 	b       *fakeBuilder
-	digests map[string]string   // image reference → digest
-	seq     map[string][]string // image reference → successive answers ("err" fails)
-	err     error
+	images  map[string]registry.Image // image reference → what it holds
+	digests map[string]string         // image reference → digest of an unlabelled image
+	seq     map[string][]string       // image reference → successive digests ("err" fails)
+	err     error                     // every lookup fails
+	tagErr  error                     // every Tag fails
 	creds   []api.RegistryCredential
 }
 
-func (r *fakeRegistry) Digest(_ context.Context, ref string, cred api.RegistryCredential) (string, error) {
+func (r *fakeRegistry) Lookup(_ context.Context, ref string, cred api.RegistryCredential) (registry.Image, error) {
 	r.b.record("lookup " + ref)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.creds = append(r.creds, cred)
 	if r.err != nil {
-		return "", r.err
+		return registry.Image{}, r.err
 	}
 	if next := r.seq[ref]; len(next) > 0 {
 		r.seq[ref] = next[1:]
 		if next[0] == "err" {
-			return "", errors.New("registry: connection reset by peer")
+			return registry.Image{}, errors.New("registry: connection reset by peer")
 		}
-		return next[0], nil
+		return r.imageOf(next[0]), nil
+	}
+	if img, ok := r.images[ref]; ok {
+		return img, nil
 	}
 	if d, ok := r.digests[ref]; ok {
-		return d, nil
+		return registry.Image{Digest: d}, nil
 	}
 	for _, c := range r.b.got() {
 		if c == "push "+ref {
-			if r.b.digest == "" {
-				return testDigest, nil
-			}
-			return r.b.digest, nil
+			return r.builtImage(), nil
 		}
 	}
-	return "", nil
+	return registry.Image{}, nil
+}
+
+func (r *fakeRegistry) Tag(_ context.Context, repo, digest, tag string, _ api.RegistryCredential) error {
+	r.b.record("retag " + repo + ":" + tag + " " + digest)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.tagErr != nil {
+		return r.tagErr
+	}
+	r.images[repo+":"+tag] = r.imageOf(digest)
+	return nil
+}
+
+// imageOf is the image with digest d that the registry already knows.
+func (r *fakeRegistry) imageOf(d string) registry.Image {
+	for _, img := range r.images {
+		if img.Digest == d {
+			return img
+		}
+	}
+	if built := r.builtImage(); built.Digest == d {
+		return built
+	}
+	return registry.Image{Digest: d}
+}
+
+func (r *fakeRegistry) builtImage() registry.Image {
+	r.b.mu.Lock()
+	defer r.b.mu.Unlock()
+	d := r.b.digest
+	if d == "" {
+		d = testDigest
+	}
+	return registry.Image{Digest: d, Labels: r.b.labels}
 }
 
 func (e *env) withVersion(version string) (Options, *fakeRegistry) {
-	reg := &fakeRegistry{b: e.builder, digests: map[string]string{}, seq: map[string][]string{}}
+	reg := &fakeRegistry{b: e.builder, images: map[string]registry.Image{}, digests: map[string]string{}, seq: map[string][]string{}}
 	o := e.options()
 	o.VersionTag, o.Registry = version, reg
 	return o, reg
@@ -376,7 +415,7 @@ func TestRun_RepositoryWithARefusedCachedCredential(t *testing.T) {
 
 func TestRun_RejectsBadTagOptions(t *testing.T) {
 	e := newEnv(t)
-	reg := &fakeRegistry{b: e.builder}
+	reg := &fakeRegistry{b: e.builder, images: map[string]registry.Image{}}
 	bad := []func(*Options){
 		func(o *Options) { o.VersionTag, o.Registry = "bad tag", reg },
 		func(o *Options) { o.VersionTag = "0.0.11" }, // nothing to look tags up with

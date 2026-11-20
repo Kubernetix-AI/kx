@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -53,7 +54,15 @@ type BuildOptions struct {
 	Dir        string // the build context folder
 	Dockerfile string // the Dockerfile; "" means the Dockerfile in Dir
 	Tag        string // the local image name, e.g. shop-api:3f9c2a1b7d4e
+	// Labels go on the image (docker build --label), such as the commit
+	// it was built from.
+	Labels map[string]string
 }
+
+var (
+	labelKeyRe   = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,126}[a-z0-9])?$`)
+	labelValueRe = regexp.MustCompile(`^[ -~]{0,512}$`)
+)
 
 // Engine runs the docker command found on PATH. The zero value is ready to
 // use; the package-level functions use it.
@@ -111,6 +120,17 @@ func (Engine) Build(ctx context.Context, o BuildOptions, w io.Writer) error {
 	}
 	env := procenv.Environ()
 	args := []string{"build", "--platform", Platform, "--tag", o.Tag}
+	keys := make([]string, 0, len(o.Labels))
+	for k, v := range o.Labels {
+		if !labelKeyRe.MatchString(k) || !labelValueRe.MatchString(v) {
+			return fmt.Errorf("docker: %q is not a label kx sets", k)
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		args = append(args, "--label", k+"="+o.Labels[k])
+	}
 	if needsLoad(ctx, env) {
 		// A docker-container (or other non-docker) buildx builder keeps
 		// the image in its cache unless asked to load it into the engine.

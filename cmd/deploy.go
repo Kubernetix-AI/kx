@@ -34,6 +34,7 @@ type deployOpts struct {
 	dockerfile  string
 	tag         string
 	repository  string
+	rebuild     bool
 	timeout     string
 	environment string
 	noWait      bool
@@ -53,13 +54,15 @@ asking which one only when there's a choice.
 
 The image is pushed under the commit's first 12 characters and, when the commit has a
 version tag such as v1.4.0, under 1.4.0 too. kx never moves a version tag (or --tag) to
-another image, and always deploys the image by digest.`,
+another image, and always deploys the image by digest. A commit it has built before the
+same way is deployed again without building; --rebuild builds it anyway.`,
 		Example: `  kx deploy                          build, push, deploy, wait, print the URL
   kx deploy --app web                deploy this folder to another app (or create it)
   kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:...   skip the build
   kx deploy --build ./api --dockerfile ./api/Dockerfile.prod
   kx deploy --tag 1.4.0              push the image as 1.4.0 too
   kx deploy --repository shop-frontend   push to registry.kubernetix.ai/<org>/shop-frontend
+  kx deploy --rebuild                build this commit again instead of reusing its image
   kx deploy --no-wait                start the deploy and return`,
 		Args: usageArgs(0, 0, ""),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -73,6 +76,7 @@ another image, and always deploys the image by digest.`,
 	f.StringVar(&o.dockerfile, "dockerfile", "", "the `Dockerfile` to build with (default: the one in the build folder)")
 	f.StringVar(&o.tag, "tag", "", "also push the image under this `tag` (default: the commit's version tag, if any)")
 	f.StringVar(&o.repository, "repository", "", "the registry `repository` to push to (default: .kx.json's repository, or the app's name)")
+	f.BoolVar(&o.rebuild, "rebuild", false, "build the image even if kx built this commit the same way before")
 	f.BoolVar(&o.noWait, "no-wait", false, "start the deploy and return without waiting for it to go live")
 	f.StringVar(&o.timeout, "timeout", defaultTimeout, "how long to wait for the deploy to go live, like 18m or `1h`")
 	f.BoolVar(&o.github, "github", false, "report to GitHub: commit status, job summary and step outputs (the Action uses this)")
@@ -136,8 +140,8 @@ func runDeploy(ctx context.Context, a *App, cmd *cobra.Command, o deployOpts) er
 		if !imageRefRe.MatchString(o.image) {
 			return fail(&kxerr.Usage{What: fmt.Sprintf("%q isn't an image name.", o.image), Fix: "Run: kx deploy --image registry.kubernetix.ai/<org>/<app>@sha256:<digest>"})
 		}
-		if o.tag != "" || o.repository != "" {
-			return fail(&kxerr.Usage{What: "--image deploys an image that's already pushed, so it can't be used with --tag or --repository.", Fix: "Run: kx deploy --image <image>"})
+		if o.tag != "" || o.repository != "" || o.rebuild {
+			return fail(&kxerr.Usage{What: "--image deploys an image that's already pushed, so it can't be used with --tag, --repository or --rebuild.", Fix: "Run: kx deploy --image <image>"})
 		}
 	}
 	if o.tag != "" && !imageTagRe.MatchString(o.tag) {
@@ -285,6 +289,7 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 	// Local checks first: no API call before kx knows it can build.
 	var df *deploy.Dockerfile
 	var tag, versionTag string
+	var prov *deploy.Provenance
 	if o.image == "" {
 		var err error
 		df, err = deploy.Preflight(ctx, builder, d.path(o.build), d.dockerfilePath())
@@ -299,10 +304,12 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 			return nil, err
 		}
 		// Before the picker writes .kx.json, which would count as a change.
-		tag, versionTag = deploy.BuildTags(ctx, s.CI, df.Dir, a.Now())
+		tags := deploy.BuildTags(ctx, s.CI, df.Dir, a.Now())
+		tag, versionTag = tags.Commit, tags.Version
 		if o.tag != "" {
 			versionTag = o.tag
 		}
+		prov = deploy.ProvenanceOf(ctx, tags.Revision, df)
 	}
 	c, err := s.Client(ctx)
 	if err != nil {
@@ -341,6 +348,7 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 		App: app, NewApp: newApp, Org: org,
 		Image: o.image, Build: df, Tag: tag,
 		VersionTag: versionTag, TagFromFlag: o.tag != "", Registry: a.registry(), Repository: repo,
+		Provenance: prov, Rebuild: o.rebuild,
 		IdempotencyKey: key, NoWait: o.noWait, Timeout: d.timeout,
 		Builder: builder, Now: a.Now, Sleep: a.Sleep,
 		StopCommands: s.CI.Provider == ci.GitHub,
@@ -618,6 +626,7 @@ type deployOutJSON struct {
 	deployJSON
 	Tags       []string `json:"tags"`
 	VersionTag string   `json:"version_tag"`
+	Reused     bool     `json:"reused"` // kx deployed the image it built for this commit before
 }
 
 func (d *deployRun) print(res *deploy.Result) error {
@@ -627,7 +636,7 @@ func (d *deployRun) print(res *deploy.Result) error {
 		if tags == nil {
 			tags = []string{}
 		}
-		return p.PrintJSON(deployOutJSON{deployJSON{res.App, res.AppID, res.Org, res.URL, res.DeploymentID, res.Version, res.Status, res.Image, res.CreatedApp}, tags, res.VersionTag})
+		return p.PrintJSON(deployOutJSON{deployJSON{res.App, res.AppID, res.Org, res.URL, res.DeploymentID, res.Version, res.Status, res.Image, res.CreatedApp}, tags, res.VersionTag, res.Reused})
 	}
 	switch {
 	case res.URL != "":
