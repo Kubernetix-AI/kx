@@ -241,7 +241,8 @@ var genericFolderNames = map[string]bool{
 	"repo": true, "repos": true, "dev": true, "work": true, "workspace": true, "web": true,
 	"site": true, "www": true, "dist": true, "build": true, "desktop": true, "documents": true,
 	"downloads": true, "home": true, "tmp": true, "temp": true, "test": true, "untitled": true,
-	"new-folder": true,
+	"new-folder": true, "html": true, "public": true, "users": true, "source": true, "git": true,
+	"github": true, "go": true,
 }
 
 // genericFolder reports whether dir's name says nothing about the app in

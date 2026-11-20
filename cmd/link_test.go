@@ -92,7 +92,8 @@ func TestDeploy_NoApps_GenericFolderName_AsksForName(t *testing.T) {
 }
 
 func TestDeploy_NoApps_GenericFolderNames(t *testing.T) {
-	for _, folder := range []string{"app", "Code", "Desktop", "New folder", "untitled", "WWW", "tmp"} {
+	for _, folder := range []string{"app", "Code", "Desktop", "New folder", "untitled", "WWW", "tmp",
+		"html", "public", "Users", "source", "git", "GitHub", "go"} {
 		h := newHarness(t)
 		h.loginAs("acme-corp", tokCorp, &dec11)
 		h.api.apps = nil
