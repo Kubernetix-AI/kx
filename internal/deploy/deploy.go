@@ -16,6 +16,7 @@ import (
 	"io"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -104,6 +105,13 @@ type Options struct {
 	// the new version's containers aren't getting ready (GitHub mode makes
 	// them a warning annotation).
 	OnNotLive func(what, fix string)
+
+	// Ask and Confirm put a question to the person before anything is
+	// built: the port a new app listens on when the Dockerfile doesn't
+	// say, and whether to deploy a port below 1024. Leave them nil when
+	// nobody can answer (no terminal, or CI); kx then warns and goes on.
+	Ask     func(ctx context.Context, question, def string) (string, error)
+	Confirm func(ctx context.Context, question string) (bool, error)
 }
 
 // Result is what a deploy did. After a failure Run still returns the
@@ -205,7 +213,10 @@ func (r *runner) deploy(ctx context.Context) (*Result, error) {
 		r.c.Ctx.App = o.NewApp
 	}
 
-	port := r.check(app)
+	port, err := r.check(ctx, app)
+	if err != nil {
+		return nil, err
+	}
 	if app != nil {
 		if err := r.waitForPrevious(ctx, app); err != nil {
 			return nil, err
@@ -305,8 +316,10 @@ func sameDigest(a, b string) (same, known bool) {
 }
 
 // check prints the Checked line and port warnings, and returns the port a
-// new app gets.
-func (r *runner) check(app *api.App) int {
+// new app gets. It asks, when it can, for the port of a new app whose
+// Dockerfile has no EXPOSE line, and whether to deploy a port below 1024;
+// a no to that stops the deploy before anything is built.
+func (r *runner) check(ctx context.Context, app *api.App) (int, error) {
 	o := r.o
 	name := o.NewApp
 	if app != nil {
@@ -316,16 +329,23 @@ func (r *runner) check(app *api.App) int {
 		r.p.Step("Checked", "image "+o.Image, 0)
 		if app == nil {
 			r.p.Warn("kx can't see which port the image listens on, so %s will send traffic to port %d.", name, defaultPort)
-			return defaultPort
+			return defaultPort, nil
 		}
-		return app.Port
+		return app.Port, nil
 	}
 	exposed := o.Build.Port
 	port := exposed
 	if app != nil && app.Port > 0 {
 		port = app.Port
 	}
-	if port == 0 {
+	switch {
+	case port == 0 && app == nil && o.Ask != nil:
+		asked, err := r.askPort(ctx)
+		if err != nil {
+			return 0, err
+		}
+		port = asked
+	case port == 0:
 		port = defaultPort
 		if app == nil {
 			r.p.Warn("Your Dockerfile has no EXPOSE line, so kx assumes your app listens on port %d.", defaultPort)
@@ -338,9 +358,42 @@ func (r *runner) check(app *api.App) int {
 	}
 	if exposed > 0 && exposed < 1024 {
 		r.p.Warn("Your Dockerfile exposes port %d. Apps on Kubernetix don't run as root, so they may not be able to listen on ports below 1024.", exposed)
+		r.p.Note("Make your app listen on %d and change the line to EXPOSE %d.", defaultPort, defaultPort)
+		// An app that is live on that port shows it can listen there.
+		liveThere := app != nil && app.Port == exposed && app.Status == api.StatusReady
+		if o.Confirm != nil && !liveThere {
+			yes, err := o.Confirm(ctx, "Deploy anyway?")
+			if err != nil {
+				return 0, err
+			}
+			if !yes {
+				return 0, &kxerr.Usage{
+					What: fmt.Sprintf("Nothing was deployed, because your app may not be able to listen on port %d.", exposed),
+					Fix:  fmt.Sprintf("Change the line to EXPOSE %d, then run kx deploy again.", defaultPort),
+				}
+			}
+		}
 	}
 	r.p.Step("Checked", fmt.Sprintf("%s, port %d", filepath.Base(o.Build.Path), port), 0)
-	return port
+	return port, nil
+}
+
+// askPort asks which port a new app listens on, until the answer is a
+// port. Input that ends without one stops kx, like Ctrl-C.
+func (r *runner) askPort(ctx context.Context) (int, error) {
+	for {
+		answer, err := r.o.Ask(ctx, "Which port does your app listen on?", strconv.Itoa(defaultPort))
+		if errors.Is(err, ui.ErrNoChoice) {
+			return 0, context.Canceled
+		}
+		if err != nil {
+			return 0, err
+		}
+		if port, err := strconv.Atoi(answer); err == nil && port >= 1 && port <= 65535 {
+			return port, nil
+		}
+		r.p.Info("Type a port number from 1 to 65535.")
+	}
 }
 
 // deploysLeftBefore stops before building when today's deploys are used

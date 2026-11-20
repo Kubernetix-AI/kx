@@ -258,6 +258,8 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 	}
 	if s.CI.IsCI {
 		opts.MintWait = ciMintWait
+	} else if s.P.InTTY && s.P.TTY {
+		opts.Ask, opts.Confirm = s.P.Ask, s.P.Confirm
 	}
 	// Only a login on this computer gets a cache: a KX_TOKEN usually means
 	// CI, including systems kx doesn't recognise, where other jobs may

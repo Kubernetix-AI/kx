@@ -1350,3 +1350,80 @@ func TestDeploy_AppFlagInCI_WritesNoKxJSON(t *testing.T) {
 		t.Fatalf(".kx.json = %q", h.kxJSON())
 	}
 }
+
+func TestDeploy_NoExpose_AsksPortOnce(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.api.apps = nil
+	h.inFolder("my-shop")
+	h.dockerfile("FROM scratch\n")
+	h.tty, h.stdin = true, "3000\n"
+	h.expect(h.run("deploy"), 0)
+	if !strings.Contains(h.err.String(), "Which port does your app listen on? [8080] ✓ Checked   Dockerfile, port 3000\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	if len(h.api.newApps) != 1 || h.api.newApps[0]["port"] != float64(3000) {
+		t.Fatalf("POST /apps = %v", h.api.newApps)
+	}
+	h.stdin = ""
+	h.expect(h.run("deploy"), 0)
+	if strings.Contains(h.err.String(), "Which port") {
+		t.Fatalf("asked again:\n%s", h.err.String())
+	}
+}
+
+func TestDeploy_NoExpose_NoTerminal_KeepsWarning(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.api.apps = nil
+	h.inFolder("my-shop")
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy"), 0)
+	want := "! Your Dockerfile has no EXPOSE line, so kx assumes your app listens on port 8080.\n" +
+		"  Kubernetix checks that it answers on / there; if it listens on another port, add EXPOSE <port> to your Dockerfile.\n"
+	if !strings.Contains(h.err.String(), want) || h.api.newApps[0]["port"] != float64(8080) {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+}
+
+const expose80Lines = "! Your Dockerfile exposes port 80. Apps on Kubernetix don't run as root, so they may not be able to listen on ports below 1024.\n" +
+	"  Make your app listen on 8080 and change the line to EXPOSE 8080.\n"
+
+func TestDeploy_Expose80_AsksAndStopsByDefault(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.dockerfile("FROM nginx\nEXPOSE 80\n")
+	h.tty, h.stdin = true, "\n"
+	h.expect(h.run("deploy"), 2)
+	if !strings.Contains(h.err.String(), expose80Lines+"Deploy anyway? [y/N] Nothing was deployed, because your app may not be able to listen on port 80.\nChange the line to EXPOSE 8080, then run kx deploy again.\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	if len(h.docker.builds) != 0 || len(h.api.deployPosts) != 0 {
+		t.Fatalf("built %d, deployed %d", len(h.docker.builds), len(h.api.deployPosts))
+	}
+}
+
+func TestDeploy_Expose80_Yes_Deploys(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.dockerfile("FROM nginx\nEXPOSE 80\n")
+	h.tty, h.stdin = true, "y\n"
+	h.expect(h.run("deploy"), 0)
+	if len(h.api.deployPosts) != 1 {
+		t.Fatalf("deployed %d", len(h.api.deployPosts))
+	}
+}
+
+func TestDeploy_Expose80_InCI_WarnsAndDeploys(t *testing.T) {
+	h := newHarness(t)
+	h.env["KX_TOKEN"], h.env["CI"] = tokCorp, "true"
+	h.link("shop-api", appShopID, "acme-corp")
+	h.dockerfile("FROM nginx\nEXPOSE 80\n")
+	h.tty, h.stdin = true, "\n"
+	h.expect(h.run("deploy"), 0)
+	if !strings.Contains(h.err.String(), expose80Lines) || strings.Contains(h.err.String(), "Deploy anyway?") || len(h.api.deployPosts) != 1 {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+}
