@@ -345,6 +345,13 @@ func (r *runner) check(ctx context.Context, app *api.App) (int, error) {
 			return 0, err
 		}
 		port = asked
+		if port < 1024 {
+			r.p.Warn("Apps on Kubernetix don't run as root, so they may not be able to listen on ports below 1024.")
+			r.p.Note("Make your app listen on %d.", defaultPort)
+			if err := r.deployAnyway(ctx, port, fmt.Sprintf("Make your app listen on %d, then run kx deploy again.", defaultPort)); err != nil {
+				return 0, err
+			}
+		}
 	case port == 0:
 		port = defaultPort
 		if app == nil {
@@ -361,21 +368,31 @@ func (r *runner) check(ctx context.Context, app *api.App) (int, error) {
 		r.p.Note("Make your app listen on %d and change the line to EXPOSE %d.", defaultPort, defaultPort)
 		// An app that is live on that port shows it can listen there.
 		liveThere := app != nil && app.Port == exposed && app.Status == api.StatusReady
-		if o.Confirm != nil && !liveThere {
-			yes, err := o.Confirm(ctx, "Deploy anyway?")
-			if err != nil {
+		if !liveThere {
+			if err := r.deployAnyway(ctx, exposed, fmt.Sprintf("Change the line to EXPOSE %d, then run kx deploy again.", defaultPort)); err != nil {
 				return 0, err
-			}
-			if !yes {
-				return 0, &kxerr.Usage{
-					What: fmt.Sprintf("Nothing was deployed, because your app may not be able to listen on port %d.", exposed),
-					Fix:  fmt.Sprintf("Change the line to EXPOSE %d, then run kx deploy again.", defaultPort),
-				}
 			}
 		}
 	}
 	r.p.Step("Checked", fmt.Sprintf("%s, port %d", filepath.Base(o.Build.Path), port), 0)
 	return port, nil
+}
+
+// deployAnyway asks, when kx can, whether to deploy an app that may not be
+// able to listen on port, which is below 1024; no stops the deploy, with
+// fix. Without a way to ask, the deploy goes on.
+func (r *runner) deployAnyway(ctx context.Context, port int, fix string) error {
+	if r.o.Confirm == nil {
+		return nil
+	}
+	yes, err := r.o.Confirm(ctx, "Deploy anyway?")
+	if err != nil {
+		return err
+	}
+	if !yes {
+		return &kxerr.Usage{What: fmt.Sprintf("Nothing was deployed, because your app may not be able to listen on port %d.", port), Fix: fix}
+	}
+	return nil
 }
 
 // askPort asks which port a new app listens on, until the answer is a
