@@ -94,8 +94,9 @@ https://<your app's address>
 that need a login) logs in the way `kx login` does, then carries on. It does the same when
 your login has ended, or when Kubernetix says the saved token expired or was revoked. It
 does this only on a terminal, at most once per run, and never in CI, with `--json` or when
-`KX_TOKEN` is set: then it stops with the message and exit 3, as before. `kx login` stays
-for logging in to another organization or replacing this computer's token.
+`KX_TOKEN` is set: then it stops with the message and exit 3, as before. If you paste a
+token for another organization than the one the command is for, kx saves it but stops.
+`kx login` stays for logging in to another organization or replacing this computer's token.
 
 **Which app.** In an organization with no apps yet, the first `kx deploy` creates one named
 after the folder (in lowercase, with other characters turned into hyphens), without asking.
@@ -112,7 +113,7 @@ command.
 
 **Ports and health checks.** A new app gets the port in your Dockerfile's first `EXPOSE` line.
 If there is none, kx asks which port your app listens on (8080 if you press Enter, or
-without a terminal). If the Dockerfile exposes a port below 1024, kx says your app may not
+without a terminal). If the Dockerfile exposes a port below 1024, or you type one, kx says your app may not
 be able to listen there, since apps on Kubernetix don't run as root, and asks before it
 builds anything (in CI it only warns). Kubernetix sends traffic to that port, and a version is live once
 your app answers HTTP requests on `/` there (any status below 400). If a new version's

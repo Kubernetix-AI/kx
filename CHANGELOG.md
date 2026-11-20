@@ -10,7 +10,8 @@
   `kx rollback`, `kx link` and `kx apps`. Only when standard input and standard error are a
   terminal, at most once per run, and never in CI, with `--json` or when `KX_TOKEN` is set.
   `kx login`, `kx logout`, `kx whoami`, `kx token` and `kx version` never log in by
-  themselves.
+  themselves. A pasted token for another organization than the command's is saved, as
+  `kx login` does, but the command stops instead of carrying on there.
 - `kx login` (and the automatic login) says, before the token prompt, what an account that is
   still awaiting approval sees.
 - In an organization with no apps, the first `kx deploy` in a folder creates an app named
@@ -33,9 +34,10 @@
 
 - When kx is about to create an app and the Dockerfile has no `EXPOSE` line, it asks which
   port the app listens on (8080 by default). Without a terminal it assumes 8080, as before.
-- When the Dockerfile exposes a port below 1024, kx says the app may not be able to listen
-  there and asks before building (`Deploy anyway? [y/N]`). Without a terminal, or in CI, it
-  prints the same lines and deploys. An app already live on that port isn't asked about it.
+- When the Dockerfile exposes a port below 1024, or that is the port typed at the question, kx
+  says the app may not be able to listen there and asks before building
+  (`Deploy anyway? [y/N]`). Without a terminal, or in CI, it prints the same lines and
+  deploys. An app already live on that port isn't asked about it.
 
 ### Clearer messages
 
