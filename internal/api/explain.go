@@ -247,16 +247,18 @@ func Explain(err error) Problem {
 }
 
 // tagTaken explains a tag that already holds another image: kx never
-// replaces it, and says how to deploy what it holds instead.
+// replaces it, and says how to deploy that image if the person knows it.
 func tagTaken(e *kxerr.TagTaken) Problem {
 	ref := e.Image + ":" + e.Tag
 	held := ref // by digest when kx knows it, so that image and no other is deployed
 	if digestRe.MatchString(e.Digest) {
 		held = e.Image + "@" + e.Digest
 	}
-	fix := "Tag the commit with a new version, or deploy what " + e.Tag + " holds: kx deploy --image " + held
+	// Anyone who can push to the organization's registry can write a tag,
+	// so its image is only worth deploying to someone who knows it.
+	fix := "Tag the commit with a new version, or, if you know that image, deploy it: kx deploy --image " + held
 	if e.FromFlag {
-		fix = "Choose another --tag, or deploy what " + e.Tag + " holds: kx deploy --image " + held
+		fix = "Choose another --tag, or, if you know that image, deploy it: kx deploy --image " + held
 	}
 	what := ref + " already holds another image, so kx left the tag alone and deployed nothing."
 	if e.Raced {

@@ -671,9 +671,14 @@ func (r *runner) version(ctx context.Context, repo, tag, digest string, cred *ap
 		if ctx.Err() != nil {
 			return false, ctx.Err()
 		}
-		// A registry that keeps its tags refuses to replace one: look
-		// whether another run got there first.
-		if after, lerr := o.Registry.Lookup(ctx, ref, *cred); lerr == nil && after.Digest != "" && after.Digest != digest {
+		// Look at what the tag holds now: the request may have landed
+		// although its answer was an error, or a registry that keeps its
+		// tags refused it because another run got there first.
+		after, lerr := o.Registry.Lookup(ctx, ref, *cred)
+		switch {
+		case lerr == nil && after.Digest == digest:
+			return true, nil
+		case lerr == nil && after.Digest != "":
 			return r.occupied(repo, tag, after, true)
 		}
 		return false, &kxerr.PushFailed{Err: err}

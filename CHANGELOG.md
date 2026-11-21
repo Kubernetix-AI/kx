@@ -45,8 +45,8 @@
   free tag is given to the new image (in the registry, without a second upload), one on an
   earlier build of the same commit stays there with a warning while the new build deploys, and
   one on another commit's image (or an image without the commit label) stops kx with exit 7
-  before it builds (problem code `tag_taken`; `tag_check_failed` when kx can't tell, with a fix
-  that depends on why). It still deploys by digest, so a tag someone else took can only stop a
+  (problem code `tag_taken`; `tag_check_failed` when kx can't tell, with a fix that depends on
+  why), before it builds when it could look first and right after pushing otherwise. It still deploys by digest, so a tag someone else took can only stop a
   deploy, never change what it ships.
 - kx labels the images it builds with the commit (`org.opencontainers.image.revision`) and, when
   it can, where the build sits in the repository (`ai.kubernetix.kx.context`,

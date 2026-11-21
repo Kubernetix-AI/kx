@@ -2,8 +2,10 @@ package deploy
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -149,4 +151,28 @@ func TestBuildTags(t *testing.T) {
 			t.Fatalf("tags = %+v", got)
 		}
 	})
+}
+
+func TestBuildTags_GitRefusesTheFolder(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in git is a shell script")
+	}
+	// A checkout another user owns: git refuses it (safe.directory).
+	bin := t.TempDir()
+	writeFile(t, filepath.Join(bin, "git"), "#!/bin/sh\n"+
+		"echo \"fatal: detected dubious ownership in repository at '/work/shop-api'\" >&2\n"+
+		"echo \"To add an exception for this directory, call: git config --global --add safe.directory /work/shop-api\" >&2\n"+
+		"exit 128\n")
+	if err := os.Chmod(filepath.Join(bin, "git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	now := time.Date(2026, 11, 12, 9, 30, 5, 0, time.UTC)
+	got := BuildTags(context.Background(), ci.Env{IsCI: true, CommitSHA: testRevision}, t.TempDir(), now)
+	if got.Commit != "local-20261112093005" || got.Revision != "" || !got.GitRefused || got.CICommit != testRevision {
+		t.Fatalf("tags = %+v; want local-, no revision, refused, and the CI commit only reported", got)
+	}
+	if got := BuildTags(context.Background(), ci.Env{}, t.TempDir(), now); !got.GitRefused {
+		t.Fatalf("tags = %+v; want refused on a laptop too", got)
+	}
 }

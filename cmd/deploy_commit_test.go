@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -55,7 +57,7 @@ func TestDeploy_CIWithoutACheckout(t *testing.T) {
 	}
 	h.dockerfile("FROM scratch\n")
 	h.expect(h.run("deploy"), 0)
-	if !strings.Contains(h.err.String(), "GitLab CI names commit 3f9c2a1b7d4e, but this folder isn't a git checkout, so kx tags the image local-20261112090000.\n") {
+	if !strings.Contains(h.err.String(), "This folder isn't a git checkout, so kx tags the image local-20261112090000, with no version; the commit GitLab CI names (3f9c2a1b7d4e) is only reported.\n") {
 		t.Fatalf("stderr:\n%s", h.err.String())
 	}
 	if len(h.docker.lastLabels()) != 0 {
@@ -126,7 +128,7 @@ func TestDeploy_VersionTagFromAnotherCommitStopsBeforeBuilding(t *testing.T) {
 		if h.built() || len(h.api.deployPosts) != 0 {
 			t.Fatalf("%s: built or deployed: %q", name, h.docker.got())
 		}
-		if !strings.Contains(h.err.String(), "deploy what 0.0.11 holds: kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@"+olderImage) {
+		if !strings.Contains(h.err.String(), "if you know that image, deploy it: kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@"+olderImage) {
 			t.Fatalf("%s: stderr:\n%s", name, h.err.String())
 		}
 	}
@@ -135,4 +137,34 @@ func TestDeploy_VersionTagFromAnotherCommitStopsBeforeBuilding(t *testing.T) {
 func TestDeploy_NoRebuildFlag(t *testing.T) {
 	h := newHarness(t)
 	h.expect(h.run("deploy", "--rebuild"), 2)
+}
+
+func TestDeploy_CIWhereGitRefusesTheFolder(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in git is a shell script")
+	}
+	// In a container job the checkout can belong to another user, and git
+	// refuses to read it (safe.directory). kx still tags only what it can
+	// read, and says what it used.
+	h := newHarness(t)
+	bin := t.TempDir()
+	script := "#!/bin/sh\necho \"fatal: detected dubious ownership in repository at '/work/shop-api'\" >&2\nexit 128\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for k, v := range map[string]string{"GITLAB_CI": "true", "CI": "true", "CI_PIPELINE_SOURCE": "push", "CI_COMMIT_SHA": otherSHA,
+		"CI_PROJECT_PATH": "acme/shop-api", "CI_PIPELINE_ID": "55", "CI_JOB_ID": "77", "KX_TOKEN": tokDeploy} {
+		h.env[k] = v
+	}
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy"), 0)
+	want := "Git won't read this folder because another user owns it (git's safe.directory), so kx tags the image local-20261112090000, with no version; the commit GitLab CI names (3f9c2a1b7d4e) is only reported.\n" +
+		"  To tag it with its commit, run this first: git config --global --add safe.directory <the repository's folder>\n"
+	if !strings.Contains(h.err.String(), want) {
+		t.Fatalf("stderr:\n%s\nwant\n%s", h.err.String(), want)
+	}
+	if strings.Contains(strings.Join(h.docker.got(), "\n"), "3f9c2a1b7d4e") {
+		t.Fatalf("tagged with the CI system's commit: %q", h.docker.got())
+	}
 }

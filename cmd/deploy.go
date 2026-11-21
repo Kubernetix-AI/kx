@@ -260,6 +260,27 @@ func (d *deployRun) repository(org string) (string, error) {
 	return "", &kxerr.Usage{What: "The repository " + repo + " in .kx.json " + what, Fix: fmt.Sprintf("Set %q to %s in .kx.json.", "repository", rest)}
 }
 
+// reportCommit says what kx tags the image with when that isn't the
+// commit the CI system names, or isn't a commit at all. kx tags only what
+// it can read in the folder; the CI system's commit only goes into the
+// commit status and summary.
+func (d *deployRun) reportCommit(tags deploy.Tags, tag string) {
+	p, c := d.s.P, tags.CICommit
+	reported := ""
+	if c != "" {
+		reported = fmt.Sprintf("; the commit %s names (%s) is only reported", d.s.CI.Name, short(c))
+	}
+	switch {
+	case tags.GitRefused:
+		p.Info("Git won't read this folder because another user owns it (git's safe.directory), so kx tags the image %s, with no version%s.", tag, reported)
+		p.Note("To tag it with its commit, run this first: git config --global --add safe.directory <the repository's folder>")
+	case c != "" && strings.HasPrefix(tag, "local-"):
+		p.Info("This folder isn't a git checkout, so kx tags the image %s, with no version%s.", tag, reported)
+	case c != "":
+		p.Info("%s names commit %s, but this folder is at %s; kx builds and tags what is checked out.", d.s.CI.Name, short(c), tag)
+	}
+}
+
 // short is a commit's first 12 characters, as in an image tag.
 func short(commit string) string {
 	if len(commit) > 12 {
@@ -315,15 +336,7 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 			versionTag = o.tag
 		}
 		prov = deploy.ProvenanceOf(ctx, tags.Revision, df)
-		if c := tags.CICommit; c != "" {
-			// kx builds and tags what is checked out; the CI system's
-			// commit only goes into the commit status and summary.
-			if tags.Revision == "" && strings.HasPrefix(tag, "local-") {
-				s.P.Info("%s names commit %s, but this folder isn't a git checkout, so kx tags the image %s.", s.CI.Name, short(c), tag)
-			} else {
-				s.P.Info("%s names commit %s, but this folder is at %s; kx builds and tags what is checked out.", s.CI.Name, short(c), tag)
-			}
-		}
+		d.reportCommit(tags, tag)
 	}
 	c, err := s.Client(ctx)
 	if err != nil {

@@ -2,9 +2,11 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -181,7 +183,7 @@ func ImageTag(ctx context.Context, env ci.Env, dir string, now time.Time) string
 // is (no -dirty- part), that commit; sha is "" otherwise.
 func imageTag(ctx context.Context, env ci.Env, dir string, now time.Time) (tag, sha string) {
 	stamp := now.UTC().Format("20060102150405")
-	sha = gitHead(ctx, dir)
+	sha, _ = gitHead(ctx, dir)
 	if sha == "" {
 		return "local-" + stamp, ""
 	}
@@ -192,16 +194,22 @@ func imageTag(ctx context.Context, env ci.Env, dir string, now time.Time) (tag, 
 }
 
 // gitHead returns the commit checked out in dir, or "" when git can't
-// tell (not a repository, no commit yet).
-func gitHead(ctx context.Context, dir string) string {
+// tell (not a repository, no commit yet). refused says git declined to
+// read the folder because another user owns it (git's safe.directory).
+func gitHead(ctx context.Context, dir string) (sha string, refused bool) {
 	cmd := procenv.Command(ctx, "git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
 	cmd.Dir = dir
 	out, err := cmd.Output()
-	sha := strings.ToLower(strings.TrimSpace(string(out)))
-	if err != nil || !commitRe.MatchString(sha) {
-		return ""
+	sha = strings.ToLower(strings.TrimSpace(string(out)))
+	if err == nil && commitRe.MatchString(sha) {
+		return sha, false
 	}
-	return sha
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		msg := string(exit.Stderr)
+		refused = strings.Contains(msg, "dubious ownership") || strings.Contains(msg, "safe.directory")
+	}
+	return "", refused
 }
 
 // dirty reports uncommitted changes; when git can't tell, it says yes, so

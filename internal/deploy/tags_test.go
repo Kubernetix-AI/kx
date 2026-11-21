@@ -246,6 +246,19 @@ func TestRun_VersionTagRefusedByTheRegistryStops(t *testing.T) {
 	}
 }
 
+func TestRun_VersionTagThatLandedDespiteAnError(t *testing.T) {
+	// The tag request failed (its answer was lost, or the registry
+	// answered an error after taking it), but the tag names this image.
+	e := newEnv(t)
+	o, reg := e.withVersion("0.0.11")
+	reg.tagErr = errors.New("registry: registry.example.test answered 502 when kx tagged 0.0.11")
+	reg.seq[versionRef] = []string{"", testDigest}
+	res, err := e.run(o)
+	if err != nil || res.VersionTag != "0.0.11" || strings.Join(res.Tags, ",") != "3f9c2a1b7d4e,0.0.11" {
+		t.Fatalf("Run() = %+v, %v; the tag holds this image, so the deploy goes on with it", res, err)
+	}
+}
+
 func TestRun_VersionTagPushFailure(t *testing.T) {
 	e := newEnv(t)
 	o, reg := e.withVersion("0.0.11")

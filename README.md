@@ -206,7 +206,9 @@ builds and again after it pushes:
   the tag stays where it is, kx prints "The version tag 1.4.0 stays on the earlier build of
   this commit." and deploys the new build;
 - it holds an image from another commit, or one that doesn't say which commit it is: kx stops
-  with exit 7 before building, and deploys nothing.
+  with exit 7 and deploys nothing. It stops before building when it could look first, and right
+  after pushing when it couldn't (the first look failed, or the folder isn't a commit as it is,
+  such as `--tag` with uncommitted changes).
 
 Registry tags can be written by anyone who can push to your organization's registry, so a
 version tag is a convenient label, not a guarantee: kx always deploys the image it just pushed,
@@ -391,7 +393,7 @@ The messages you are most likely to meet:
 | This folder deploys to acme-labs, but this computer is only logged in to acme-corp. | Run: kx login --org acme-labs | 3 |
 | This token can't upload images. | Create a token with Push images on the app's Deploy tab, or deploy an image that's already pushed: kx deploy --image &lt;image&gt; | 3 |
 | The token in the KX_TOKEN secret doesn't have the Read permission, which kx deploy needs. | Create a deploy token on the app's Deploy tab (it has Deploy, Read and Push images) and replace the KX_TOKEN secret. | 3 |
-| registry.kubernetix.ai/acme-corp/shop-api:1.4.0 already holds another image, so kx left the tag alone and deployed nothing. | Tag the commit with a new version, or deploy what 1.4.0 holds: kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:&lt;digest&gt; | 7 |
+| registry.kubernetix.ai/acme-corp/shop-api:1.4.0 already holds another image, so kx left the tag alone and deployed nothing. | Tag the commit with a new version, or, if you know that image, deploy it: kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:&lt;digest&gt; | 7 |
 | kx couldn't check whether registry.kubernetix.ai/acme-corp/shop-api:1.4.0 already exists, so nothing was deployed. | Check your internet connection, then run kx deploy again. | 7 |
 | kx builds your app with Docker, and Docker isn't installed on this computer. | Install Docker Desktop from docker.com and run kx deploy again. | 10 |
 | Docker is installed but not running. | Start Docker Desktop, then run kx deploy again. | 10 |

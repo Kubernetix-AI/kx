@@ -34,6 +34,9 @@ type Tags struct {
 	// checked out, or when kx can't tell which one is: kx then builds and
 	// tags what is checked out, and only reports this one.
 	CICommit string
+	// GitRefused says git declined to read the folder because another
+	// user owns it (git's safe.directory), so kx couldn't tell the commit.
+	GitRefused bool
 }
 
 // BuildTags returns the tags of a build of dir, always from the commit
@@ -44,9 +47,10 @@ type Tags struct {
 // wrote into it.
 func BuildTags(ctx context.Context, env ci.Env, dir string, now time.Time) Tags {
 	commit, sha := imageTag(ctx, env, dir, now)
-	t := Tags{Commit: commit}
+	head, refused := gitHead(ctx, dir)
+	t := Tags{Commit: commit, GitRefused: refused}
 	ciSHA := strings.ToLower(strings.TrimSpace(env.CommitSHA))
-	if ciSHA != "" && ciSHA != gitHead(ctx, dir) {
+	if ciSHA != "" && ciSHA != head {
 		t.CICommit = env.CommitSHA
 	}
 	if sha == "" {

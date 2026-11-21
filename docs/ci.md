@@ -68,7 +68,9 @@ ending in the URL. GitHub then shows:
 - the step outputs `url`, `deployment-id`, `version` and `image`, for later steps.
 
 `concurrency` makes deploys of one app run one at a time: a running deploy is never cancelled
-and a newer push replaces the waiting run, so the latest commit wins. `statuses: write` lets
+and a newer push replaces the waiting run, so the latest commit wins. A replaced run can be a
+tag push's, whose image then never gets the version tag: re-run that workflow, or give tag
+pushes a group of their own (`group: kubernetix-shop-api-${{ github.ref_type }}`). `statuses: write` lets
 kx set the commit status; without it kx prints a warning and deploys anyway.
 
 Use `runs-on: ubuntu-latest`. Windows runners can't build Linux images.
@@ -320,7 +322,8 @@ started from the dashboard or another computer in the same moment can still race
 - **"registry.kubernetix.ai/acme-corp/shop-api:1.4.0 already holds another image…" (exit 7).**
   The version tag names an image from another commit, or one without kx's labels (pushed by an
   earlier kx or by hand). kx doesn't move a version tag, so it deployed nothing. Tag a new
-  version, or deploy what the tag holds with the command the error names,
+  version, or, if you know the image the tag holds (anyone who can push to the organization's
+  registry can write a tag), deploy it with the command the error names,
   `kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:<digest>` (the Action's
   `image` input).
 - **"This commit was already pushed; uploaded it as 3f9c2a1b7d4e-20261114081530."** Only with a

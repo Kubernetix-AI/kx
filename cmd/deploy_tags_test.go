@@ -85,7 +85,7 @@ func TestDeploy_VersionTagHoldingAnotherImage(t *testing.T) {
 	lines := strings.Split(strings.TrimRight(h.err.String(), "\n"), "\n")
 	got := strings.Join(lines[len(lines)-2:], "\n")
 	want := "registry.kubernetix.ai/acme-corp/shop-api:0.0.11 already holds another image, so kx left the tag alone and deployed nothing.\n" +
-		"Tag the commit with a new version, or deploy what 0.0.11 holds: kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:" + strings.Repeat("ee", 32)
+		"Tag the commit with a new version, or, if you know that image, deploy it: kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:" + strings.Repeat("ee", 32)
 	if got != want {
 		t.Fatalf("last lines:\n%s\nwant\n%s", got, want)
 	}
@@ -114,7 +114,7 @@ func TestDeploy_TagFlag(t *testing.T) {
 	// --tag that holds another image: the fix talks about --tag.
 	h.registry.images["registry.kubernetix.ai/acme-corp/shop-api:stable"] = imageregistry.Image{Digest: "sha256:" + strings.Repeat("ee", 32)}
 	h.expect(h.run("deploy", "--tag", "stable"), 7)
-	if !strings.Contains(h.err.String(), "Choose another --tag, or deploy what stable holds: kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:"+strings.Repeat("ee", 32)) {
+	if !strings.Contains(h.err.String(), "Choose another --tag, or, if you know that image, deploy it: kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:"+strings.Repeat("ee", 32)) {
 		t.Fatalf("stderr:\n%s", h.err.String())
 	}
 
