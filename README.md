@@ -162,9 +162,8 @@ kx deploy                        # build, push, deploy, wait, print the URL
 kx deploy --app web              # deploy this folder to another app (asks to create it)
 kx deploy --image registry.kubernetix.ai/acme-corp/shop-api:3f9c2a1b7d4e   # skip the build
 kx deploy --build ./api --dockerfile ./api/Dockerfile.prod
-kx deploy --tag 1.4.0            # push the image as 1.4.0 too
+kx deploy --tag 1.4.0            # tag the image 1.4.0 too (a name that never moves)
 kx deploy --repository shop-frontend   # push to registry.kubernetix.ai/<org>/shop-frontend
-kx deploy --rebuild              # build this commit again instead of reusing its image
 kx deploy --no-wait              # start the deploy and return
 kx deploy --timeout 20m          # wait longer than the default 18 minutes
 
@@ -177,23 +176,47 @@ output.
 
 ### Image tags and repositories
 
-**Tags.** kx pushes every image it builds under the commit's first 12 characters, such as
-`3f9c2a1b7d4e` (with `-dirty-<time>` added when the folder has uncommitted changes, and
-`local-<time>` outside a git repository). When the commit has a git tag that looks like a
-version, `v1.4.0` or `1.4.0`, optionally with a pre-release such as `-rc.1`, kx pushes the
-image under that version too, without the `v`: `1.4.0`. If the commit has several, the highest
-wins; in CI, the tag a tag push or release run was started for counts too. On your computer,
-a folder with uncommitted changes gets no version tag, since its image isn't the tagged
-commit's code (in CI, kx takes the commit the CI system names, as for the commit's tag).
-`kx deploy --tag <tag>` pushes under that tag instead of the version.
+**What kx builds.** kx always builds the folder as it is, from the commit checked out there
+(`git rev-parse HEAD`). In CI that includes any files earlier steps of the job wrote into the
+folder. The commit a CI system names (`GITHUB_SHA` and the like) only goes into the commit
+status and the job summary; when it isn't the commit checked out, kx says so in one line and
+builds and tags what is checked out.
 
-kx never moves a version tag (or a `--tag`) to another image. Before pushing it, kx looks the
-tag up in the registry: if the tag already holds this image there is nothing to do, if it holds
-another build of the same commit kx leaves it as it is, and if it holds an image from another
-commit (or one kx can't tell) kx stops with exit 7 and deploys nothing. Either way kx deploys
-the image by its digest, never by a tag. The Pushed line shows the version tag
+**Tags.** kx pushes every image it builds under the checked-out commit's first 12 characters,
+such as `3f9c2a1b7d4e` (with `-dirty-<time>` added on your computer when the folder has
+uncommitted changes, and `local-<time>` outside a git repository). When the commit has a git
+tag that looks like a version, `v1.4.0` or `1.4.0`, optionally with a pre-release such as
+`-rc.1`, kx also gives the image that version, without the `v`: `1.4.0`. If the commit has
+several, the highest wins; in CI, the tag a tag push or release run was started for counts too,
+when the run is for the commit checked out. On your computer, a folder with uncommitted changes
+gets no version tag, since its image isn't the tagged commit's code. `kx deploy --tag <tag>`
+uses that tag instead of the version; it is for names that never move (not `latest` or
+`staging`), since kx never moves one.
+
+kx also labels the image with the commit (`org.opencontainers.image.revision`) and, when it can,
+with where the build sits in the repository (`ai.kubernetix.kx.context` and
+`ai.kubernetix.kx.dockerfile`), for you and your tools to read.
+
+**kx never moves a version tag (or a `--tag`).** It looks the tag up in the registry before it
+builds and again after it pushes:
+
+- the tag doesn't exist: kx gives it to the new image;
+- it already holds this image: there is nothing to do;
+- it holds an earlier build of the same commit (a re-run, or a second run for one tagged push):
+  the tag stays where it is, kx prints "The version tag 1.4.0 stays on the earlier build of
+  this commit." and deploys the new build;
+- it holds an image from another commit, or one that doesn't say which commit it is: kx stops
+  with exit 7 before building, and deploys nothing.
+
+Registry tags can be written by anyone who can push to your organization's registry, so a
+version tag is a convenient label, not a guarantee: kx always deploys the image it just pushed,
+by its digest, never by a tag. A tag someone else took can only stop a deploy, never change what
+it ships. Two runs that overlap can still both give the tag in the same moment; run deploys of an
+app one at a time (on GitHub, with a `concurrency` group, as in [docs/ci.md](docs/ci.md)) and they
+never race. The Pushed line shows the version tag
 (`registry.kubernetix.ai/acme-corp/shop-api:1.4.0`), and `--json` adds `"tags"` (the tags that
-name the deployed image, the commit's first) and `"version_tag"`.
+name the deployed image, the commit's first) and `"version_tag"` (the version or `--tag` among
+them, or `""`).
 
 ```console
 $ git tag v1.4.0 && kx deploy
@@ -202,27 +225,6 @@ $ git tag v1.4.0 && kx deploy
 ✓ Pushed    registry.kubernetix.ai/acme-corp/shop-api:1.4.0 14s
 ✓ Live      v16  queued → starting → live                48s
 ```
-
-**Builds are reused.** When the folder is a commit as it is (in CI, always), kx labels the
-image with the commit (`org.opencontainers.image.revision`) and with where the build sits in
-the repository (`ai.kubernetix.kx.context` and `ai.kubernetix.kx.dockerfile`). Before building,
-it looks at the commit's tag and the version tag. If one of them already holds an image built
-the same way from this commit, kx deploys that image instead of building again, and points
-whichever of the two tags is missing at it:
-
-```console
-$ kx deploy
-✓ Checked   Dockerfile, port 8080
-✓ Reused    registry.kubernetix.ai/acme-corp/shop-api:3f9c2a1b7d4e
-✓ Tagged    registry.kubernetix.ai/acme-corp/shop-api:1.4.0
-✓ Live      v17  queued → starting → live                48s
-```
-
-So re-running a CI job, or two runs for one tagged push, deploy the same image. An image
-without these labels (built by an earlier kx, or by hand) is never reused: kx builds. A version
-tag holding an image from another commit stops kx before it builds. `kx deploy --rebuild`
-builds anyway, for example to pick up a newer base image: the new build takes the commit's
-tag, and a version tag keeps the build it has. `--json` adds `"reused"`.
 
 **Repository.** kx pushes to `registry.kubernetix.ai/<org>/<app>` unless told otherwise. To
 push to another repository in your organization's registry, for example the one your images
