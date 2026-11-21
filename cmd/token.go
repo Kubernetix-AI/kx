@@ -107,7 +107,7 @@ func runTokenList(ctx context.Context, a *App, cmd *cobra.Command, appFlag strin
 		}
 		expires := "never"
 		if t.ExpiresAt != nil {
-			expires = ui.Date(*t.ExpiresAt)
+			expires = ui.Until(*t.ExpiresAt, now)
 		}
 		used := "never"
 		if t.LastUsedAt != nil {

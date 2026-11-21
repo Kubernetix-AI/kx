@@ -18,6 +18,7 @@ import (
 	"github.com/kubernetix-ai/kx/internal/browser"
 	"github.com/kubernetix-ai/kx/internal/deploy"
 	"github.com/kubernetix-ai/kx/internal/docker"
+	imageregistry "github.com/kubernetix-ai/kx/internal/registry"
 	"github.com/kubernetix-ai/kx/internal/ui"
 )
 
@@ -38,6 +39,8 @@ type App struct {
 	Sleep          func(ctx context.Context, d time.Duration) error
 	// Docker builds and pushes images; nil runs the docker command.
 	Docker deploy.Builder
+	// Registry looks up image tags; nil asks the registry over HTTPS.
+	Registry deploy.Registry
 
 	// PreparePrinter, if set, adjusts each new Printer (tests use it to
 	// pretend there is a terminal).
@@ -140,6 +143,14 @@ func (a *App) docker() deploy.Builder {
 		return a.Docker
 	}
 	return docker.Engine{}
+}
+
+// registry returns what the commands look image tags up with.
+func (a *App) registry() deploy.Registry {
+	if a.Registry != nil {
+		return a.Registry
+	}
+	return imageregistry.Client{}
 }
 
 // printer returns a Printer for the current run (honouring --json).

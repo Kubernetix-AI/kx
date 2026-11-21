@@ -337,6 +337,20 @@ func Duration(d time.Duration) string {
 // Date formats t as "11 Dec 2026" in UTC.
 func Date(t time.Time) string { return t.UTC().Format("2 Jan 2006") }
 
+// Local is the time zone Until shows times in (tests change it).
+var Local = time.Local
+
+// Until formats the end of something that ends at end, seen at now: the
+// local date and time ("21 Nov 18:30") when that is less than two days
+// away, since a date alone could be a day off then; otherwise the date,
+// as Date does.
+func Until(end, now time.Time) string {
+	if d := end.Sub(now); d > 0 && d < 48*time.Hour {
+		return end.In(Local).Format("2 Jan 15:04")
+	}
+	return Date(end)
+}
+
 const (
 	bold   = "1"
 	dim    = "2"

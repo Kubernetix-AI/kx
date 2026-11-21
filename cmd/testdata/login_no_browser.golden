@@ -1,5 +1,5 @@
 Open this page so you can create a token for this computer:
-https://platform.kubernetix.ai/settings?tab=tokens&new=cli
+https://platform.kubernetix.ai/settings?tab=tokens&new=cli&expires=1d
 Click "Create token", then "Copy", and paste it here.
 If the page says "Awaiting approval", your account isn't approved yet; we'll email you, then run kx deploy again. Press Ctrl-C to stop.
 Token: ••••••••••••••••

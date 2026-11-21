@@ -32,6 +32,8 @@ type deployOpts struct {
 	image       string
 	build       string
 	dockerfile  string
+	tag         string
+	repository  string
 	timeout     string
 	environment string
 	noWait      bool
@@ -47,11 +49,18 @@ func newDeployCmd(a *App) *cobra.Command {
 		Long: `Build this folder's Dockerfile for linux/amd64, push the image, deploy it and wait
 until it's live. The URL comes last, alone on standard output, so URL=$(kx deploy) works.
 The first run logs in if needed and saves the app the folder deploys to in .kx.json,
-asking which one only when there's a choice.`,
+asking which one only when there's a choice.
+
+The image is pushed under the commit's first 12 characters and, when the commit has a
+version tag such as v1.4.0, under 1.4.0 too. kx never moves a version tag (or --tag) to
+another image, and always deploys the image by digest. It always builds the folder as it
+is, from the commit checked out there.`,
 		Example: `  kx deploy                          build, push, deploy, wait, print the URL
   kx deploy --app web                deploy this folder to another app (or create it)
   kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:...   skip the build
   kx deploy --build ./api --dockerfile ./api/Dockerfile.prod
+  kx deploy --tag 1.4.0              push the image as 1.4.0 too
+  kx deploy --repository shop-frontend   push to registry.kubernetix.ai/<org>/shop-frontend
   kx deploy --no-wait                start the deploy and return`,
 		Args: usageArgs(0, 0, ""),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -63,6 +72,8 @@ asking which one only when there's a choice.`,
 	f.StringVar(&o.image, "image", "", "deploy this `image`, already pushed, instead of building one")
 	f.StringVar(&o.build, "build", ".", "the `folder` to build")
 	f.StringVar(&o.dockerfile, "dockerfile", "", "the `Dockerfile` to build with (default: the one in the build folder)")
+	f.StringVar(&o.tag, "tag", "", "also push the image under this `tag`, a name that never moves (default: the commit's version tag, if any)")
+	f.StringVar(&o.repository, "repository", "", "the registry `repository` to push to (default: .kx.json's repository, or the app's name)")
 	f.BoolVar(&o.noWait, "no-wait", false, "start the deploy and return without waiting for it to go live")
 	f.StringVar(&o.timeout, "timeout", defaultTimeout, "how long to wait for the deploy to go live, like 18m or `1h`")
 	f.BoolVar(&o.github, "github", false, "report to GitHub: commit status, job summary and step outputs (the Action uses this)")
@@ -85,6 +96,7 @@ const ciMintWait = 6*time.Minute + 30*time.Second
 
 var (
 	imageRefRe    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,511}$`)
+	imageTagRe    = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
 	environmentRe = regexp.MustCompile(`^[^\x00-\x1f\x7f]{1,100}$`)
 )
 
@@ -124,6 +136,20 @@ func runDeploy(ctx context.Context, a *App, cmd *cobra.Command, o deployOpts) er
 		}
 		if !imageRefRe.MatchString(o.image) {
 			return fail(&kxerr.Usage{What: fmt.Sprintf("%q isn't an image name.", o.image), Fix: "Run: kx deploy --image registry.kubernetix.ai/<org>/<app>@sha256:<digest>"})
+		}
+		if o.tag != "" || o.repository != "" {
+			return fail(&kxerr.Usage{What: "--image deploys an image that's already pushed, so it can't be used with --tag or --repository.", Fix: "Run: kx deploy --image <image>"})
+		}
+	}
+	if o.tag != "" && !imageTagRe.MatchString(o.tag) {
+		return fail(&kxerr.Usage{
+			What: fmt.Sprintf("%q isn't an image tag: use up to 128 letters, digits, _ . and -, starting with a letter, digit or _.", o.tag),
+			Fix:  "Run: kx deploy --tag 1.4.0",
+		})
+	}
+	if o.repository != "" {
+		if err := checkRepositoryFlag(o.repository); err != nil {
+			return fail(err)
 		}
 	}
 
@@ -179,6 +205,90 @@ func reportEarly(ctx context.Context, gh *github.Reporter, env ci.Env, err error
 	}
 }
 
+// withAddress reports whether repo looks like a whole image name
+// (host/org/name, the host having a dot) and returns the name part.
+func withAddress(repo string) (string, bool) {
+	parts := strings.Split(repo, "/")
+	if len(parts) < 3 || !strings.Contains(parts[0], ".") {
+		return "", false
+	}
+	return strings.Join(parts[2:], "/"), true
+}
+
+// checkRepositoryFlag checks --repository before anything else happens:
+// a repository name, not a whole image name.
+func checkRepositoryFlag(repo string) error {
+	if name, ok := withAddress(repo); ok {
+		return &kxerr.Usage{
+			What: "--repository takes a repository's name, without the registry's address and organization.",
+			Fix:  "Run: kx deploy --repository " + name,
+		}
+	}
+	if !config.ValidRepository(repo) {
+		return &kxerr.Usage{
+			What: fmt.Sprintf("%q isn't a repository name: use lowercase letters and digits, with single . _ or - between them and / between parts.", repo),
+			Fix:  "Run: kx deploy --repository shop-frontend",
+		}
+	}
+	return nil
+}
+
+// repository returns the repository kx pushes to: --repository, or the
+// one in .kx.json when kx deploys the app .kx.json links (in the same
+// organization); "" means the app's name. A name that starts with the
+// organization's would push to <org>/<org>/…, so it is refused.
+func (d *deployRun) repository(org string) (string, error) {
+	repo, fromFlag := d.o.repository, true
+	if p := d.s.Cfg.Project; repo == "" && p != nil && p.Repository != "" &&
+		p.App == d.appName && (p.Org == "" || p.Org == org) {
+		repo, fromFlag = p.Repository, false
+		if name, ok := withAddress(repo); ok {
+			return "", &kxerr.Usage{
+				What: "The repository " + repo + " in .kx.json includes the registry's address and organization.",
+				Fix:  fmt.Sprintf("Set %q to %s in .kx.json.", "repository", name),
+			}
+		}
+	}
+	rest, nested := strings.CutPrefix(repo, org+"/")
+	if org == "" || !nested {
+		return repo, nil
+	}
+	what := fmt.Sprintf("starts with the organization's name, so kx would push to %s/%s.", org, repo)
+	if fromFlag {
+		return "", &kxerr.Usage{What: "--repository " + repo + " " + what, Fix: "Run: kx deploy --repository " + rest}
+	}
+	return "", &kxerr.Usage{What: "The repository " + repo + " in .kx.json " + what, Fix: fmt.Sprintf("Set %q to %s in .kx.json.", "repository", rest)}
+}
+
+// reportCommit says what kx tags the image with when that isn't the
+// commit the CI system names, or isn't a commit at all. kx tags only what
+// it can read in the folder; the CI system's commit only goes into the
+// commit status and summary.
+func (d *deployRun) reportCommit(tags deploy.Tags, tag string) {
+	p, c := d.s.P, tags.CICommit
+	reported := ""
+	if c != "" {
+		reported = fmt.Sprintf("; the commit %s names (%s) is only reported", d.s.CI.Name, short(c))
+	}
+	switch {
+	case tags.GitRefused:
+		p.Info("Git won't read this folder because another user owns it (git's safe.directory), so kx tags the image %s, with no version%s.", tag, reported)
+		p.Note("To tag it with its commit, run this first: git config --global --add safe.directory <the repository's folder>")
+	case c != "" && strings.HasPrefix(tag, "local-"):
+		p.Info("This folder isn't a git checkout, so kx tags the image %s, with no version%s.", tag, reported)
+	case c != "":
+		p.Info("%s names commit %s, but this folder is at %s; kx builds and tags what is checked out.", d.s.CI.Name, short(c), tag)
+	}
+}
+
+// short is a commit's first 12 characters, as in an image tag.
+func short(commit string) string {
+	if len(commit) > 12 {
+		return strings.ToLower(commit[:12])
+	}
+	return commit
+}
+
 func parseTimeout(s string) (time.Duration, error) {
 	d, err := time.ParseDuration(strings.TrimSpace(s))
 	if err != nil || d < 10*time.Second || d > 24*time.Hour {
@@ -204,7 +314,8 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 
 	// Local checks first: no API call before kx knows it can build.
 	var df *deploy.Dockerfile
-	var tag string
+	var tag, versionTag string
+	var prov *deploy.Provenance
 	if o.image == "" {
 		var err error
 		df, err = deploy.Preflight(ctx, builder, d.path(o.build), d.dockerfilePath())
@@ -219,7 +330,13 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 			return nil, err
 		}
 		// Before the picker writes .kx.json, which would count as a change.
-		tag = deploy.ImageTag(ctx, s.CI, df.Dir, a.Now())
+		tags := deploy.BuildTags(ctx, s.CI, df.Dir, a.Now())
+		tag, versionTag = tags.Commit, tags.Version
+		if o.tag != "" {
+			versionTag = o.tag
+		}
+		prov = deploy.ProvenanceOf(ctx, tags.Revision, df)
+		d.reportCommit(tags, tag)
 	}
 	c, err := s.Client(ctx)
 	if err != nil {
@@ -240,6 +357,12 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 	if app != nil {
 		d.appName = app.Name
 	}
+	repo := ""
+	if o.image == "" {
+		if repo, err = d.repository(org); err != nil {
+			return nil, err
+		}
+	}
 	d.linkNamedApp(app, org)
 	key := s.CI.IdempotencyKey(d.appName)
 	if key == "" {
@@ -251,6 +374,8 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 	opts := deploy.Options{
 		App: app, NewApp: newApp, Org: org,
 		Image: o.image, Build: df, Tag: tag,
+		VersionTag: versionTag, TagFromFlag: o.tag != "", Registry: a.registry(), Repository: repo,
+		Provenance:     prov,
 		IdempotencyKey: key, NoWait: o.noWait, Timeout: d.timeout,
 		Builder: builder, Now: a.Now, Sleep: a.Sleep,
 		StopCommands: s.CI.Provider == ci.GitHub,
@@ -520,10 +645,24 @@ type deployJSON struct {
 	CreatedApp   bool   `json:"created_app"`
 }
 
+// deployOutJSON is kx deploy's --json output: deployJSON (which kx
+// rollback prints as it is) and the tags kx pushed the image under (none
+// with --image), the commit's first; VersionTag is the version or --tag
+// one, or "".
+type deployOutJSON struct {
+	deployJSON
+	Tags       []string `json:"tags"`
+	VersionTag string   `json:"version_tag"`
+}
+
 func (d *deployRun) print(res *deploy.Result) error {
 	p := d.s.P
 	if d.a.jsonOut {
-		return p.PrintJSON(deployJSON{res.App, res.AppID, res.Org, res.URL, res.DeploymentID, res.Version, res.Status, res.Image, res.CreatedApp})
+		tags := res.Tags
+		if tags == nil {
+			tags = []string{}
+		}
+		return p.PrintJSON(deployOutJSON{deployJSON{res.App, res.AppID, res.Org, res.URL, res.DeploymentID, res.Version, res.Status, res.Image, res.CreatedApp}, tags, res.VersionTag})
 	}
 	switch {
 	case res.URL != "":
@@ -546,7 +685,7 @@ func (d *deployRun) report(ctx context.Context, res *deploy.Result, err error) {
 	var out github.Outputs
 	dashboard := ""
 	if res != nil {
-		sum.App, sum.Version, sum.URL, sum.Image = res.App, res.Version, res.URL, res.Image
+		sum.App, sum.Version, sum.URL, sum.Image, sum.Tags = res.App, res.Version, res.URL, res.Image, res.Tags
 		if res.Version > 0 {
 			out = github.Outputs{URL: res.URL, DeploymentID: res.DeploymentID, Version: fmt.Sprintf("v%d", res.Version), Image: res.Image}
 		}

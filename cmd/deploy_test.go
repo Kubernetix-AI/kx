@@ -24,7 +24,9 @@ import (
 	"github.com/kubernetix-ai/kx/internal/safetext"
 )
 
-const ghSHA = "3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345"
+// ghSHA is the commit h.commit makes: the same bytes every time, so the
+// same SHA. CI tests set it as the CI system's commit too.
+const ghSHA = "dc4138a08c09f3fe2f8aa268edf7767752965f35"
 
 func (h *harness) dockerfile(body string) {
 	h.t.Helper()
@@ -491,11 +493,11 @@ func TestDeploy_CommitAlreadyPushedUnderImmutableTags(t *testing.T) {
 	h.docker.pushErrs = []error{&kxerr.PushFailed{Err: kxerr.ErrTagExists}}
 	h.expect(h.run("deploy", "--github"), 0)
 	calls := strings.Join(h.docker.got(), "\n")
-	if !strings.Contains(calls, "push registry.kubernetix.ai/acme-corp/shop-api:3f9c2a1b7d4e\n") ||
-		!strings.Contains(calls, "push registry.kubernetix.ai/acme-corp/shop-api:3f9c2a1b7d4e-20261112090000") {
+	if !strings.Contains(calls, "push registry.kubernetix.ai/acme-corp/shop-api:dc4138a08c09\n") ||
+		!strings.Contains(calls, "push registry.kubernetix.ai/acme-corp/shop-api:dc4138a08c09-20261112090000") {
 		t.Fatalf("docker calls:\n%s", calls)
 	}
-	if !strings.Contains(h.err.String(), "This commit was already pushed; uploaded it as 3f9c2a1b7d4e-20261112090000.\n") {
+	if !strings.Contains(h.err.String(), "This commit was already pushed; uploaded it as dc4138a08c09-20261112090000.\n") {
 		t.Fatalf("stderr:\n%s", h.err.String())
 	}
 	if got := readOutputs(t, h.env["GITHUB_OUTPUT"])["image"]; got != "registry.kubernetix.ai/acme-corp/shop-api@"+testDigest {
@@ -589,6 +591,7 @@ func (g *ghServer) got() []map[string]string {
 
 func githubJob(h *harness) *ghServer {
 	h.t.Helper()
+	h.commit()
 	gh := &ghServer{}
 	srv := httptest.NewServer(gh)
 	h.t.Cleanup(srv.Close)
@@ -669,7 +672,7 @@ func TestDeploy_GitHubMode(t *testing.T) {
 	if h.out.String() != "https://"+appShopID+"--acme-corp.apps.example.test\n" {
 		t.Fatalf("stdout = %q", h.out.String())
 	}
-	if !strings.Contains(h.err.String(), "✓ Built     shop-api:3f9c2a1b7d4e") {
+	if !strings.Contains(h.err.String(), "✓ Built     shop-api:dc4138a08c09") {
 		t.Fatalf("tag is not the commit SHA:\n%s", h.err.String())
 	}
 	statuses := gh.got()
@@ -696,7 +699,7 @@ func TestDeploy_GitHubMode(t *testing.T) {
 		t.Fatalf("outputs = %v", outs)
 	}
 	sum, _ := os.ReadFile(h.env["GITHUB_STEP_SUMMARY"])
-	if !strings.Contains(string(sum), "### shop-api v16 is live") || !strings.Contains(string(sum), "| Commit | `3f9c2a1b7d4e` |") {
+	if !strings.Contains(string(sum), "### shop-api v16 is live") || !strings.Contains(string(sum), "| Commit | `dc4138a08c09` |") {
 		t.Fatalf("summary:\n%s", sum)
 	}
 	if h.api.mints != 1 {
@@ -1110,6 +1113,7 @@ func TestDeploy_IdempotencyKeyPerPlatform(t *testing.T) {
 
 func TestDeploy_GitLabPushDeploys(t *testing.T) {
 	h := newHarness(t)
+	h.commit()
 	for k, v := range map[string]string{"GITLAB_CI": "true", "CI": "true", "CI_PIPELINE_SOURCE": "push", "CI_COMMIT_SHA": ghSHA,
 		"CI_PROJECT_PATH": "acme/shop-api", "CI_PIPELINE_ID": "55", "CI_JOB_ID": "77", "KX_TOKEN": tokDeploy} {
 		h.env[k] = v
@@ -1117,7 +1121,7 @@ func TestDeploy_GitLabPushDeploys(t *testing.T) {
 	h.dockerfile("FROM scratch\n")
 	h.expect(h.run("deploy"), 0)
 	want := ci.Detect(func(k string) string { return h.env[k] }).IdempotencyKey("shop-api")
-	if h.api.deployPosts[0].Key != want || !strings.Contains(h.err.String(), "shop-api:3f9c2a1b7d4e") {
+	if h.api.deployPosts[0].Key != want || !strings.Contains(h.err.String(), "shop-api:dc4138a08c09") {
 		t.Fatalf("key %q want %q\n%s", h.api.deployPosts[0].Key, want, h.err.String())
 	}
 	if strings.Contains(h.err.String(), "::") {

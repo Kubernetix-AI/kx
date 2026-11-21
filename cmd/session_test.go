@@ -34,7 +34,7 @@ func TestDeploy_AutoLogin_WhenLoggedOut(t *testing.T) {
 	stderr := h.norm(h.err.String())
 	wantLogin := autoLoginIntro +
 		"Opening platform.kubernetix.ai so you can create a token for this computer.\n" +
-		"If your browser didn't open, go to https://platform.kubernetix.ai/settings?tab=tokens&new=cli\n" +
+		"If your browser didn't open, go to https://platform.kubernetix.ai/settings?tab=tokens&new=cli&expires=1d\n" +
 		"Click \"Create token\", then \"Copy\", and paste it here.\n" +
 		wantHint +
 		"Token: ••••••••••••••••\n" +
@@ -45,7 +45,7 @@ func TestDeploy_AutoLogin_WhenLoggedOut(t *testing.T) {
 	if strings.Contains(stderr, "Next: open your project folder") {
 		t.Fatalf("the deploy carries on, so there is no next step to print:\n%s", stderr)
 	}
-	if len(h.opened) != 1 || h.norm(h.opened[0]) != "https://platform.kubernetix.ai/settings?tab=tokens&new=cli" {
+	if len(h.opened) != 1 || h.norm(h.opened[0]) != "https://platform.kubernetix.ai/settings?tab=tokens&new=cli&expires=1d" {
 		t.Fatalf("opened %v", h.opened)
 	}
 	if h.out.String() != shopURL+"\n" {
@@ -67,7 +67,7 @@ func TestDeploy_AutoLogin_LoginEnded(t *testing.T) {
 	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
 	h.tty, h.password = true, tokCorp2
 	h.expect(h.run("deploy"), 0)
-	if len(h.opened) != 1 || !strings.HasSuffix(h.opened[0], "/settings?tab=tokens&new=cli&org=acme-corp") {
+	if len(h.opened) != 1 || !strings.HasSuffix(h.opened[0], "/settings?tab=tokens&new=cli&org=acme-corp&expires=1d") {
 		t.Fatalf("opened %v", h.opened)
 	}
 	if !strings.Contains(h.err.String(), autoLoginIntro) {
@@ -87,7 +87,7 @@ func TestDeploy_AutoLogin_OrgNotLoggedIn(t *testing.T) {
 	h.dockerfile("FROM scratch\nEXPOSE 8080\n")
 	h.tty, h.password = true, tokLabs
 	h.expect(h.run("deploy"), 0)
-	if len(h.opened) != 1 || !strings.HasSuffix(h.opened[0], "&org=acme-labs") {
+	if len(h.opened) != 1 || !strings.HasSuffix(h.opened[0], "&org=acme-labs&expires=1d") {
 		t.Fatalf("opened %v", h.opened)
 	}
 	if u := h.user(); u.Orgs["acme-labs"].Token != tokLabs || u.Orgs["acme-corp"].Token != tokCorp {
@@ -103,7 +103,7 @@ func TestDeploy_AutoLogin_ServerSaysExpired(t *testing.T) {
 	whoamiFails(h, tokCorp, 1, 401, `{"error":"token_expired","message":"This API token has expired."}`)
 	h.tty, h.password = true, tokCorp2
 	h.expect(h.run("deploy"), 0)
-	if len(h.opened) != 1 || !strings.HasSuffix(h.opened[0], "&org=acme-corp") {
+	if len(h.opened) != 1 || !strings.HasSuffix(h.opened[0], "&org=acme-corp&expires=1d") {
 		t.Fatalf("opened %v", h.opened)
 	}
 	if h.user().Orgs["acme-corp"].Token != tokCorp2 || len(h.api.deployPosts) != 1 || h.out.String() != shopURL+"\n" {
@@ -259,7 +259,7 @@ func TestDeploy_AutoLogin_NoBrowser_PrintsURLAndAsks(t *testing.T) {
 	h.expect(h.run("deploy", "--app", "shop-api"), 0)
 	want := "First, let's connect this computer to Kubernetix.\n" +
 		"Open this page so you can create a token for this computer:\n" +
-		"https://platform.kubernetix.ai/settings?tab=tokens&new=cli\n" +
+		"https://platform.kubernetix.ai/settings?tab=tokens&new=cli&expires=1d\n" +
 		"Click \"Create token\", then \"Copy\", and paste it here.\n" +
 		wantHint +
 		"Token: ••••••••••••••••\n"
