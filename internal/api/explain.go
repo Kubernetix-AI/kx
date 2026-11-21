@@ -512,6 +512,8 @@ func permissionName(p string) string {
 		return "Read"
 	case PermPush:
 		return "Push images"
+	case PermConfigure:
+		return "Configure"
 	}
 	return p
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kubernetix-ai/kx/internal/api"
 	"github.com/kubernetix-ai/kx/internal/config"
 )
 
@@ -63,14 +64,17 @@ func TestLogin_SecondOrgAdds(t *testing.T) {
 	}
 }
 
-func TestLogin_ExpiresOneDay(t *testing.T) {
+func TestLogin_Expires(t *testing.T) {
 	tests := []struct {
 		args []string
 		want string
 	}{
+		// The token page makes a 1-day token unless told otherwise.
+		{[]string{"login"}, "https://platform.kubernetix.ai/settings?tab=tokens&new=cli"},
 		{[]string{"login", "--expires", "1d"}, "https://platform.kubernetix.ai/settings?tab=tokens&new=cli&expires=1d"},
 		{[]string{"login", "--org", "acme-corp", "--expires", "1d"}, "https://platform.kubernetix.ai/settings?tab=tokens&new=cli&org=acme-corp&expires=1d"},
-		{[]string{"login", "--expires", "30d"}, "https://platform.kubernetix.ai/settings?tab=tokens&new=cli"},
+		{[]string{"login", "--expires", "30d"}, "https://platform.kubernetix.ai/settings?tab=tokens&new=cli&expires=30d"},
+		{[]string{"login", "--org", "acme-corp", "--expires=30d"}, "https://platform.kubernetix.ai/settings?tab=tokens&new=cli&org=acme-corp&expires=30d"},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
@@ -93,6 +97,48 @@ func TestLogin_ExpiresRejectsOtherValues(t *testing.T) {
 	h.expect(h.run("login", "--expires", "90d"), 2)
 	if len(h.opened) != 0 {
 		t.Fatal("opened the browser for a bad flag")
+	}
+	if want := "kx login --expires takes 1d or 30d (the default is 1 day).\nRun: kx login --expires 30d\n"; !strings.HasSuffix(h.err.String(), want) {
+		t.Fatalf("stderr:\n%s\nwant it to end with\n%s", h.err.String(), want)
+	}
+	h.expect(h.run("login", "--help"), 0)
+	if !strings.Contains(h.out.String(), "make the new token last this time: 1d or 30d (default 1 day)") ||
+		!strings.Contains(h.out.String(), "kx login --expires 30d") {
+		t.Fatalf("help:\n%s", h.out.String())
+	}
+}
+
+func TestTokenSentence(t *testing.T) {
+	tests := []struct {
+		perms []string
+		app   string
+		want  string
+	}{
+		{[]string{"deploy", "read", "registry:push", "configure"}, "", "This token can deploy and configure every app in acme-corp until 11 Dec 2026."},
+		{[]string{"configure", "read", "deploy"}, "shop-api", "This token can deploy and configure shop-api until 11 Dec 2026."},
+		{[]string{"deploy", "read", "registry:push"}, "", "This token can deploy every app in acme-corp until 11 Dec 2026."},
+		{[]string{"read", "configure"}, "", "This token can configure every app in acme-corp until 11 Dec 2026."},
+		{[]string{"read"}, "", "This token can read every app in acme-corp until 11 Dec 2026."},
+	}
+	for _, tt := range tests {
+		tok := &api.Token{Scope: "org", Permissions: tt.perms, ExpiresAt: &dec11}
+		if tt.app != "" {
+			tok.Scope, tok.AppName = "app", tt.app
+		}
+		if got := tokenSentence(tok, "acme-corp"); got != tt.want {
+			t.Errorf("tokenSentence(%v) = %q, want %q", tt.perms, got, tt.want)
+		}
+	}
+}
+
+func TestLogin_TokenThatCanConfigure(t *testing.T) {
+	h := newHarness(t)
+	h.tty, h.password = true, tokCorp
+	h.api.who[tokCorp].Token.Permissions = []string{"deploy", "read", "registry:push", "configure"}
+	h.api.who[tokCorp].Token.ExpiresAt = &nov13
+	h.expect(h.run("login"), 0)
+	if !strings.Contains(h.err.String(), "Logged in to acme-corp as sam@acme.dev. This token can deploy and configure every app in acme-corp until 13 Nov 2026.\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
 	}
 }
 

@@ -52,6 +52,7 @@ const (
 var (
 	dec11 = time.Date(2026, 12, 11, 9, 0, 0, 0, time.UTC)
 	nov12 = time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	nov13 = time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)
 )
 
 // fakeAPI is an in-memory Kubernetix API.

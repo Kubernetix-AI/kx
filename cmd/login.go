@@ -34,14 +34,14 @@ Logging in to another organization adds it beside the first. kx deploy and the
 other commands log in this way by themselves when there's no login on a terminal.`,
 		Example: `  kx login                          open the dashboard, then paste the token
   kx login --org acme-labs          log in to another organization
-  kx login --expires 1d             make a token that lasts one day
+  kx login --expires 30d            make a token that lasts 30 days
   echo "$TOKEN" | kx login --token-stdin`,
 		Args: usageArgs(0, 0, ""),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runLogin(cmd.Context(), a, cmd, expires, fromStdin)
 		},
 	}
-	cmd.Flags().StringVar(&expires, "expires", "", "make the new token last this `time`: 1d (default 30 days)")
+	cmd.Flags().StringVar(&expires, "expires", "", "make the new token last this `time`: 1d or 30d (default 1 day)")
 	cmd.Flags().BoolVar(&fromStdin, "token-stdin", false, "read the token from standard input instead of asking")
 	return cmd
 }
@@ -57,7 +57,7 @@ func runLogin(ctx context.Context, a *App, cmd *cobra.Command, expires string, f
 	switch expires {
 	case "", "30d", "1d":
 	default:
-		return &kxerr.Usage{What: "kx login --expires takes 1d (the default is 30 days).", Fix: "Run: kx login --expires 1d"}
+		return &kxerr.Usage{What: "kx login --expires takes 1d or 30d (the default is 1 day).", Fix: "Run: kx login --expires 30d"}
 	}
 	if a.orgFlag != "" && !config.ValidOrgName(a.orgFlag) {
 		return &kxerr.Usage{What: fmt.Sprintf("%q isn't an organization name.", a.orgFlag), Fix: "Check the name, or see where you're logged in: kx whoami"}
@@ -188,26 +188,37 @@ func (a *App) saveLogin(ctx context.Context, s *Session, tok, asked string, auto
 	return org, nil
 }
 
+// tokenPageURL is the dashboard's page that creates a token for kx. It
+// makes a 1-day token unless expires asks for 30 days; an explicit 1d is
+// sent too, as kx 1.0 did.
 func tokenPageURL(s *Session, org, expires string) string {
 	page := s.DashboardURL("/settings?tab=tokens&new=cli")
 	if org != "" {
 		page += "&org=" + url.QueryEscape(org)
 	}
-	if expires == "1d" {
-		page += "&expires=1d"
+	switch expires {
+	case "1d", "30d":
+		page += "&expires=" + expires
 	}
 	return page
 }
 
-// tokenSentence says what the token can do and until when:
-// "This token can deploy every app in acme-corp until 11 Dec 2026."
+// tokenSentence says what the token can do and until when: "This token
+// can deploy and configure every app in acme-corp until 11 Dec 2026."
 func tokenSentence(t *api.Token, org string) string {
 	if t == nil {
 		return ""
 	}
-	verb := "read"
+	var verbs []string
 	if t.Can(api.PermDeploy) {
-		verb = "deploy"
+		verbs = append(verbs, "deploy")
+	}
+	if t.Can(api.PermConfigure) {
+		verbs = append(verbs, "configure")
+	}
+	verb := strings.Join(verbs, " and ")
+	if verb == "" {
+		verb = "read"
 	}
 	what := "every app in " + org
 	if t.AppScoped() {

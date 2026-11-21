@@ -77,7 +77,7 @@ If your browser didn't open, go to https://platform.kubernetix.ai/settings?tab=t
 Click "Create token", then "Copy", and paste it here.
 If the page says "Awaiting approval", your account isn't approved yet; we'll email you, then run kx deploy again. Press Ctrl-C to stop.
 Token: ••••••••••••••••
-Logged in to acme-corp as sam@acme.dev. This token can deploy every app in acme-corp until 11 Dec 2026.
+Logged in to acme-corp as sam@acme.dev. This token can deploy and configure every app in acme-corp until 13 Nov 2026.
 
 Creating a new app called shop-api. Saved in .kx.json.
 
@@ -152,8 +152,8 @@ Every command takes `--json` (machine-readable output with stable keys) and `--o
 | `kx link [app]` | Saves which app this folder deploys to in `.kx.json`. Also called `kx init`. |
 
 ```sh
-kx login                         # log in (the token lasts 30 days)
-kx login --expires 1d            # a token that lasts one day
+kx login                         # log in (the token lasts one day)
+kx login --expires 30d           # a token that lasts 30 days
 kx login --org acme-labs         # log in to a second organization too
 kx login                         # again: replaces this computer's token and revokes the old one
 echo "$TOKEN" | kx login --token-stdin

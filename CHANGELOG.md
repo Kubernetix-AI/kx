@@ -57,6 +57,13 @@
   `registry.kubernetix.ai/<org>/<name>` instead of the repository named after the app. `kx link`
   keeps a `.kx.json`'s `"repository"`.
 
+### Logging in
+
+- A login lasts one day by default, and `kx login --expires 30d` asks for a 30-day token
+  (`--expires 1d` still works). The token page creates an API token that can deploy and
+  configure, and kx says so after logging in: "This token can deploy and configure every app
+  in acme-corp until 13 Nov 2026."
+
 ### Questions before a deploy that can't work
 
 - When kx is about to create an app and the Dockerfile has no `EXPOSE` line, it asks which
