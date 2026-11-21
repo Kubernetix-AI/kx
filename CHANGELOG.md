@@ -59,10 +59,13 @@
 
 ### Logging in
 
-- A login lasts one day by default, and `kx login --expires 30d` asks for a 30-day token
-  (`--expires 1d` still works). The token page creates an API token that can deploy and
-  configure, and kx says so after logging in: "This token can deploy and configure every app
-  in acme-corp until 13 Nov 2026."
+- A login lasts one day by default: kx asks the token page for a 1-day token (`expires=1d`),
+  and `kx login --expires 30d` asks for 30 days. The token can deploy, push images and read; it
+  can also configure (change environment variables and replicas, whose values stay hidden)
+  when the dashboard creates it with Configure. The line after logging in says which: "This
+  token can deploy and configure every app in acme-corp until 13 Nov 10:00." An end less than
+  two days away is shown with the local time, after logging in and in `kx whoami` and
+  `kx token list`.
 
 ### Questions before a deploy that can't work
 

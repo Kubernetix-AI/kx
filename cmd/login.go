@@ -179,7 +179,7 @@ func (a *App) saveLogin(ctx context.Context, s *Session, tok, asked string, auto
 	if who.User.Email != "" {
 		as = " as " + who.User.Email
 	}
-	p.Info("Logged in to %s%s. %s", org, as, tokenSentence(who.Token, org))
+	p.Info("Logged in to %s%s. %s", org, as, tokenSentence(who.Token, org, a.Now()))
 	if auto {
 		p.Info("")
 		return org, nil
@@ -188,24 +188,23 @@ func (a *App) saveLogin(ctx context.Context, s *Session, tok, asked string, auto
 	return org, nil
 }
 
-// tokenPageURL is the dashboard's page that creates a token for kx. It
-// makes a 1-day token unless expires asks for 30 days; an explicit 1d is
-// sent too, as kx 1.0 did.
+// tokenPageURL is the dashboard's page that creates a token for kx. kx
+// always says how long the token lasts, 1 day unless expires asks for 30
+// days, so the default doesn't depend on the page's own.
 func tokenPageURL(s *Session, org, expires string) string {
 	page := s.DashboardURL("/settings?tab=tokens&new=cli")
 	if org != "" {
 		page += "&org=" + url.QueryEscape(org)
 	}
-	switch expires {
-	case "1d", "30d":
-		page += "&expires=" + expires
+	if expires != "30d" {
+		expires = "1d"
 	}
-	return page
+	return page + "&expires=" + expires
 }
 
 // tokenSentence says what the token can do and until when: "This token
 // can deploy and configure every app in acme-corp until 11 Dec 2026."
-func tokenSentence(t *api.Token, org string) string {
+func tokenSentence(t *api.Token, org string, now time.Time) string {
 	if t == nil {
 		return ""
 	}
@@ -226,7 +225,7 @@ func tokenSentence(t *api.Token, org string) string {
 	}
 	until := "and never expires"
 	if t.ExpiresAt != nil {
-		until = "until " + ui.Date(*t.ExpiresAt)
+		until = "until " + ui.Until(*t.ExpiresAt, now)
 	}
 	return fmt.Sprintf("This token can %s %s %s.", verb, what, until)
 }
@@ -603,7 +602,7 @@ func runWhoami(ctx context.Context, a *App, cmd *cobra.Command) error {
 		ends, access, label := "never", "", ""
 		if t := who.Token; t != nil {
 			if t.ExpiresAt != nil {
-				ends = ui.Date(*t.ExpiresAt)
+				ends = ui.Until(*t.ExpiresAt, a.Now())
 			}
 			scope := "every app"
 			if t.AppScoped() {
@@ -627,7 +626,7 @@ func runWhoami(ctx context.Context, a *App, cmd *cobra.Command) error {
 		ends := "never"
 		ended := l.ExpiresAt != nil && !now.Before(*l.ExpiresAt)
 		if l.ExpiresAt != nil {
-			ends = ui.Date(*l.ExpiresAt)
+			ends = ui.Until(*l.ExpiresAt, now)
 			if ended {
 				ends = "ended " + ends
 			}

@@ -503,7 +503,7 @@ func loginEnded(org string) Problem {
 
 // missingPermissionRe finds the permission in the platform's refusal of a
 // token that lacks one ("This API token doesn't have the read permission.").
-var missingPermissionRe = regexp.MustCompile(`doesn't have the (deploy|read|registry:push) permission`)
+var missingPermissionRe = regexp.MustCompile(`doesn't have the (deploy|read|registry:push|configure) permission`)
 
 // permissionName is how the dashboard names a token permission.
 func permissionName(p string) string {

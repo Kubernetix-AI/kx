@@ -11,6 +11,7 @@ import (
 
 	"github.com/kubernetix-ai/kx/internal/api"
 	"github.com/kubernetix-ai/kx/internal/config"
+	"github.com/kubernetix-ai/kx/internal/ui"
 )
 
 func TestLogin_PasteFlow_Golden(t *testing.T) {
@@ -23,7 +24,7 @@ func TestLogin_PasteFlow_Golden(t *testing.T) {
 	}
 	golden(t, "login_paste", h.norm(h.err.String()))
 
-	if len(h.opened) != 1 || h.norm(h.opened[0]) != "https://platform.kubernetix.ai/settings?tab=tokens&new=cli" {
+	if len(h.opened) != 1 || h.norm(h.opened[0]) != "https://platform.kubernetix.ai/settings?tab=tokens&new=cli&expires=1d" {
 		t.Fatalf("opened %v", h.opened)
 	}
 	u := h.user()
@@ -69,8 +70,9 @@ func TestLogin_Expires(t *testing.T) {
 		args []string
 		want string
 	}{
-		// The token page makes a 1-day token unless told otherwise.
-		{[]string{"login"}, "https://platform.kubernetix.ai/settings?tab=tokens&new=cli"},
+		// kx asks for 1 day itself, so the default holds whatever the
+		// token page's own default is.
+		{[]string{"login"}, "https://platform.kubernetix.ai/settings?tab=tokens&new=cli&expires=1d"},
 		{[]string{"login", "--expires", "1d"}, "https://platform.kubernetix.ai/settings?tab=tokens&new=cli&expires=1d"},
 		{[]string{"login", "--org", "acme-corp", "--expires", "1d"}, "https://platform.kubernetix.ai/settings?tab=tokens&new=cli&org=acme-corp&expires=1d"},
 		{[]string{"login", "--expires", "30d"}, "https://platform.kubernetix.ai/settings?tab=tokens&new=cli&expires=30d"},
@@ -125,7 +127,7 @@ func TestTokenSentence(t *testing.T) {
 		if tt.app != "" {
 			tok.Scope, tok.AppName = "app", tt.app
 		}
-		if got := tokenSentence(tok, "acme-corp"); got != tt.want {
+		if got := tokenSentence(tok, "acme-corp", nov12); got != tt.want {
 			t.Errorf("tokenSentence(%v) = %q, want %q", tt.perms, got, tt.want)
 		}
 	}
@@ -136,8 +138,10 @@ func TestLogin_TokenThatCanConfigure(t *testing.T) {
 	h.tty, h.password = true, tokCorp
 	h.api.who[tokCorp].Token.Permissions = []string{"deploy", "read", "registry:push", "configure"}
 	h.api.who[tokCorp].Token.ExpiresAt = &nov13
+	defer setLocal(time.FixedZone("UTC+2", 2*60*60))()
 	h.expect(h.run("login"), 0)
-	if !strings.Contains(h.err.String(), "Logged in to acme-corp as sam@acme.dev. This token can deploy and configure every app in acme-corp until 13 Nov 2026.\n") {
+	// It ends within two days, so kx shows the local time too.
+	if !strings.Contains(h.err.String(), "Logged in to acme-corp as sam@acme.dev. This token can deploy and configure every app in acme-corp until 13 Nov 11:00.\n") {
 		t.Fatalf("stderr:\n%s", h.err.String())
 	}
 }
@@ -575,4 +579,22 @@ func TestLogout_ChildrenWithoutTerminal(t *testing.T) {
 			t.Fatal("--yes did not revoke")
 		}
 	})
+}
+
+// setLocal makes ui show local times in loc and returns the undo.
+func setLocal(loc *time.Location) func() {
+	old := ui.Local
+	ui.Local = loc
+	return func() { ui.Local = old }
+}
+
+func TestWhoami_LoginEndingSoonShowsTheTime(t *testing.T) {
+	h := newHarness(t)
+	soon := nov12.Add(30 * time.Hour)
+	h.loginAs("acme-corp", tokCorp, &soon)
+	defer setLocal(time.UTC)()
+	h.expect(h.run("whoami"), 0)
+	if !strings.Contains(h.out.String()+h.err.String(), "13 Nov 15:00") {
+		t.Fatalf("whoami:\n%s%s", h.out.String(), h.err.String())
+	}
 }

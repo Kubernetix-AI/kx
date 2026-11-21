@@ -73,11 +73,11 @@ $ cd ~/code/shop-api
 $ kx deploy
 First, let's connect this computer to Kubernetix. Opening your browser…
 Opening platform.kubernetix.ai so you can create a token for this computer.
-If your browser didn't open, go to https://platform.kubernetix.ai/settings?tab=tokens&new=cli
+If your browser didn't open, go to https://platform.kubernetix.ai/settings?tab=tokens&new=cli&expires=1d
 Click "Create token", then "Copy", and paste it here.
 If the page says "Awaiting approval", your account isn't approved yet; we'll email you, then run kx deploy again. Press Ctrl-C to stop.
 Token: ••••••••••••••••
-Logged in to acme-corp as sam@acme.dev. This token can deploy and configure every app in acme-corp until 13 Nov 2026.
+Logged in to acme-corp as sam@acme.dev. This token can deploy every app in acme-corp until 13 Nov 10:00.
 
 Creating a new app called shop-api. Saved in .kx.json.
 
@@ -97,6 +97,13 @@ does this only on a terminal, at most once per run, and never in CI, with `--jso
 `KX_TOKEN` is set: then it stops with the message and exit 3, as before. If you paste a
 token for another organization than the one the command is for, kx saves it but stops.
 `kx login` stays for logging in to another organization or replacing this computer's token.
+
+**What a login token can do.** A login lasts one day (`kx login --expires 30d` makes it 30
+days). Its token can deploy, push images and read every app in the organization, and it can
+also configure them when the dashboard creates it with Configure. Configure lets a token change
+an app's environment variables and replicas; the values of environment variables stay hidden
+from tokens. kx says what the token can do, and until when, right after logging in (with the
+local time when that is less than two days away).
 
 **Which app.** In an organization with no apps yet, the first `kx deploy` creates one named
 after the folder (in lowercase, with other characters turned into hyphens), without asking.
