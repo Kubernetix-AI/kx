@@ -62,6 +62,8 @@ type fakeRegistry struct {
 	anonymous   bool   // no credential needed at all
 	blobHost    string // blob GETs redirect here (another server) instead of /_downloads/
 	badBlob     bool   // config blobs are served with other bytes than their digest
+	pingStatus  int    // answer to the base /v2/, when set
+	putDigest   string // Docker-Content-Digest a manifest PUT answers with, when set
 }
 
 func newFakeRegistry(t *testing.T) *fakeRegistry {
@@ -174,6 +176,10 @@ func (f *fakeRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}
 	if r.URL.Path == "/v2/" {
+		if f.pingStatus != 0 {
+			w.WriteHeader(f.pingStatus)
+			return
+		}
 		if !authorized && auth == "" {
 			challenge()
 			return
@@ -224,6 +230,9 @@ func (f *fakeRegistry) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.manifests[name+":"+ref] = stored{string(body), r.Header.Get("Content-Type")}
 		f.puts = append(f.puts, name+":"+ref+" "+r.Header.Get("Content-Type"))
 		w.Header().Set("Docker-Content-Digest", sha(string(body)))
+		if f.putDigest != "" {
+			w.Header().Set("Docker-Content-Digest", f.putDigest)
+		}
 		w.WriteHeader(http.StatusCreated)
 		return
 	}
@@ -388,8 +397,81 @@ func TestLookup_BadDigestHeader(t *testing.T) {
 	f := newFakeRegistry(t)
 	f.badDigest = true
 	f.putImage("acme-corp/shop-api", "0.0.11", nil, false)
-	if got, err := f.client().Lookup(context.Background(), f.host()+"/acme-corp/shop-api:0.0.11", f.cred()); err == nil {
-		t.Fatalf("Lookup() = %+v, want an error for a digest kx can't compare", got)
+	got, err := f.client().Lookup(context.Background(), f.host()+"/acme-corp/shop-api:0.0.11", f.cred())
+	if err == nil || !strings.Contains(err.Error(), "reported a digest kx can't read") {
+		t.Fatalf("Lookup() = %+v, %v; want the refusal of a digest kx can't compare", got, err)
+	}
+}
+
+func TestLookup_ManifestThatDoesntMatchItsDigest(t *testing.T) {
+	// A registry answering with other bytes than the digest names could
+	// hand kx any labels.
+	f := newFakeRegistry(t)
+	d := f.putImage("acme-corp/shop-api", "0.0.11", builtLabels, false)
+	m := f.manifests["acme-corp/shop-api:"+d]
+	m.body = strings.Replace(m.body, `"layers":[]`, `"layers":[ ]`, 1)
+	f.manifests["acme-corp/shop-api:"+d] = m
+	got, err := f.client().Lookup(context.Background(), f.host()+"/acme-corp/shop-api:0.0.11", f.cred())
+	if err == nil || !strings.Contains(err.Error(), "doesn't match") {
+		t.Fatalf("Lookup() = %+v, %v; want the mismatch refused", got, err)
+	}
+}
+
+func TestLookup_IndexPicksLinuxAmd64(t *testing.T) {
+	f := newFakeRegistry(t)
+	arm := map[string]string{"org.opencontainers.image.revision": strings.Repeat("a", 40)}
+	armDigest := f.putImage("acme-corp/shop-api", "arm", arm, false)
+	f.putImage("acme-corp/shop-api", "amd", builtLabels, false)
+	amd := f.manifests["acme-corp/shop-api:amd"]
+	idx, _ := json.Marshal(map[string]any{
+		"schemaVersion": 2, "mediaType": ociIndex,
+		"manifests": []any{
+			map[string]any{"mediaType": ociManifest, "digest": armDigest, "size": 1, "platform": map[string]string{"os": "linux", "architecture": "arm64"}},
+			map[string]any{"mediaType": ociManifest, "digest": sha(amd.body), "size": len(amd.body), "platform": map[string]string{"os": "linux", "architecture": "amd64"}},
+		},
+	})
+	f.manifests["acme-corp/shop-api:"+sha(string(idx))] = stored{string(idx), ociIndex}
+	f.manifests["acme-corp/shop-api:0.0.11"] = stored{string(idx), ociIndex}
+	got, err := f.client().Lookup(context.Background(), f.host()+"/acme-corp/shop-api:0.0.11", f.cred())
+	if err != nil || got.Labels["org.opencontainers.image.revision"] != builtLabels["org.opencontainers.image.revision"] {
+		t.Fatalf("Lookup() = %+v, %v; want the linux/amd64 image's labels, not linux/arm64's", got, err)
+	}
+}
+
+func TestLookup_BlobRedirectWithoutTLSIsRefused(t *testing.T) {
+	f := newFakeRegistry(t)
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { f.ServeHTTP(w, r) }))
+	t.Cleanup(plain.Close)
+	f.blobHost = plain.URL
+	f.putImage("acme-corp/shop-api", "0.0.11", builtLabels, false)
+	got, err := f.client().Lookup(context.Background(), f.host()+"/acme-corp/shop-api:0.0.11", f.cred())
+	if err == nil || !strings.Contains(err.Error(), "somewhere it doesn't follow") {
+		t.Fatalf("Lookup() = %+v, %v; want the redirect to plain HTTP refused", got, err)
+	}
+}
+
+func TestLookup_BaseThatIsntThere(t *testing.T) {
+	// A 404 from the registry's base isn't a registry that needs no login.
+	f := newFakeRegistry(t)
+	f.pingStatus = http.StatusNotFound
+	f.putImage("acme-corp/shop-api", "0.0.11", nil, false)
+	f.anonymous = true // even when the tag itself would answer
+	got, err := f.client().Lookup(context.Background(), f.host()+"/acme-corp/shop-api:0.0.11", f.cred())
+	if err == nil || !strings.Contains(err.Error(), "answered 404 when kx asked how to log in") {
+		t.Fatalf("Lookup() = %+v, %v; want the base's 404 refused", got, err)
+	}
+}
+
+func TestLookup_ServerTroubleIsUnavailable(t *testing.T) {
+	f := newFakeRegistry(t)
+	f.status = http.StatusBadGateway
+	if _, err := f.client().Lookup(context.Background(), f.host()+"/acme-corp/shop-api:0.0.11", f.cred()); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Lookup() = %v, want ErrUnavailable", err)
+	}
+	f.status = 0
+	f.pingStatus = http.StatusServiceUnavailable
+	if _, err := f.client().Lookup(context.Background(), f.host()+"/acme-corp/shop-api:0.0.11", f.cred()); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Lookup() with the base down = %v, want ErrUnavailable", err)
 	}
 }
 
@@ -552,6 +634,11 @@ func TestTag_Failures(t *testing.T) {
 	}
 	if len(f.puts) != 0 {
 		t.Fatalf("puts = %q", f.puts)
+	}
+	f.putStatus = 0
+	f.putDigest = "sha256:" + strings.Repeat("e", 64)
+	if err := f.client().Tag(ctx, f.host()+"/acme-corp/shop-api", digest, "0.0.11", f.cred()); err == nil || !strings.Contains(err.Error(), "tagged another image") {
+		t.Errorf("Tag() answered with another digest = %v, want an error", err)
 	}
 }
 

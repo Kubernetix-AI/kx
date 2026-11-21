@@ -167,10 +167,11 @@ func firstTCPPort(args []string) int {
 
 var commitRe = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 
-// ImageTag is the tag kx builds: the commit's first 12 characters, with
-// -dirty-<UTC time> added when the folder has uncommitted changes, or
-// local-<UTC time> outside a git repository. In CI the CI system's commit
-// is used as is.
+// ImageTag is the tag kx builds: the first 12 characters of the commit
+// checked out in dir (git rev-parse HEAD), with -dirty-<UTC time> added
+// outside CI when the folder has uncommitted changes, or local-<UTC time>
+// outside a git repository. The commit a CI system names is never used:
+// kx tags what it builds. In CI the folder is built as it is.
 func ImageTag(ctx context.Context, env ci.Env, dir string, now time.Time) string {
 	tag, _ := imageTag(ctx, env, dir, now)
 	return tag
@@ -180,15 +181,27 @@ func ImageTag(ctx context.Context, env ci.Env, dir string, now time.Time) string
 // is (no -dirty- part), that commit; sha is "" otherwise.
 func imageTag(ctx context.Context, env ci.Env, dir string, now time.Time) (tag, sha string) {
 	stamp := now.UTC().Format("20060102150405")
-	sha, err := env.Commit(ctx, dir)
-	sha = strings.ToLower(strings.TrimSpace(sha))
-	if err != nil || !commitRe.MatchString(sha) {
+	sha = gitHead(ctx, dir)
+	if sha == "" {
 		return "local-" + stamp, ""
 	}
-	if env.CommitSHA == "" && dirty(ctx, dir) {
+	if !env.IsCI && dirty(ctx, dir) {
 		return sha[:12] + "-dirty-" + stamp, ""
 	}
 	return sha[:12], sha
+}
+
+// gitHead returns the commit checked out in dir, or "" when git can't
+// tell (not a repository, no commit yet).
+func gitHead(ctx context.Context, dir string) string {
+	cmd := procenv.Command(ctx, "git", "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	sha := strings.ToLower(strings.TrimSpace(string(out)))
+	if err != nil || !commitRe.MatchString(sha) {
+		return ""
+	}
+	return sha
 }
 
 // dirty reports uncommitted changes; when git can't tell, it says yes, so

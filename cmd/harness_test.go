@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -425,6 +426,35 @@ func (h *harness) loginAs(org, tok string, exp *time.Time) {
 	u := h.user()
 	u.AddLogin(org, config.OrgLogin{Token: tok, ExpiresAt: exp, User: "sam@acme.dev"})
 	h.saveUser(u)
+}
+
+// commit makes the harness folder a git repository holding one empty
+// commit, made the same way every time so that HEAD is ghSHA.
+func (h *harness) commit() {
+	h.t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		h.t.Skip("git is not installed")
+	}
+	if err := os.RemoveAll(filepath.Join(h.dir, ".git")); err != nil {
+		h.t.Fatal(err)
+	}
+	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1",
+		"GIT_AUTHOR_NAME=kx-test", "GIT_AUTHOR_EMAIL=kx-test@example.test", "GIT_AUTHOR_DATE=2026-11-12T09:00:00Z",
+		"GIT_COMMITTER_NAME=kx-test", "GIT_COMMITTER_EMAIL=kx-test@example.test", "GIT_COMMITTER_DATE=2026-11-12T09:00:00Z")
+	for _, args := range [][]string{
+		{"-c", "init.defaultBranch=main", "init", "-q", "--object-format=sha1", h.dir},
+		{"-C", h.dir, "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "test commit"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Env = env
+		if out, err := cmd.CombinedOutput(); err != nil {
+			h.t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	out, err := exec.Command("git", "-C", h.dir, "rev-parse", "HEAD").Output()
+	if err != nil || strings.TrimSpace(string(out)) != ghSHA {
+		h.t.Fatalf("the test commit is %q (%v), want %s", out, err, ghSHA)
+	}
 }
 
 func (h *harness) link(app, appID, org string) {

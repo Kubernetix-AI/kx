@@ -13,6 +13,7 @@ import (
 
 // gitlabTagRun makes the harness a GitLab pipeline for the tag tag.
 func gitlabTagRun(h *harness, tag string) {
+	h.commit()
 	for k, v := range map[string]string{"GITLAB_CI": "true", "CI": "true", "CI_PIPELINE_SOURCE": "push", "CI_COMMIT_SHA": ghSHA,
 		"CI_COMMIT_TAG": tag, "CI_PROJECT_PATH": "acme/shop-api", "CI_PIPELINE_ID": "55", "CI_JOB_ID": "77", "KX_TOKEN": tokDeploy} {
 		h.env[k] = v
@@ -35,12 +36,12 @@ func TestDeploy_VersionTagFromATagRun(t *testing.T) {
 	h.expect(h.run("deploy", "--json"), 0)
 	want := []string{
 		"check",
-		"build shop-api:3f9c2a1b7d4e",
-		"tag shop-api:3f9c2a1b7d4e registry.kubernetix.ai/acme-corp/shop-api:3f9c2a1b7d4e",
-		"push registry.kubernetix.ai/acme-corp/shop-api:3f9c2a1b7d4e",
+		"lookup registry.kubernetix.ai/acme-corp/shop-api:0.0.11", // before building: is 0.0.11 another commit's?
+		"build shop-api:dc4138a08c09",
+		"tag shop-api:dc4138a08c09 registry.kubernetix.ai/acme-corp/shop-api:dc4138a08c09",
+		"push registry.kubernetix.ai/acme-corp/shop-api:dc4138a08c09",
 		"lookup registry.kubernetix.ai/acme-corp/shop-api:0.0.11",
-		"tag shop-api:3f9c2a1b7d4e registry.kubernetix.ai/acme-corp/shop-api:0.0.11",
-		"push registry.kubernetix.ai/acme-corp/shop-api:0.0.11",
+		"retag registry.kubernetix.ai/acme-corp/shop-api:0.0.11 " + testDigest,
 		"lookup registry.kubernetix.ai/acme-corp/shop-api:0.0.11",
 	}
 	if got := h.docker.got(); strings.Join(got, "\n") != strings.Join(want, "\n") {
@@ -50,7 +51,7 @@ func TestDeploy_VersionTagFromATagRun(t *testing.T) {
 		t.Fatalf("stderr:\n%s", h.err.String())
 	}
 	out := h.deployJSON()
-	if out["version_tag"] != "0.0.11" || strings.Join(toStrings(out["tags"]), ",") != "3f9c2a1b7d4e,0.0.11" ||
+	if out["version_tag"] != "0.0.11" || strings.Join(toStrings(out["tags"]), ",") != "dc4138a08c09,0.0.11" ||
 		out["image"] != "registry.kubernetix.ai/acme-corp/shop-api@"+testDigest {
 		t.Fatalf("json = %v", out)
 	}
@@ -65,7 +66,7 @@ func TestDeploy_TagRunWhoseTagIsntAVersion(t *testing.T) {
 	h.dockerfile("FROM scratch\n")
 	h.expect(h.run("deploy", "--json"), 0)
 	out := h.deployJSON()
-	if out["version_tag"] != "" || strings.Join(toStrings(out["tags"]), ",") != "3f9c2a1b7d4e" {
+	if out["version_tag"] != "" || strings.Join(toStrings(out["tags"]), ",") != "dc4138a08c09" {
 		t.Fatalf("json = %v", out)
 	}
 	for _, c := range h.docker.got() {
@@ -101,10 +102,9 @@ func TestDeploy_TagFlag(t *testing.T) {
 	h.expect(h.run("deploy", "--tag", "1.4.0-beta.2", "--json"), 0)
 	got := h.docker.got()
 	want := "lookup registry.kubernetix.ai/acme-corp/shop-api:1.4.0-beta.2\n" +
-		"tag shop-api:local-20261112090000 registry.kubernetix.ai/acme-corp/shop-api:1.4.0-beta.2\n" +
-		"push registry.kubernetix.ai/acme-corp/shop-api:1.4.0-beta.2\n" +
+		"retag registry.kubernetix.ai/acme-corp/shop-api:1.4.0-beta.2 " + testDigest + "\n" +
 		"lookup registry.kubernetix.ai/acme-corp/shop-api:1.4.0-beta.2"
-	if strings.Join(got[len(got)-4:], "\n") != want {
+	if strings.Join(got[len(got)-3:], "\n") != want {
 		t.Fatalf("calls:\n%s", strings.Join(got, "\n"))
 	}
 	if out := h.deployJSON(); out["version_tag"] != "1.4.0-beta.2" {
@@ -151,12 +151,12 @@ func TestDeploy_RepositoryFlag(t *testing.T) {
 	h.expect(h.run("deploy", "--repository", "shop-frontend"), 0)
 	want := []string{
 		"check",
-		"build shop-api:3f9c2a1b7d4e",
-		"tag shop-api:3f9c2a1b7d4e registry.kubernetix.ai/acme-corp/shop-frontend:3f9c2a1b7d4e",
-		"push registry.kubernetix.ai/acme-corp/shop-frontend:3f9c2a1b7d4e",
+		"lookup registry.kubernetix.ai/acme-corp/shop-frontend:0.0.11", // before building: is 0.0.11 another commit's?
+		"build shop-api:dc4138a08c09",
+		"tag shop-api:dc4138a08c09 registry.kubernetix.ai/acme-corp/shop-frontend:dc4138a08c09",
+		"push registry.kubernetix.ai/acme-corp/shop-frontend:dc4138a08c09",
 		"lookup registry.kubernetix.ai/acme-corp/shop-frontend:0.0.11",
-		"tag shop-api:3f9c2a1b7d4e registry.kubernetix.ai/acme-corp/shop-frontend:0.0.11",
-		"push registry.kubernetix.ai/acme-corp/shop-frontend:0.0.11",
+		"retag registry.kubernetix.ai/acme-corp/shop-frontend:0.0.11 " + testDigest,
 		"lookup registry.kubernetix.ai/acme-corp/shop-frontend:0.0.11",
 	}
 	if got := h.docker.got(); strings.Join(got, "\n") != strings.Join(want, "\n") {
@@ -258,9 +258,8 @@ func TestDeploy_TagAndRepositoryFlagErrors(t *testing.T) {
 		{[]string{"deploy", "--tag", "bad tag"}, `"bad tag" isn't an image tag:`, "Run: kx deploy --tag 1.4.0"},
 		{[]string{"deploy", "--tag", "-v"}, `"-v" isn't an image tag:`, "Run: kx deploy --tag 1.4.0"},
 		{[]string{"deploy", "--tag", strings.Repeat("a", 129)}, "isn't an image tag:", "Run: kx deploy --tag 1.4.0"},
-		{[]string{"deploy", "--image", image, "--tag", "1.4.0"}, "--image deploys an image that's already pushed, so it can't be used with --tag, --repository or --rebuild.", "Run: kx deploy --image <image>"},
-		{[]string{"deploy", "--image", image, "--repository", "shop-frontend"}, "--image deploys an image that's already pushed, so it can't be used with --tag, --repository or --rebuild.", "Run: kx deploy --image <image>"},
-		{[]string{"deploy", "--image", image, "--rebuild"}, "--image deploys an image that's already pushed, so it can't be used with --tag, --repository or --rebuild.", "Run: kx deploy --image <image>"},
+		{[]string{"deploy", "--image", image, "--tag", "1.4.0"}, "--image deploys an image that's already pushed, so it can't be used with --tag or --repository.", "Run: kx deploy --image <image>"},
+		{[]string{"deploy", "--image", image, "--repository", "shop-frontend"}, "--image deploys an image that's already pushed, so it can't be used with --tag or --repository.", "Run: kx deploy --image <image>"},
 		{[]string{"deploy", "--repository", "Shop Frontend"}, `"Shop Frontend" isn't a repository name:`, "Run: kx deploy --repository shop-frontend"},
 		{[]string{"deploy", "--repository", "shop--frontend"}, `"shop--frontend" isn't a repository name:`, "Run: kx deploy --repository shop-frontend"},
 		{[]string{"deploy", "--repository", "registry.kubernetix.ai/acme-corp/shop-frontend"}, "--repository takes a repository's name, without the registry's address and organization.", "Run: kx deploy --repository shop-frontend"},
@@ -287,7 +286,7 @@ func TestDeploy_GitHubSummaryShowsTheTags(t *testing.T) {
 	h.dockerfile("FROM scratch\n")
 	h.expect(h.run("deploy", "--github"), 0)
 	sum, _ := os.ReadFile(h.env["GITHUB_STEP_SUMMARY"])
-	if !strings.Contains(string(sum), "| Tags | `3f9c2a1b7d4e`, `2.3.0` |") {
+	if !strings.Contains(string(sum), "| Tags | `dc4138a08c09`, `2.3.0` |") {
 		t.Fatalf("summary:\n%s", sum)
 	}
 }

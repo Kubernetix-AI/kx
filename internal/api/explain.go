@@ -201,7 +201,14 @@ func Explain(err error) Problem {
 	case errors.As(err, &taken):
 		return tagTaken(taken)
 	case errors.As(err, &unchecked):
-		return Problem{"tag_check_failed", "kx couldn't check whether " + unchecked.Image + ":" + unchecked.Tag + " already exists, so nothing was deployed.", "Check your internet connection, then run kx deploy again.", ExitPush}
+		fix := "Check your internet connection, then run kx deploy again."
+		switch unchecked.Cause {
+		case kxerr.CheckRefused:
+			fix = "Run kx deploy again in a minute; the registry didn't accept kx's upload credential."
+		case kxerr.CheckUnavailable:
+			fix = "The registry is having trouble; run kx deploy again in a few minutes."
+		}
+		return Problem{"tag_check_failed", "kx couldn't check whether " + unchecked.Image + ":" + unchecked.Tag + " already exists, so nothing was deployed.", fix, ExitPush}
 	case errors.Is(err, kxerr.ErrNoDigest):
 		return Problem{"no_digest", "Docker didn't report the digest of the image it uploaded, so kx can't be sure what it would deploy.", "Update Docker, then run kx deploy again.", ExitPush}
 	case errors.As(err, &build):
@@ -251,7 +258,11 @@ func tagTaken(e *kxerr.TagTaken) Problem {
 	if e.FromFlag {
 		fix = "Choose another --tag, or deploy what " + e.Tag + " holds: kx deploy --image " + held
 	}
-	return Problem{"tag_taken", ref + " already holds another image, so kx left the tag alone and deployed nothing.", fix, ExitPush}
+	what := ref + " already holds another image, so kx left the tag alone and deployed nothing."
+	if e.Raced {
+		what = ref + " was given another image while kx was tagging it, so kx deployed nothing."
+	}
+	return Problem{"tag_taken", what, fix, ExitPush}
 }
 
 func explainAPI(e *Error) Problem {

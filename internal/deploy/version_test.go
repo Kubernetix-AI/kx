@@ -68,25 +68,17 @@ func TestHighestVersion(t *testing.T) {
 func TestBuildTags(t *testing.T) {
 	now := time.Date(2026, 11, 12, 9, 30, 5, 0, time.UTC)
 	ctx := context.Background()
-	t.Run("CI tag run", func(t *testing.T) {
+	t.Run("not a repository, in CI too", func(t *testing.T) {
 		env := ci.Env{IsCI: true, CommitSHA: "3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345", Tag: "v0.0.11"}
 		got := BuildTags(ctx, env, t.TempDir(), now)
-		commit, version := got.Commit, got.Version
-		if commit != "3f9c2a1b7d4e" || version != "0.0.11" {
-			t.Fatalf("tags = %q, %q", commit, version)
-		}
-	})
-	t.Run("CI tag that isn't a version", func(t *testing.T) {
-		env := ci.Env{IsCI: true, CommitSHA: "3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345", Tag: "nightly"}
-		if version := BuildTags(ctx, env, t.TempDir(), now).Version; version != "" {
-			t.Fatalf("version = %q, want none", version)
+		if got.Commit != "local-20261112093005" || got.Version != "" || got.Revision != "" || got.CICommit != env.CommitSHA {
+			t.Fatalf("tags = %+v; without a checkout kx can't tell what it builds", got)
 		}
 	})
 	t.Run("not a repository", func(t *testing.T) {
 		got := BuildTags(ctx, ci.Env{}, t.TempDir(), now)
-		commit, version := got.Commit, got.Version
-		if commit != "local-20261112093005" || version != "" {
-			t.Fatalf("tags = %q, %q", commit, version)
+		if got.Commit != "local-20261112093005" || got.Version != "" || got.CICommit != "" {
+			t.Fatalf("tags = %+v", got)
 		}
 	})
 	if _, err := exec.LookPath("git"); err != nil {
@@ -100,16 +92,33 @@ func TestBuildTags(t *testing.T) {
 	}
 	git(t, dir, "init", "-q")
 	writeFile(t, filepath.Join(dir, "Dockerfile"), "FROM scratch\n")
-	commitAll()
+	older := commitAll()
 	git(t, dir, "tag", "v0.0.9") // an older commit's version
 	writeFile(t, filepath.Join(dir, "main.go"), "package main\n")
 	sha := commitAll()
 
 	t.Run("no tag on the commit", func(t *testing.T) {
 		got := BuildTags(ctx, ci.Env{}, dir, now)
-		commit, version := got.Commit, got.Version
-		if commit != sha[:12] || version != "" {
-			t.Fatalf("tags = %q, %q; want %q and no version (v0.0.9 is on another commit)", commit, version, sha[:12])
+		if got.Commit != sha[:12] || got.Version != "" || got.Revision != sha {
+			t.Fatalf("tags = %+v; want %q and no version (v0.0.9 is on another commit)", got, sha[:12])
+		}
+	})
+	t.Run("the CI system's tag of this commit", func(t *testing.T) {
+		got := BuildTags(ctx, ci.Env{IsCI: true, CommitSHA: sha, Tag: "v0.0.11"}, dir, now)
+		if got.Version != "0.0.11" || got.CICommit != "" {
+			t.Fatalf("tags = %+v", got)
+		}
+	})
+	t.Run("the CI system names another commit", func(t *testing.T) {
+		got := BuildTags(ctx, ci.Env{IsCI: true, CommitSHA: older, Tag: "v0.0.9"}, dir, now)
+		if got.Commit != sha[:12] || got.Revision != sha || got.Version != "" || got.CICommit != older {
+			t.Fatalf("tags = %+v; want HEAD's tags, and the CI commit only reported", got)
+		}
+	})
+	t.Run("the CI system's commit in capitals is the same commit", func(t *testing.T) {
+		got := BuildTags(ctx, ci.Env{IsCI: true, CommitSHA: strings.ToUpper(sha)}, dir, now)
+		if got.CICommit != "" || got.Revision != sha {
+			t.Fatalf("tags = %+v", got)
 		}
 	})
 	git(t, dir, "tag", "nightly")
@@ -117,15 +126,8 @@ func TestBuildTags(t *testing.T) {
 	git(t, dir, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "tag.gpgsign=false", "tag", "-a", "-m", "release", "v0.0.11")
 	t.Run("highest version on the commit, annotated or not", func(t *testing.T) {
 		got := BuildTags(ctx, ci.Env{}, dir, now)
-		commit, version := got.Commit, got.Version
-		if commit != sha[:12] || version != "0.0.11" {
-			t.Fatalf("tags = %q, %q; want %q, 0.0.11", commit, version, sha[:12])
-		}
-	})
-	t.Run("CI commit read from git", func(t *testing.T) {
-		env := ci.Env{IsCI: true, CommitSHA: sha}
-		if version := BuildTags(ctx, env, dir, now).Version; version != "0.0.11" {
-			t.Fatalf("version = %q, want 0.0.11", version)
+		if got.Commit != sha[:12] || got.Version != "0.0.11" {
+			t.Fatalf("tags = %+v; want %q, 0.0.11", got, sha[:12])
 		}
 	})
 	t.Run("CI tag and git tags together", func(t *testing.T) {
@@ -137,16 +139,14 @@ func TestBuildTags(t *testing.T) {
 	t.Run("uncommitted changes get no version", func(t *testing.T) {
 		writeFile(t, filepath.Join(dir, "new.txt"), "x")
 		got := BuildTags(ctx, ci.Env{}, dir, now)
-		commit, version := got.Commit, got.Version
-		if commit != sha[:12]+"-dirty-20261112093005" || version != "" {
-			t.Fatalf("tags = %q, %q; the image isn't the tagged commit's code", commit, version)
+		if got.Commit != sha[:12]+"-dirty-20261112093005" || got.Version != "" || got.Revision != "" {
+			t.Fatalf("tags = %+v; the image isn't the tagged commit's code", got)
 		}
 	})
-	t.Run("in CI the CI system's commit is taken as it is", func(t *testing.T) {
+	t.Run("in CI the checkout is built as it is", func(t *testing.T) {
 		got := BuildTags(ctx, ci.Env{IsCI: true, CommitSHA: sha}, dir, now)
-		commit, version := got.Commit, got.Version
-		if commit != sha[:12] || version != "0.0.11" || got.Revision != sha {
-			t.Fatalf("tags = %q, %q; CI tags the commit as it is, like its commit tag", commit, version)
+		if got.Commit != sha[:12] || got.Version != "0.0.11" || got.Revision != sha {
+			t.Fatalf("tags = %+v", got)
 		}
 	})
 }

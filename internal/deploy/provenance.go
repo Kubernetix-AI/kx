@@ -16,19 +16,23 @@ const (
 	LabelDockerfile = "ai.kubernetix.kx.dockerfile"       // the Dockerfile, from the repository's root
 )
 
-// Provenance says which build of which commit an image is. kx records it
-// as labels on the image it builds, and deploys an image whose labels
-// match instead of building the same commit again.
+// Provenance says which commit an image was built from, and where the
+// build sat in the repository. kx records it as labels on the image, for
+// people and tools to read; the only thing kx itself reads back is the
+// commit, to tell a version tag on an earlier build of the same commit
+// from one on another commit. Nothing is deployed because of a label.
 type Provenance struct {
 	Revision   string // the full commit
-	Context    string // the build folder, relative to the repository's root ("." for the root), with /
-	Dockerfile string // the Dockerfile, relative to the repository's root, with /
+	Context    string // the build folder, relative to the repository's root ("." for the root), with /; "" when unknown
+	Dockerfile string // the Dockerfile, relative to the repository's root, with /; "" when unknown
 }
 
 var labelValueRe = regexp.MustCompile(`^[ -~]{1,512}$`)
 
 func (p *Provenance) valid() bool {
-	return p != nil && commitRe.MatchString(p.Revision) && labelValueRe.MatchString(p.Context) && labelValueRe.MatchString(p.Dockerfile)
+	return p != nil && commitRe.MatchString(p.Revision) &&
+		(p.Context == "" || labelValueRe.MatchString(p.Context)) &&
+		(p.Dockerfile == "" || labelValueRe.MatchString(p.Dockerfile))
 }
 
 // labels are the labels an image built this way carries; none for nil.
@@ -36,47 +40,43 @@ func (p *Provenance) labels() map[string]string {
 	if p == nil {
 		return nil
 	}
-	return map[string]string{LabelRevision: p.Revision, LabelContext: p.Context, LabelDockerfile: p.Dockerfile}
+	l := map[string]string{LabelRevision: p.Revision}
+	if p.Context != "" {
+		l[LabelContext] = p.Context
+	}
+	if p.Dockerfile != "" {
+		l[LabelDockerfile] = p.Dockerfile
+	}
+	return l
 }
 
-// sameBuild reports whether an image with labels l was built this way:
-// same commit, folder and Dockerfile.
-func (p *Provenance) sameBuild(l map[string]string) bool {
-	return p.sameCommit(l) && l[LabelContext] == p.Context && l[LabelDockerfile] == p.Dockerfile
-}
-
-// sameCommit reports whether an image with labels l was built from this
-// commit, whichever way.
+// sameCommit reports whether an image with labels l says it was built
+// from this commit.
 func (p *Provenance) sameCommit(l map[string]string) bool {
 	return p != nil && l[LabelRevision] != "" && l[LabelRevision] == p.Revision
 }
 
 // ProvenanceOf describes a build of revision (the full commit, as
 // BuildTags returns it) from df. It is nil when revision is "" (the folder
-// isn't that commit as it is), or the build folder or Dockerfile isn't
-// inside the repository; kx then neither labels nor reuses the image.
+// isn't that commit as it is): such an image gets no labels. The build
+// folder and Dockerfile are left out when they aren't inside the
+// repository, or can't be written as a label.
 func ProvenanceOf(ctx context.Context, revision string, df *Dockerfile) *Provenance {
-	if revision == "" || df == nil {
+	if !commitRe.MatchString(revision) || df == nil {
 		return nil
 	}
+	p := &Provenance{Revision: revision}
 	cmd := procenv.Command(ctx, "git", "rev-parse", "--show-toplevel")
 	cmd.Dir = df.Dir
 	out, err := cmd.Output()
 	if err != nil {
-		return nil
+		return p
 	}
 	root := strings.TrimSpace(string(out))
-	dir, ok := within(root, df.Dir)
-	if !ok {
-		return nil
-	}
-	file, ok := within(root, df.Path)
-	if !ok {
-		return nil
-	}
-	p := &Provenance{Revision: revision, Context: dir, Dockerfile: file}
-	if !p.valid() {
-		return nil
+	dir, okDir := within(root, df.Dir)
+	file, okFile := within(root, df.Path)
+	if okDir && okFile && labelValueRe.MatchString(dir) && labelValueRe.MatchString(file) {
+		p.Context, p.Dockerfile = dir, file
 	}
 	return p
 }

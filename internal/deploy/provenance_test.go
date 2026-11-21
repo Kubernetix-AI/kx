@@ -10,8 +10,8 @@ import (
 
 func TestProvenanceOf(t *testing.T) {
 	ctx := context.Background()
-	if p := ProvenanceOf(ctx, testRevision, &Dockerfile{Dir: t.TempDir(), Path: "Dockerfile"}); p != nil {
-		t.Fatalf("outside a repository: %+v", p)
+	if p := ProvenanceOf(ctx, testRevision, &Dockerfile{Dir: t.TempDir(), Path: "Dockerfile"}); p == nil || *p != (Provenance{Revision: testRevision}) {
+		t.Fatalf("outside a repository: %+v, want the commit alone", p)
 	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
@@ -35,7 +35,7 @@ func TestProvenanceOf(t *testing.T) {
 	}{
 		{"the root", testRevision, Dockerfile{Dir: root, Path: filepath.Join(root, "Dockerfile")}, &Provenance{testRevision, ".", "Dockerfile"}},
 		{"a subfolder", testRevision, Dockerfile{Dir: api, Path: filepath.Join(api, "Dockerfile.prod")}, &Provenance{testRevision, "services/api", "services/api/Dockerfile.prod"}},
-		{"a Dockerfile outside the repository", testRevision, Dockerfile{Dir: root, Path: elsewhere}, nil},
+		{"a Dockerfile outside the repository", testRevision, Dockerfile{Dir: root, Path: elsewhere}, &Provenance{Revision: testRevision}},
 		{"no commit as it is", "", Dockerfile{Dir: root, Path: filepath.Join(root, "Dockerfile")}, nil},
 	}
 	for _, tt := range tests {
@@ -48,16 +48,20 @@ func TestProvenanceOf(t *testing.T) {
 
 func TestProvenance_Matching(t *testing.T) {
 	p := testProvenance
-	if !p.sameBuild(p.labels()) || !p.sameCommit(p.labels()) {
+	if !p.sameCommit(p.labels()) {
 		t.Fatal("an image's own labels don't match it")
 	}
 	other := p
 	other.Dockerfile = "Dockerfile.dev"
-	if p.sameBuild(other.labels()) || !p.sameCommit(other.labels()) {
-		t.Fatal("another Dockerfile of the same commit is the same commit but not the same build")
+	if !p.sameCommit(other.labels()) {
+		t.Fatal("another Dockerfile of the same commit is the same commit")
+	}
+	bare := Provenance{Revision: testRevision}
+	if l := bare.labels(); len(l) != 1 || l[LabelRevision] != testRevision {
+		t.Fatalf("labels without the paths = %v, want the commit alone", l)
 	}
 	var none *Provenance
-	if none.sameCommit(p.labels()) || none.sameBuild(p.labels()) || none.labels() != nil {
+	if none.sameCommit(p.labels()) || none.labels() != nil {
 		t.Fatal("no provenance matches nothing")
 	}
 	if p.sameCommit(map[string]string{}) || p.sameCommit(nil) {

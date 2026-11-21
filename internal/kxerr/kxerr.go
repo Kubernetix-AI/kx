@@ -361,24 +361,32 @@ func (e *NotRollbackable) Error() string {
 var ErrTagExists = errors.New("the registry already has that image tag")
 
 // TagTaken means the registry already has the tag Tag in the repository
-// Image (registry.kubernetix.ai/acme-corp/shop-api) for another image than
-// the one kx built, and kx never moves it. Digest is what the tag holds,
-// when kx knows. FromFlag says the tag came from --tag, not from the
-// commit's version tag.
+// Image (registry.kubernetix.ai/acme-corp/shop-api) for another commit's
+// image (or one that doesn't say), and kx never moves it. Digest is what
+// the tag holds, when kx knows. FromFlag says the tag came from --tag, not
+// from the commit's version tag. Raced says another image took the tag
+// while kx was placing it.
 type TagTaken struct {
 	Image, Tag, Digest string
-	FromFlag           bool
+	FromFlag, Raced    bool
 }
 
 func (e *TagTaken) Error() string { return e.Image + ":" + e.Tag + " already holds another image" }
 
 // TagCheckFailed means kx couldn't find out whether the registry already
-// has the tag Tag in the repository Image, so it didn't push it. Err is
-// the cause, for logs; Explain doesn't look inside it.
+// has the tag Tag in the repository Image, so it didn't push it. Cause is
+// one of the Check* values below; Err is the error itself, for logs.
 type TagCheckFailed struct {
-	Image, Tag string
-	Err        error
+	Image, Tag, Cause string
+	Err               error
 }
+
+// Why a tag lookup failed.
+const (
+	CheckNetwork     = ""            // no answer, or one kx couldn't use
+	CheckRefused     = "refused"     // the registry refused the credential
+	CheckUnavailable = "unavailable" // the registry answered with a server error
+)
 
 func (e *TagCheckFailed) Error() string {
 	return "checking " + e.Image + ":" + e.Tag + ": " + errString(e.Err)

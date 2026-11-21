@@ -1,16 +1,14 @@
 // Package ci recognises the CI system kx runs in and reads the facts kx
-// needs from it: the commit, the run identity (for idempotency keys), the
-// name for the User-Agent, and whether the run is for a pull or merge
+// needs from it: the commit and tag the run is for (which kx reports; it
+// builds what is checked out), the run identity (for idempotency keys),
+// the name for the User-Agent, and whether the run is for a pull or merge
 // request, which kx never deploys. Every other run deploys the commit it
 // checked out.
 package ci
 
 import (
-	"context"
-	"errors"
 	"strings"
 
-	"github.com/kubernetix-ai/kx/internal/procenv"
 	"github.com/kubernetix-ai/kx/internal/uuid"
 )
 
@@ -48,7 +46,9 @@ type Env struct {
 	// "Bitbucket Pipelines" or "CI". Empty outside CI.
 	Name string
 	IsCI bool
-	// CommitSHA is the commit the CI system says it is building, if any.
+	// CommitSHA is the commit the CI system says it is building, if any. kx
+	// reports it (commit status, job summary) but builds and tags what is
+	// checked out.
 	CommitSHA  string
 	Repository string
 	// RunID is the run, pipeline or build number; RunAttempt tells retries
@@ -165,23 +165,4 @@ func (e Env) IdempotencyKey(app string) string {
 		return ""
 	}
 	return key
-}
-
-// Commit returns the commit being built: the CI system's value when it
-// gives one, otherwise `git rev-parse HEAD` in dir.
-func (e Env) Commit(ctx context.Context, dir string) (string, error) {
-	if e.CommitSHA != "" {
-		return e.CommitSHA, nil
-	}
-	cmd := procenv.Command(ctx, "git", "rev-parse", "HEAD")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return "", errors.New("this folder is not a git repository with a commit")
-	}
-	sha := strings.TrimSpace(string(out))
-	if sha == "" {
-		return "", errors.New("git did not report a commit")
-	}
-	return sha, nil
 }

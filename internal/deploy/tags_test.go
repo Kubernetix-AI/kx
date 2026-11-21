@@ -28,6 +28,7 @@ type fakeRegistry struct {
 	seq     map[string][]string       // image reference → successive digests ("err" fails)
 	err     error                     // every lookup fails
 	tagErr  error                     // every Tag fails
+	refuse  string                    // lookups with this password are refused
 	creds   []api.RegistryCredential
 }
 
@@ -38,6 +39,9 @@ func (r *fakeRegistry) Lookup(_ context.Context, ref string, cred api.RegistryCr
 	r.creds = append(r.creds, cred)
 	if r.err != nil {
 		return registry.Image{}, r.err
+	}
+	if r.refuse != "" && cred.Password == r.refuse {
+		return registry.Image{}, registry.ErrUnauthorized
 	}
 	if next := r.seq[ref]; len(next) > 0 {
 		r.seq[ref] = next[1:]
@@ -120,8 +124,7 @@ func TestRun_VersionTagIsPushedToo(t *testing.T) {
 		"tag shop-api:3f9c2a1b7d4e registry.example.test/acme-corp/shop-api:3f9c2a1b7d4e",
 		"push registry.example.test/acme-corp/shop-api:3f9c2a1b7d4e",
 		"lookup registry.example.test/acme-corp/shop-api:0.0.11",
-		"tag shop-api:3f9c2a1b7d4e registry.example.test/acme-corp/shop-api:0.0.11",
-		"push registry.example.test/acme-corp/shop-api:0.0.11",
+		"retag registry.example.test/acme-corp/shop-api:0.0.11 "+testDigest,
 		"lookup registry.example.test/acme-corp/shop-api:0.0.11",
 	)
 	if len(reg.creds) != 2 || reg.creds[0].Password != testPassword {
@@ -178,7 +181,7 @@ func TestRun_VersionTagHoldingAnotherImageStops(t *testing.T) {
 			t.Fatalf("problem = %+v", p)
 		}
 		for _, c := range e.builder.got() {
-			if strings.HasSuffix(c, ":0.0.11") && !strings.HasPrefix(c, "lookup ") {
+			if (strings.HasSuffix(c, ":0.0.11") && !strings.HasPrefix(c, "lookup ")) || strings.HasPrefix(c, "retag ") {
 				t.Fatalf("kx touched the existing tag: %q", c)
 			}
 		}
@@ -203,8 +206,10 @@ func TestRun_VersionTagLookupFailureStops(t *testing.T) {
 	if p := api.Explain(err); p.Code != "tag_check_failed" {
 		t.Fatalf("problem = %+v", p)
 	}
-	if got := e.builder.got(); strings.HasSuffix(got[len(got)-1], ":0.0.11") && !strings.HasPrefix(got[len(got)-1], "lookup ") {
-		t.Fatalf("pushed the version tag without knowing what it holds: %q", got)
+	for _, c := range e.builder.got() {
+		if strings.HasPrefix(c, "retag ") {
+			t.Fatalf("tagged the version without knowing what it holds: %q", e.builder.got())
+		}
 	}
 	if len(e.api.reqs("POST", "/apps/")) != 0 {
 		t.Fatal("deployed after the lookup failed")
@@ -222,18 +227,35 @@ func TestRun_VersionTagLookupInterrupted(t *testing.T) {
 }
 
 func TestRun_VersionTagRefusedByTheRegistryStops(t *testing.T) {
-	// A registry with immutable tags refuses the version push when the tag
-	// appeared after kx looked.
+	// A registry that keeps its tags refuses the version tag when another
+	// image took it after kx looked.
 	e := newEnv(t)
-	o, _ := e.withVersion("0.0.11")
-	e.builder.pushErrs = []error{nil, &kxerr.PushFailed{Err: kxerr.ErrTagExists}}
+	o, reg := e.withVersion("0.0.11")
+	reg.tagErr = errors.New("registry: registry.example.test answered 400 when kx tagged 0.0.11")
+	reg.seq[versionRef] = []string{"", otherDigest}
 	_, err := e.run(o)
 	var taken *kxerr.TagTaken
-	if !errors.As(err, &taken) || taken.Tag != "0.0.11" {
-		t.Fatalf("Run() = %v, want TagTaken", err)
+	if !errors.As(err, &taken) || taken.Tag != "0.0.11" || !taken.Raced || taken.Digest != otherDigest {
+		t.Fatalf("Run() = %v, want TagTaken after the race", err)
+	}
+	if p := api.Explain(err); !strings.Contains(p.What, "was given another image while kx was tagging it") {
+		t.Fatalf("problem = %+v", p)
 	}
 	if len(e.api.reqs("POST", "/apps/")) != 0 {
-		t.Fatal("deployed after the version push was refused")
+		t.Fatal("deployed after the version tag was refused")
+	}
+}
+
+func TestRun_VersionTagPushFailure(t *testing.T) {
+	e := newEnv(t)
+	o, reg := e.withVersion("0.0.11")
+	reg.tagErr = errors.New("registry: registry.example.test answered 400 when kx tagged 0.0.11")
+	_, err := e.run(o)
+	if p := api.Explain(err); p.Code != "push_failed" {
+		t.Fatalf("problem = %+v (%v)", p, err)
+	}
+	if len(e.api.reqs("POST", "/apps/")) != 0 {
+		t.Fatal("deployed after the version tag failed")
 	}
 }
 
@@ -245,7 +267,7 @@ func TestRun_VersionTagMovedByAnotherRunWhilePushing(t *testing.T) {
 	reg.seq["registry.example.test/acme-corp/shop-api:0.0.11"] = []string{"", "sha256:" + strings.Repeat("ee", 32)}
 	_, err := e.run(o)
 	var taken *kxerr.TagTaken
-	if !errors.As(err, &taken) || taken.Digest != "sha256:"+strings.Repeat("ee", 32) {
+	if !errors.As(err, &taken) || taken.Digest != "sha256:"+strings.Repeat("ee", 32) || !taken.Raced {
 		t.Fatalf("Run() = %v, want TagTaken with the other run's digest", err)
 	}
 	if len(e.api.reqs("POST", "/apps/")) != 0 {
@@ -271,20 +293,6 @@ func TestRun_VersionTagUnconfirmedAfterPushWarnsAndDeploys(t *testing.T) {
 	}
 }
 
-func TestRun_VersionTagPushFailure(t *testing.T) {
-	e := newEnv(t)
-	o, _ := e.withVersion("0.0.11")
-	e.builder.pushErrs = []error{nil, &kxerr.PushFailed{Err: errors.New("exit status 1")}}
-	e.builder.pushOut = "error: connection reset\n"
-	_, err := e.run(o)
-	if p := api.Explain(err); p.Code != "push_failed" {
-		t.Fatalf("problem = %+v (%v)", p, err)
-	}
-	if len(e.api.reqs("POST", "/apps/")) != 0 {
-		t.Fatal("deployed after the version push failed")
-	}
-}
-
 func TestRun_CommitRePushedThenVersion(t *testing.T) {
 	e := newEnv(t)
 	e.clock.now = time.Date(2026, 11, 14, 8, 15, 30, 0, time.UTC)
@@ -301,8 +309,7 @@ func TestRun_CommitRePushedThenVersion(t *testing.T) {
 		"tag shop-api:3f9c2a1b7d4e registry.example.test/acme-corp/shop-api:3f9c2a1b7d4e-20261114081530",
 		"push registry.example.test/acme-corp/shop-api:3f9c2a1b7d4e-20261114081530",
 		"lookup registry.example.test/acme-corp/shop-api:0.0.11",
-		"tag shop-api:3f9c2a1b7d4e registry.example.test/acme-corp/shop-api:0.0.11",
-		"push registry.example.test/acme-corp/shop-api:0.0.11",
+		"retag registry.example.test/acme-corp/shop-api:0.0.11 "+testDigest,
 		"lookup registry.example.test/acme-corp/shop-api:0.0.11",
 	)
 	if strings.Join(res.Tags, ",") != "3f9c2a1b7d4e-20261114081530,0.0.11" {
@@ -352,8 +359,7 @@ func TestRun_Repository(t *testing.T) {
 		"tag shop-api:3f9c2a1b7d4e registry.example.test/acme-corp/shop-frontend:3f9c2a1b7d4e",
 		"push registry.example.test/acme-corp/shop-frontend:3f9c2a1b7d4e",
 		"lookup registry.example.test/acme-corp/shop-frontend:0.0.11",
-		"tag shop-api:3f9c2a1b7d4e registry.example.test/acme-corp/shop-frontend:0.0.11",
-		"push registry.example.test/acme-corp/shop-frontend:0.0.11",
+		"retag registry.example.test/acme-corp/shop-frontend:0.0.11 "+testDigest,
 		"lookup registry.example.test/acme-corp/shop-frontend:0.0.11",
 	)
 	wantImage := "registry.example.test/acme-corp/shop-frontend@" + testDigest

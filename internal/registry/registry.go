@@ -34,6 +34,18 @@ import (
 // ErrUnauthorized means the registry refused the credential.
 var ErrUnauthorized = errors.New("the registry refused the credential")
 
+// ErrUnavailable means the registry answered with a server error.
+var ErrUnavailable = errors.New("the registry is having trouble")
+
+// statusError words an answer kx didn't expect; a server error wraps
+// ErrUnavailable.
+func statusError(host string, status int, doing string) error {
+	if status >= 500 {
+		return fmt.Errorf("registry: %s answered %d when kx %s: %w", host, status, doing, ErrUnavailable)
+	}
+	return fmt.Errorf("registry: %s answered %d when kx %s", host, status, doing)
+}
+
 // manifestTypes are the manifests a tag can hold. Asking for all of them
 // makes the registry report the digest of what the tag holds, not of a
 // converted manifest.
@@ -126,7 +138,7 @@ func (c Client) Tag(ctx context.Context, repo, digest, tag string, cred api.Regi
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return ErrUnauthorized
 	default:
-		return fmt.Errorf("registry: %s answered %d when kx tagged %s", host, a.status, tag)
+		return statusError(host, a.status, "tagged "+tag)
 	}
 	if d := a.header.Get("Docker-Content-Digest"); d != "" && d != digest {
 		return fmt.Errorf("registry: %s tagged another image as %s", host, tag)
@@ -168,7 +180,7 @@ func (c Client) open(ctx context.Context, host, repo, actions string, cred api.R
 			return nil, err
 		}
 	default:
-		return nil, fmt.Errorf("registry: %s answered %d when kx asked how to log in", host, a.status)
+		return nil, statusError(host, a.status, "asked how to log in")
 	}
 	return s, nil
 }
@@ -327,7 +339,7 @@ func (s *session) check(a answer, what string) error {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return ErrUnauthorized
 	}
-	return fmt.Errorf("registry: %s answered %d when kx asked about %s", s.host, a.status, what)
+	return statusError(s.host, a.status, "asked about "+what)
 }
 
 func digestOf(b []byte) string {
@@ -399,7 +411,7 @@ func authorize(ctx context.Context, hc *http.Client, host, repo, actions, challe
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return "", ErrUnauthorized
 	default:
-		return "", fmt.Errorf("registry: %s's token service answered %d", host, a.status)
+		return "", statusError(host, a.status, "asked its token service for a token")
 	}
 	var tok struct {
 		Token       string `json:"token"`

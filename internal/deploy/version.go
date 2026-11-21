@@ -24,30 +24,41 @@ type Tags struct {
 	// Commit is the tag ImageTag gives.
 	Commit string
 	// Version is the highest version among the git tags of the commit
-	// being built (and the tag the CI run is for), without its v: "0.0.11"
-	// for v0.0.11; "" when there is none.
+	// checked out (and the tag the CI run is for, when the run is for that
+	// commit), without its v: "0.0.11" for v0.0.11; "" when there is none.
 	Version string
 	// Revision is the full commit when the build is of it as it is, else
 	// "" (and Version is "" too).
 	Revision string
+	// CICommit is the commit the CI system names when it isn't the one
+	// checked out, or when kx can't tell which one is: kx then builds and
+	// tags what is checked out, and only reports this one.
+	CICommit string
 }
 
-// BuildTags returns the tags of a build of dir. Version and Revision are
-// "" when the folder isn't a git repository, and outside CI when it has
+// BuildTags returns the tags of a build of dir, always from the commit
+// checked out there (git rev-parse HEAD). Version and Revision are "" when
+// the folder isn't a git repository, and outside CI when it has
 // uncommitted changes, since the image then isn't the tagged commit's
-// code. In CI the CI system's commit is taken as it is, as for the
-// commit's own tag.
+// code. In CI the folder is built as it is, with whatever earlier steps
+// wrote into it.
 func BuildTags(ctx context.Context, env ci.Env, dir string, now time.Time) Tags {
 	commit, sha := imageTag(ctx, env, dir, now)
+	t := Tags{Commit: commit}
+	ciSHA := strings.ToLower(strings.TrimSpace(env.CommitSHA))
+	if ciSHA != "" && ciSHA != gitHead(ctx, dir) {
+		t.CICommit = env.CommitSHA
+	}
 	if sha == "" {
-		return Tags{Commit: commit}
+		return t
 	}
 	var tags []string
-	if env.Tag != "" {
-		tags = append(tags, env.Tag)
+	if env.Tag != "" && t.CICommit == "" {
+		tags = append(tags, env.Tag) // the run is for this commit's tag
 	}
 	tags = append(tags, gitTagsAt(ctx, dir, sha)...)
-	return Tags{Commit: commit, Version: highestVersion(tags), Revision: sha}
+	t.Version, t.Revision = highestVersion(tags), sha
+	return t
 }
 
 // gitTagsAt lists the tags of commit sha in dir's repository, annotated or
