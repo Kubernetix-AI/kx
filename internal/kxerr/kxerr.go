@@ -117,6 +117,25 @@ func (e *TokenLacks) Error() string {
 	return fmt.Sprintf("token lacks the %v permissions", e.Permissions)
 }
 
+// Change is an error from a command that changes an app's configuration
+// (kx env set and unset, kx scale), with what became of the change. Saved
+// says whether the change is on the app as kx stops. RestoredTo is the
+// version Kubernetix put the app back to after a failed deploy, undoing
+// the change (0 when it didn't). DeploymentID and Version are the deploy kx
+// started, if any. Note is the line that says what became of the change,
+// empty when nothing was saved.
+type Change struct {
+	Err          error
+	Saved        bool
+	RestoredTo   int
+	DeploymentID string
+	Version      int
+	Note         string
+}
+
+func (e *Change) Error() string { return e.Err.Error() }
+func (e *Change) Unwrap() error { return e.Err }
+
 // TokenAppMismatch means an app-scoped token for TokenApp was asked to act on App.
 type TokenAppMismatch struct{ TokenApp, App string }
 

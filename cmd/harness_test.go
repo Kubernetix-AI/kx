@@ -83,6 +83,7 @@ type fakeAPI struct {
 	gets        map[string]int
 	failReason  string
 	failCode    string // the error_code a failed deployment carries
+	onFailed    func() // runs when a new deployment first reports failed
 
 	// Configure side: the env var values the fake keeps (by app ID; tokens
 	// only ever see the names), and the bodies of PATCH env and PUT app.
@@ -680,6 +681,11 @@ func (f *fakeAPI) addDeployment(appID, id, image string) api.Deployment {
 		v = ds[0].Version + 1
 	}
 	d := api.Deployment{ID: id, AppID: appID, Version: v, Status: "pending", ImageURL: image, CreatedAt: f.now}
+	for _, a := range f.apps {
+		if a.ID == appID { // a deployment runs with the app's settings
+			d.Replicas, d.Autoscaling = a.Replicas, a.Autoscaling
+		}
+	}
 	f.deployments[appID] = append([]api.Deployment{d}, f.deployments[appID]...)
 	return d
 }
@@ -696,9 +702,13 @@ func (f *fakeAPI) findDeployment(id string) *api.Deployment {
 			if strings.HasPrefix(id, "new-") {
 				n := min(f.gets[id], len(f.statuses)-1)
 				f.gets[id]++
+				was := d.Status
 				d.Status = f.statuses[n]
 				if d.Status == "failed" {
 					d.CustomerError, d.ErrorCode = f.failReason, f.failCode
+					if was != "failed" && f.onFailed != nil {
+						f.onFailed()
+					}
 				}
 			}
 			return d

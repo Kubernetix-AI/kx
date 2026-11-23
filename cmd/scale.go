@@ -26,7 +26,7 @@ until it's live, like kx deploy. Your plan sets the most an app can run.`,
   kx scale 2 --no-deploy        save it; the next deploy applies it`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runScale(cmd.Context(), a, cmd, f, args)
+			return asChange(runScale(cmd.Context(), a, cmd, f, args))
 		},
 	}
 	addConfigureFlags(cmd, &f)
@@ -48,16 +48,41 @@ func runScale(ctx context.Context, a *App, cmd *cobra.Command, f configureFlags,
 	}
 	return runConfigure(ctx, a, cmd, f, appChange{
 		command: "kx scale",
-		check: func(app *api.App) {
+		prepare: func(ctx context.Context, c *api.Client, app *api.App) (string, error) {
 			if app.Autoscales() {
-				a.printer().Warn("%s autoscales between %d and %d replicas, so autoscaling decides how many run; the count you set applies once autoscaling is off.",
+				what := fmt.Sprintf("%s autoscales between %d and %d replicas, so a replica count has no effect while autoscaling is on.",
 					app.Name, app.Autoscaling.Min(), app.Autoscaling.MaxReplicas)
+				if !f.noDeploy {
+					// Deploying would use up a deploy and change nothing.
+					return "", &kxerr.Usage{What: what, Fix: fmt.Sprintf("To save the count for when autoscaling is off: kx scale %d --no-deploy", n)}
+				}
+				a.printer().Warn("%s The count applies once autoscaling is off.", what)
+				return "", nil
 			}
+			if app.Replicas != n {
+				return "", nil
+			}
+			// The app is set to n already. What's live may still run another
+			// count (n saved without a deploy): then deploying changes it.
+			var live *api.Deployment
+			if deps, err := c.ListDeployments(ctx, app.ID, 20); err == nil {
+				live = liveDeployment(deps)
+			}
+			if live != nil && live.Replicas == n {
+				return fmt.Sprintf("Nothing to change: %s already runs %d %s.", app.Name, n, plural), nil
+			}
+			if !f.noDeploy && live != nil && live.Replicas > 0 {
+				return "", nil
+			}
+			return fmt.Sprintf("Nothing to change: %s is already set to %d %s.", app.Name, n, plural), nil
 		},
 		step: func(app *api.App) (string, string) { return "Scaled", fmt.Sprintf("%s to %d %s", app.Name, n, plural) },
 		save: func(ctx context.Context, c *api.Client, app *api.App) error {
 			_, err := c.SetReplicas(ctx, app.ID, n)
 			return err
+		},
+		undone: func(*api.App) func(*api.App) (bool, bool) {
+			return func(fresh *api.App) (bool, bool) { return fresh.Replicas != n, true }
 		},
 		out: func(o *configureJSON) { o.Replicas = n },
 	})

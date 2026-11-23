@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -52,7 +53,7 @@ Names use letters, digits and _; an empty value needs --allow-empty.`,
   kx env set --from-file .env.production
   kx env set LOG_LEVEL=info --no-deploy     save it; the next deploy applies it`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runEnvSet(cmd.Context(), a, cmd, setFlags, in, args)
+			return asChange(runEnvSet(cmd.Context(), a, cmd, setFlags, in, args))
 		},
 	}
 	addConfigureFlags(set, &setFlags)
@@ -66,7 +67,7 @@ Names use letters, digits and _; an empty value needs --allow-empty.`,
 		Short:   "Remove environment variables, then deploy the app",
 		Example: "  kx env unset OLD_FLAG\n  kx env unset OLD_FLAG LEGACY_URL --no-deploy",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runEnvUnset(cmd.Context(), a, cmd, unsetFlags, args)
+			return asChange(runEnvUnset(cmd.Context(), a, cmd, unsetFlags, args))
 		},
 	}
 	addConfigureFlags(unset, &unsetFlags)
@@ -147,6 +148,23 @@ func runEnvSet(ctx context.Context, a *App, cmd *cobra.Command, f configureFlags
 			_, err := c.PatchAppEnv(ctx, app.ID, values, nil)
 			return err
 		},
+		undone: func(before *api.App) func(*api.App) (bool, bool) {
+			// Only a name the app didn't have shows the change is gone:
+			// kx never sees values.
+			var added []string
+			for _, k := range names {
+				if _, had := before.EnvVars[k]; !had {
+					added = append(added, k)
+				}
+			}
+			return func(fresh *api.App) (bool, bool) {
+				if len(added) == 0 {
+					return false, false
+				}
+				_, still := fresh.EnvVars[added[0]]
+				return !still, true
+			}
+		},
 		out: func(o *configureJSON) { o.Set = names },
 	})
 }
@@ -168,14 +186,50 @@ func runEnvUnset(ctx context.Context, a *App, cmd *cobra.Command, f configureFla
 	}
 	names := append([]string(nil), args...)
 	sort.Strings(names)
+	// Only the names the app has are removed; the others are counted, not
+	// named (a name typed here could be a value by mistake).
+	var present []string
+	missing := 0
 	return runConfigure(ctx, a, cmd, f, appChange{
 		command: "kx env",
-		step:    func(app *api.App) (string, string) { return "Unset", listOf(names) + " on " + app.Name },
+		prepare: func(_ context.Context, _ *api.Client, app *api.App) (string, error) {
+			for _, k := range args {
+				if _, ok := app.EnvVars[k]; ok {
+					present = append(present, k)
+				}
+			}
+			missing = len(args) - len(present)
+			switch {
+			case len(present) > 0:
+				return "", nil
+			case len(args) == 1:
+				return "Nothing to change: " + app.Name + " has no variable by that name.", nil
+			}
+			return "Nothing to change: " + app.Name + " has none of those variables.", nil
+		},
+		step: func(app *api.App) (string, string) {
+			return "Unset", listOf(sortedCopy(present)) + " on " + app.Name
+		},
+		note: func(app *api.App) string {
+			switch missing {
+			case 0:
+				return ""
+			case 1:
+				return "1 of the names isn't set on " + app.Name + "."
+			}
+			return fmt.Sprintf("%d of the names aren't set on %s.", missing, app.Name)
+		},
 		save: func(ctx context.Context, c *api.Client, app *api.App) error {
-			_, err := c.PatchAppEnv(ctx, app.ID, nil, args)
+			_, err := c.PatchAppEnv(ctx, app.ID, nil, present)
 			return err
 		},
-		out: func(o *configureJSON) { o.Unset = names },
+		undone: func(*api.App) func(*api.App) (bool, bool) {
+			return func(fresh *api.App) (bool, bool) {
+				_, back := fresh.EnvVars[present[0]]
+				return back, true
+			}
+		},
+		out: func(o *configureJSON) { o.Unset = sortedCopy(present) },
 	})
 }
 
@@ -397,6 +451,13 @@ func envFileValue(v string) (string, bool) {
 		}
 	}
 	return v, true
+}
+
+// sortedCopy returns names sorted, leaving names as it was.
+func sortedCopy(names []string) []string {
+	out := slices.Clone(names)
+	slices.Sort(out)
+	return out
 }
 
 func sortedKeys(m map[string]string) []string {

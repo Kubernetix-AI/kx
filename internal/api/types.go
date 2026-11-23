@@ -105,7 +105,11 @@ type Deployment struct {
 	ErrorCode string `json:"error_code,omitempty"`
 	// RetryCount is how many times Kubernetix has started this deployment
 	// again after an attempt that didn't go live.
-	RetryCount  int          `json:"retry_count,omitempty"`
+	RetryCount int `json:"retry_count,omitempty"`
+	// Replicas and Autoscaling are what the deployment runs with, copied
+	// from the app when it was made (0 and nil from an older API).
+	Replicas    int          `json:"replicas,omitempty"`
+	Autoscaling *Autoscaling `json:"autoscaling,omitempty"`
 	Port        int          `json:"port,omitempty"`
 	HealthCheck *HealthCheck `json:"health_check,omitempty"`
 	CreatedAt   time.Time    `json:"created_at"`

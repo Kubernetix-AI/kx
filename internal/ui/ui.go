@@ -303,17 +303,37 @@ type ErrorBody struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	Fix     string `json:"fix"`
+	// The rest comes with the errors of kx env and kx scale: what became
+	// of the change (Change, a sentence), whether it is on the app (Saved)
+	// and live (Deployed), the version Kubernetix put the app back to, and
+	// the deploy kx started.
+	Change       string `json:"change,omitempty"`
+	Saved        *bool  `json:"saved,omitempty"`
+	Deployed     *bool  `json:"deployed,omitempty"`
+	RestoredTo   int    `json:"restored_to,omitempty"`
+	DeploymentID string `json:"deployment_id,omitempty"`
+	Version      int    `json:"version,omitempty"`
 }
 
 // Fail prints a problem: two lines on stderr, or with --json
 // {"error":{"code","message","fix"}} on stdout.
 func (p *Printer) Fail(code, what, fix string) {
-	what, fix = CleanField(what), CleanField(fix)
+	p.FailBody(ErrorBody{Code: code, Message: what, Fix: fix})
+}
+
+// FailBody prints a problem: what went wrong, the Change line when there
+// is one, then the fix on stderr; or with --json {"error":b} on stdout.
+func (p *Printer) FailBody(b ErrorBody) {
+	b.Message, b.Fix, b.Change = CleanField(b.Message), CleanField(b.Fix), CleanField(b.Change)
 	if p.JSON {
-		_ = p.PrintJSONLine(ErrorJSON{ErrorBody{Code: code, Message: what, Fix: fix}})
+		_ = p.PrintJSONLine(ErrorJSON{b})
 		return
 	}
-	p.writeErr(p.paint(bold, what) + "\n" + fix + "\n")
+	text := p.paint(bold, b.Message) + "\n"
+	if b.Change != "" {
+		text += b.Change + "\n"
+	}
+	p.writeErr(text + b.Fix + "\n")
 }
 
 // Table prints rows under headers on stdout, aligned in columns. With no

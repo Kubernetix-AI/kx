@@ -554,6 +554,10 @@ func tokenLacks(e *kxerr.TokenLacks) Problem {
 			fix = configureFix(e.Source, e.Org)
 		}
 	}
+	if len(e.Permissions) == 1 && e.Permissions[0] == PermDeploy && e.Command != "" && e.Command != "kx deploy" {
+		// kx env and kx scale can save the change without deploying.
+		fix = "Add --no-deploy to save the change without deploying, or " + deployFix(e.Source, e.Org)
+	}
 	command := e.Command
 	if command == "" {
 		command = "kx deploy"
@@ -882,6 +886,18 @@ func configureFix(src kxerr.TokenSource, org string) string {
 		return "Create an API token with Configure (Settings → API tokens) and replace the KX_TOKEN secret."
 	}
 	return "Log in again and keep Configure ticked: " + strings.TrimPrefix(loginFix(org), "Run: ")
+}
+
+// deployFix, after "or ", says how to get a token that can deploy and
+// configure.
+func deployFix(src kxerr.TokenSource, org string) string {
+	switch src {
+	case kxerr.SourceEnv:
+		return "create an API token with Deploy and Configure (Settings → API tokens) and replace the KX_TOKEN secret."
+	case kxerr.SourceLogin:
+		return "log in again with Deploy ticked: " + strings.TrimPrefix(loginFix(org), "Run: ")
+	}
+	return "log in with a token that can deploy: kx login"
 }
 
 func askAdmin(org, what string) string {

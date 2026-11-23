@@ -149,6 +149,7 @@ func TestEnvSet_BadArgumentsNeverShowAValue(t *testing.T) {
 
 func TestEnvUnset(t *testing.T) {
 	h := configured(t)
+	h.api.envValues = map[string]map[string]string{appShopID: {"OLD_FLAG": "1", "LEGACY_URL": "x", "KEEP": "y"}}
 	h.expect(h.run("env", "unset", "OLD_FLAG", "LEGACY_URL", "--no-deploy"), 0)
 	if fmt.Sprint(h.api.envPatches) != "[map[unset:[OLD_FLAG LEGACY_URL]]]" {
 		t.Fatalf("PATCH env bodies = %v", h.api.envPatches)
@@ -265,7 +266,8 @@ func TestScale_Autoscaling(t *testing.T) {
 	two := 2
 	h.api.apps[0].Autoscaling = &api.Autoscaling{MinReplicas: &two, MaxReplicas: 6}
 	h.expect(h.run("scale", "3", "--no-deploy"), 0)
-	if !strings.Contains(h.err.String(), "! shop-api autoscales between 2 and 6 replicas, so autoscaling decides how many run; the count you set applies once autoscaling is off.\n") {
+	if !strings.Contains(h.err.String(), "! shop-api autoscales between 2 and 6 replicas, so a replica count has no effect while autoscaling is on. The count applies once autoscaling is off.\n") ||
+		fmt.Sprint(h.api.appPuts) != "[map[replicas:3]]" {
 		t.Fatalf("stderr:\n%s", h.err.String())
 	}
 }

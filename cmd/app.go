@@ -7,6 +7,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/kubernetix-ai/kx/internal/browser"
 	"github.com/kubernetix-ai/kx/internal/deploy"
 	"github.com/kubernetix-ai/kx/internal/docker"
+	"github.com/kubernetix-ai/kx/internal/kxerr"
 	imageregistry "github.com/kubernetix-ai/kx/internal/registry"
 	"github.com/kubernetix-ai/kx/internal/ui"
 )
@@ -97,7 +99,13 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		a.jsonOut = hasJSONFlag(args)
 	}
 	prob := api.Explain(err)
-	a.printer().Fail(prob.Code, prob.What, prob.Fix)
+	body := ui.ErrorBody{Code: prob.Code, Message: prob.What, Fix: prob.Fix}
+	if ch := (*kxerr.Change)(nil); errors.As(err, &ch) {
+		deployed := false // an error means the change didn't go live
+		body.Change, body.Saved, body.Deployed = ch.Note, &ch.Saved, &deployed
+		body.RestoredTo, body.DeploymentID, body.Version = ch.RestoredTo, ch.DeploymentID, ch.Version
+	}
+	a.printer().FailBody(body)
 	return prob.Exit
 }
 
