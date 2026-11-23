@@ -55,7 +55,8 @@
   GitHub job summary lists the image's tags.
 - `kx deploy --repository <name>`, or `"repository"` in `.kx.json`, pushes to
   `registry.kubernetix.ai/<org>/<name>` instead of the repository named after the app. `kx link`
-  keeps a `.kx.json`'s `"repository"`.
+  keeps a `.kx.json`'s `"repository"`. A name with a part called `tags` is refused (exit 2):
+  Kubernetix's image routes would read it as a tag.
 
 ### Logging in
 

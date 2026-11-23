@@ -399,6 +399,15 @@ func TestValidRepository_MatchesTheRegistry(t *testing.T) {
 	}
 }
 
+func TestHasTagsSegment(t *testing.T) {
+	for name, want := range map[string]bool{"tags": true, "web/tags": true, "tags/web": true, "a/tags/b": true,
+		"tags-api": false, "web/mytags": false, "shop-api": false, "web/tags.v2": false} {
+		if got := HasTagsSegment(name); got != want {
+			t.Errorf("HasTagsSegment(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 func TestParseProject_Repository(t *testing.T) {
 	p, err := ParseProject([]byte(`{"app":"shop","repository":"shop-frontend"}`))
 	if err != nil || p.Repository != "shop-frontend" {

@@ -106,6 +106,18 @@ const maxRepository = 128
 // 128 characters.
 func ValidRepository(s string) bool { return len(s) <= maxRepository && repositoryRe.MatchString(s) }
 
+// HasTagsSegment reports whether the repository name has a part called
+// "tags": Kubernetix's image routes would read .../tags/... as a tag, so
+// such a repository couldn't be deleted from the dashboard.
+func HasTagsSegment(repo string) bool {
+	for _, part := range strings.Split(repo, "/") {
+		if part == "tags" {
+			return true
+		}
+	}
+	return false
+}
+
 // ValidOrgName reports whether s can be an organization name.
 func ValidOrgName(s string) bool { return validOrg(s) }
 

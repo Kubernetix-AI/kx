@@ -240,7 +240,8 @@ push to another repository in your organization's registry, for example the one 
 have always been in, pass `--repository shop-frontend`, or add `"repository": "shop-frontend"`
 to `.kx.json`, where it applies when kx deploys the app that `.kx.json` links. A repository
 name is lowercase letters and digits with single `.`, `_` or `-` between them and `/` between
-parts (`web/frontend`), without the registry's address or the organization. A token with Push
+parts (`web/frontend`), without the registry's address or the organization, and with no part
+called `tags` (Kubernetix's image routes would read it as a tag). A token with Push
 images can push to every repository in the organization's registry, so a token made for one
 app can push to a repository named differently from the app.
 

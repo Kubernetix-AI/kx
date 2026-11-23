@@ -205,6 +205,10 @@ func reportEarly(ctx context.Context, gh *github.Reporter, env ci.Env, err error
 	}
 }
 
+// tagsSegment is why a repository name with a part called "tags" is
+// refused.
+const tagsSegment = `A repository name can't contain a segment called "tags"; Kubernetix's image routes would read it as a tag.`
+
 // withAddress reports whether repo looks like a whole image name
 // (host/org/name, the host having a dot) and returns the name part.
 func withAddress(repo string) (string, bool) {
@@ -218,6 +222,9 @@ func withAddress(repo string) (string, bool) {
 // checkRepositoryFlag checks --repository before anything else happens:
 // a repository name, not a whole image name.
 func checkRepositoryFlag(repo string) error {
+	if config.HasTagsSegment(repo) {
+		return &kxerr.Usage{What: tagsSegment, Fix: "Choose a name without that segment, then run kx deploy again."}
+	}
 	if name, ok := withAddress(repo); ok {
 		return &kxerr.Usage{
 			What: "--repository takes a repository's name, without the registry's address and organization.",
@@ -242,6 +249,9 @@ func (d *deployRun) repository(org string) (string, error) {
 	if p := d.s.Cfg.Project; repo == "" && p != nil && p.Repository != "" &&
 		p.App == d.appName && (p.Org == "" || p.Org == org) {
 		repo, fromFlag = p.Repository, false
+		if config.HasTagsSegment(repo) {
+			return "", &kxerr.Usage{What: tagsSegment, Fix: fmt.Sprintf("Change %q in .kx.json to a name without that segment.", "repository")}
+		}
 		if name, ok := withAddress(repo); ok {
 			return "", &kxerr.Usage{
 				What: "The repository " + repo + " in .kx.json includes the registry's address and organization.",

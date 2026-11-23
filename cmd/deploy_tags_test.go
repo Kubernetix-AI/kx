@@ -316,3 +316,32 @@ func toStrings(v any) []string {
 	}
 	return out
 }
+
+func TestDeploy_RepositoryWithATagsSegment(t *testing.T) {
+	// Kubernetix's image routes read a .../tags/... path as a tag, so such
+	// a repository could never be deleted from the dashboard.
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.dockerfile("FROM scratch\n")
+	const what = "A repository name can't contain a segment called \"tags\"; Kubernetix's image routes would read it as a tag.\n"
+	for _, name := range []string{"tags", "web/tags", "tags/frontend", "a/tags/b"} {
+		h.expect(h.run("deploy", "--repository", name), 2)
+		if !strings.HasSuffix(h.err.String(), what+"Choose a name without that segment, then run kx deploy again.\n") {
+			t.Fatalf("--repository %s: stderr:\n%s", name, h.err.String())
+		}
+	}
+	if len(h.api.got()) != 0 || len(h.docker.got()) != 0 {
+		t.Fatal("did something with a refused repository name")
+	}
+	// A segment that only contains the word is fine.
+	h.expect(h.run("deploy", "--repository", "web/tags-api"), 0)
+
+	if _, err := config.SaveProject(h.dir, config.Project{App: "shop-api", AppID: appShopID, Org: "acme-corp", Repository: "web/tags"}); err != nil {
+		t.Fatal(err)
+	}
+	h.expect(h.run("deploy"), 2)
+	if !strings.HasSuffix(h.err.String(), what+"Change \"repository\" in .kx.json to a name without that segment.\n") {
+		t.Fatalf(".kx.json: stderr:\n%s", h.err.String())
+	}
+}
