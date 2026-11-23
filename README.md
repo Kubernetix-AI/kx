@@ -284,7 +284,9 @@ build and push the image yourself, then deploy it:
 | `kx logs` | The last 100 lines your app printed in the past hour. |
 | `kx open` | Opens the live URL in your browser (and prints it). |
 | `kx rollback` | Redeploys the newest earlier version that went live with a different image. |
-| `kx apps list`, `kx apps get <app>` | Lists your apps, or shows one. |
+| `kx apps list`, `kx apps get <app>` | Lists your apps, or shows one, with each app's live version. |
+| `kx env`, `kx env set`, `kx env unset` | Lists the names of the app's environment variables, or sets or removes some, then deploys the app. |
+| `kx scale <replicas>` | Sets how many replicas the app runs, then deploys it. |
 
 In a folder that isn't linked, `kx status`, `kx logs` and `kx open` use your organization's
 only app, and say so; with several apps, add `--app`.
@@ -306,7 +308,32 @@ kx rollback --to v13 --yes
 
 kx apps list
 kx apps get shop-api
+
+kx env                           # the names of the app's environment variables
+kx env set LOG_LEVEL=debug FEATURE_X=on
+kx env set STRIPE_KEY            # the value of $STRIPE_KEY, kept off the command line
+kx env set --from-file .env.production
+kx env unset OLD_FLAG
+kx scale 3
+kx scale 1 --no-deploy           # save it; the next deploy applies it
 ```
+
+**Changing settings.** `kx env set`, `kx env unset` and `kx scale` change the app's settings
+and then deploy the app as configured (its current image with the new settings), waiting
+until it's live as `kx deploy` does, with the same lines and exit codes; `--no-deploy` only
+saves the change, for the next deploy. `kx env set` keeps every variable you don't name. A
+`KEY` without `=VALUE` takes the value from kx's own environment, and `--from-file` reads
+`KEY=VALUE` lines (blank lines and `#` comments skipped, `export ` allowed, values in single or
+double quotes) from a file such as `.env`. kx never prints a value, in errors, `--json` or
+logs: Kubernetix hides values from tokens, so `kx env` lists names only. These commands need
+a token with **Configure**: if your login's token doesn't have it, log in again with Configure
+ticked; in CI, create an API token with Configure (Settings → API tokens), since a deploy token
+can't have it.
+An app that autoscales keeps deciding its own replica count; `kx scale` says so.
+
+During a rollout `kx status` says what the replicas are doing: "v4 ready (1 of 1); v3 stopping"
+right after a version goes live, and "v5 starting; v4 serving (2 of 3 ready)" while a new one
+starts.
 
 ### Your account
 
@@ -399,6 +426,8 @@ The messages you are most likely to meet:
 | This token stopped working because the person who created it is no longer a member of acme-corp. | Ask an admin of acme-corp for a new token: Settings → API tokens | 3 |
 | This token can only deploy shop-api, and you asked to deploy web. | Log in with a token that can deploy web: kx login | 3 |
 | This folder deploys to acme-labs, but this computer is only logged in to acme-corp. | Run: kx login --org acme-labs | 3 |
+| The token this computer uses for acme-corp doesn't have the Configure permission, which kx env needs. | Log in again and keep Configure ticked: kx login --org acme-corp | 3 |
+| The token in the KX_TOKEN secret doesn't have the Configure permission, which kx scale needs. | Create an API token with Configure (Settings → API tokens) and replace the KX_TOKEN secret. | 3 |
 | This token can't upload images. | Create a token with Push images on the app's Deploy tab, or deploy an image that's already pushed: kx deploy --image &lt;image&gt; | 3 |
 | The token in the KX_TOKEN secret doesn't have the Read permission, which kx deploy needs. | Create a deploy token on the app's Deploy tab (it has Deploy, Read and Push images) and replace the KX_TOKEN secret. | 3 |
 | registry.kubernetix.ai/acme-corp/shop-api:1.4.0 already holds another image, so kx left the tag alone and deployed nothing. | Tag the commit with a new version, or, if you know that image, deploy it: kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:&lt;digest&gt; | 7 |
