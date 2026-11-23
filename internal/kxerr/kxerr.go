@@ -104,11 +104,13 @@ func (e *TokenOrgMismatch) Error() string {
 var ErrTokenCreateMoved = errors.New("tokens are created in the dashboard")
 
 // TokenLacks means the token in use (from Source, for Org) doesn't have
-// Permissions ("deploy", "read", "registry:push"), which the command needs.
+// Permissions ("deploy", "read", "registry:push", "configure"), which
+// Command ("kx env"; "" means kx deploy) needs.
 type TokenLacks struct {
 	Permissions []string
 	Source      TokenSource
 	Org         string
+	Command     string
 }
 
 func (e *TokenLacks) Error() string {

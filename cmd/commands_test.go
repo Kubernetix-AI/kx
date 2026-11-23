@@ -69,7 +69,7 @@ func TestHelp_FirstScreen_Golden(t *testing.T) {
 	}
 	want := map[string][]string{
 		"Get started":   {"deploy", "status", "logs", "rollback", "open"},
-		"More commands": {"apps", "link", "login", "logout", "token", "whoami", "version"},
+		"More commands": {"apps", "env", "scale", "link", "login", "logout", "token", "whoami", "version"},
 	}
 	if fmt.Sprint(groups) != fmt.Sprint(want) {
 		t.Fatalf("groups = %v\nwant     %v", groups, want)

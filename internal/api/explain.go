@@ -321,6 +321,13 @@ func explainAPI(e *Error) Problem {
 		}
 		if m := missingPermissionRe.FindStringSubmatch(e.Message); m != nil {
 			what := " doesn't have the " + permissionName(m[1]) + " permission."
+			if m[1] == PermConfigure {
+				who := "This token"
+				if src == kxerr.SourceEnv {
+					who = "The token in the KX_TOKEN secret"
+				}
+				return Problem{"token_not_allowed", who + what, configureFix(src, org), ExitAuth}
+			}
 			if src == kxerr.SourceEnv {
 				return Problem{"token_not_allowed", "The token in the KX_TOKEN secret" + what, "Create a token with the access you need on the app's Deploy tab and replace the KX_TOKEN secret.", ExitAuth}
 			}
@@ -542,7 +549,16 @@ func tokenLacks(e *kxerr.TokenLacks) Problem {
 		}
 		fix = "Log in with a token that can deploy: " + strings.TrimPrefix(loginFix(e.Org), "Run: ")
 	}
-	return Problem{"token_not_allowed", fmt.Sprintf("%s doesn't have the %s %s, which kx deploy needs.", who, joinAnd(names), noun), fix, ExitAuth}
+	for _, p := range e.Permissions {
+		if p == PermConfigure {
+			fix = configureFix(e.Source, e.Org)
+		}
+	}
+	command := e.Command
+	if command == "" {
+		command = "kx deploy"
+	}
+	return Problem{"token_not_allowed", fmt.Sprintf("%s doesn't have the %s %s, which %s needs.", who, joinAnd(names), noun, command), fix, ExitAuth}
 }
 
 // billingBlocked explains a deploy (or new app) that Kubernetix refused
@@ -856,6 +872,16 @@ func loginFix(org string) string {
 		return "Run: kx login"
 	}
 	return "Run: kx login --org " + org
+}
+
+// configureFix says how to get a token that can configure: a deploy
+// token's form never offers Configure, so CI needs an API token; kx login
+// makes one with Configure ticked.
+func configureFix(src kxerr.TokenSource, org string) string {
+	if src == kxerr.SourceEnv {
+		return "Create an API token with Configure (Settings → API tokens) and replace the KX_TOKEN secret."
+	}
+	return "Log in again and keep Configure ticked: " + strings.TrimPrefix(loginFix(org), "Run: ")
 }
 
 func askAdmin(org, what string) string {

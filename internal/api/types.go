@@ -32,19 +32,43 @@ const (
 
 // App is an application.
 type App struct {
-	ID                   string      `json:"id"`
-	Name                 string      `json:"name"`
-	Status               string      `json:"status,omitempty"`
-	URL                  string      `json:"url,omitempty"`
-	SourceType           string      `json:"source_type,omitempty"`
-	ImageURL             string      `json:"image_url,omitempty"`
-	Port                 int         `json:"port"`
-	Replicas             int         `json:"replicas"`
-	LatestReleaseVersion int         `json:"latest_release_version"`
-	Regions              []AppRegion `json:"regions,omitempty"`
-	CreatedAt            time.Time   `json:"created_at"`
-	UpdatedAt            time.Time   `json:"updated_at"`
+	ID          string       `json:"id"`
+	Name        string       `json:"name"`
+	Status      string       `json:"status,omitempty"`
+	URL         string       `json:"url,omitempty"`
+	SourceType  string       `json:"source_type,omitempty"`
+	ImageURL    string       `json:"image_url,omitempty"`
+	Port        int          `json:"port"`
+	Replicas    int          `json:"replicas"`
+	Autoscaling *Autoscaling `json:"autoscaling,omitempty"`
+	// EnvVars holds the names of the app's environment variables. Tokens
+	// never see the values: each is "" and EnvVarsHidden is set. kx never
+	// sends this map back, since every "" would overwrite a real value.
+	EnvVars              map[string]string `json:"env_vars,omitempty"`
+	EnvVarsHidden        bool              `json:"env_vars_hidden,omitempty"`
+	LatestReleaseVersion int               `json:"latest_release_version"`
+	Regions              []AppRegion       `json:"regions,omitempty"`
+	CreatedAt            time.Time         `json:"created_at"`
+	UpdatedAt            time.Time         `json:"updated_at"`
 }
+
+// Autoscaling is an app's autoscaling setting: it runs between Min() and
+// MaxReplicas replicas, whatever its replica count says.
+type Autoscaling struct {
+	MinReplicas *int `json:"min_replicas,omitempty"`
+	MaxReplicas int  `json:"max_replicas"`
+}
+
+// Min is the fewest replicas autoscaling runs (1 when not set).
+func (a *Autoscaling) Min() int {
+	if a == nil || a.MinReplicas == nil || *a.MinReplicas < 1 {
+		return 1
+	}
+	return *a.MinReplicas
+}
+
+// Autoscales reports whether autoscaling decides how many replicas run.
+func (a App) Autoscales() bool { return a.Autoscaling != nil && a.Autoscaling.MaxReplicas > 0 }
 
 // AppRegion is one region of a multi-region app (GetApp only).
 type AppRegion struct {

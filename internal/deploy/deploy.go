@@ -95,6 +95,14 @@ type Options struct {
 	// Repository is the repository in the organization's registry that kx
 	// pushes to; "" means the app's name.
 	Repository string
+	// Save, when set, changes the app's configuration (its env vars or
+	// replicas) instead of building: Run makes every check first (the app,
+	// an earlier deploy, today's deploys), then calls Save, then deploys
+	// the app as configured (an empty deploy request) and waits as for
+	// any deploy. Nothing is saved when a check fails. App must be set;
+	// Image, Build, VersionTag, Repository and Provenance must not.
+	Save func(ctx context.Context) error
+
 	// Provenance, when the build is of a commit as it is (ProvenanceOf),
 	// goes on the image as labels. Its commit also tells a version tag on
 	// an earlier build of the same commit, which kx leaves where it is,
@@ -194,9 +202,11 @@ func (o *Options) prepare() error {
 		return errors.New("deploy: give exactly one of App and NewApp")
 	case o.NewApp != "" && !config.ValidAppName(o.NewApp):
 		return fmt.Errorf("deploy: %q is not an app name", o.NewApp)
-	case o.Image == "" && (o.Build == nil || o.Builder == nil):
+	case o.Save != nil && (o.App == nil || o.Image != "" || o.Build != nil || o.VersionTag != "" || o.Repository != "" || o.Provenance != nil):
+		return errors.New("deploy: Save deploys an existing app as configured, and nothing else")
+	case o.Save == nil && o.Image == "" && (o.Build == nil || o.Builder == nil):
 		return errors.New("deploy: building needs Build and Builder")
-	case o.Image == "" && !tagRe.MatchString(o.Tag):
+	case o.Save == nil && o.Image == "" && !tagRe.MatchString(o.Tag):
 		return fmt.Errorf("deploy: %q is not an image tag", o.Tag)
 	case o.Image != "" && (o.VersionTag != "" || o.Repository != ""):
 		return errors.New("deploy: VersionTag and Repository are for images kx builds")
@@ -258,9 +268,12 @@ func (r *runner) deploy(ctx context.Context) (*Result, error) {
 		r.c.Ctx.App = o.NewApp
 	}
 
-	port, err := r.check(ctx, app)
-	if err != nil {
-		return nil, err
+	port := 0
+	if o.Save == nil {
+		var err error
+		if port, err = r.check(ctx, app); err != nil {
+			return nil, err
+		}
 	}
 	if app != nil {
 		if err := r.waitForPrevious(ctx, app); err != nil {
@@ -272,7 +285,11 @@ func (r *runner) deploy(ctx context.Context) (*Result, error) {
 	}
 
 	image := o.Image
-	if image == "" {
+	if o.Save != nil {
+		if err := o.Save(ctx); err != nil {
+			return nil, err
+		}
+	} else if image == "" {
 		built, tags, version, err := r.image(ctx, res.App)
 		if err != nil {
 			return nil, err
@@ -291,7 +308,7 @@ func (r *runner) deploy(ctx context.Context) (*Result, error) {
 		r.p.Step("Created", "app "+app.Name, 0)
 	}
 
-	if !res.CreatedApp && o.Image == "" {
+	if !res.CreatedApp && o.Image == "" && o.Save == nil {
 		// The build took a while: check again that nothing (a dashboard
 		// deploy, another computer) started meanwhile, so two deploys of
 		// the app never run at once from kx's side.
@@ -304,6 +321,9 @@ func (r *runner) deploy(ctx context.Context) (*Result, error) {
 		return res, r.deployLimit(ctx, err)
 	}
 	res.DeploymentID, res.Version, res.Status = dep.ID, dep.Version, dep.Status
+	if o.Save != nil {
+		res.Image = dep.ImageURL // the image the app is configured with
+	}
 	if same, known := sameDigest(dep.ImageURL, image); dep.Replayed || (known && !same) {
 		// Same key, earlier deployment: say so, and report what it deployed.
 		r.p.Info("This run already deployed v%d, so nothing new was started; kx reports that deploy.", dep.Version)

@@ -113,7 +113,7 @@ func newRoot(a *App) *cobra.Command {
 
 // commandOrder is the order --help lists commands in (the order people
 // need them); commands not listed follow alphabetically.
-var commandOrder = []string{"deploy", "github", "status", "logs", "rollback", "open", "apps", "link", "login", "logout", "token", "whoami", "version"}
+var commandOrder = []string{"deploy", "github", "status", "logs", "rollback", "open", "apps", "env", "scale", "link", "login", "logout", "token", "whoami", "version"}
 
 func commandRank(name string) string {
 	for i, n := range commandOrder {
