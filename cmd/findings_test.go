@@ -81,6 +81,41 @@ func TestStatus_RolloutWording(t *testing.T) {
 	}
 }
 
+// A count saved without a deploy (kx scale 1 --no-deploy, or the
+// dashboard's Save) isn't what runs: kx compares with what the live
+// version runs.
+func TestStatus_DesiredIsWhatTheLiveVersionRuns(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.api.apps[0].Replicas = 1
+	h.api.deployments[appShopID] = []api.Deployment{
+		{ID: "dep-4", AppID: appShopID, Version: 4, Status: "ready", Replicas: 3},
+		{ID: "dep-3", AppID: appShopID, Version: 3, Status: "ready", Replicas: 3},
+	}
+	h.api.replicas = []api.Replica{{Name: "a", Ready: true}, {Name: "b", Ready: true}, {Name: "c", Ready: true}}
+	h.expect(h.run("status"), 0)
+	if !strings.Contains(h.out.String(), "Replicas  3 of 3 ready\n") || strings.Contains(h.out.String(), "stopping") {
+		t.Fatalf("status:\n%s", h.out.String())
+	}
+	if r := h.statusJSON()["replicas"].(map[string]any); r["desired"] != float64(3) || r["stopping"] != nil {
+		t.Fatalf("replicas = %v", r)
+	}
+
+	// Autoscaling saved on the app but not deployed: the live version
+	// still runs a fixed count.
+	h.api.apps[0].Autoscaling = &api.Autoscaling{MaxReplicas: 6}
+	if r := h.statusJSON()["replicas"].(map[string]any); r["desired"] != float64(3) {
+		t.Fatalf("replicas = %v", r)
+	}
+	// And the other way round: the live version autoscales.
+	h.api.apps[0].Autoscaling = nil
+	h.api.deployments[appShopID][0].Autoscaling = &api.Autoscaling{MaxReplicas: 6}
+	if r := h.statusJSON()["replicas"].(map[string]any); r["desired"] != nil {
+		t.Fatalf("replicas = %v; an autoscaling version has no fixed count", r)
+	}
+}
+
 func TestApps_VersionIsTheLiveOne(t *testing.T) {
 	// Kubernetix's release counter stays 0 for most apps: the version comes
 	// from the app's deployments.

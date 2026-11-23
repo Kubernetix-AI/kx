@@ -181,15 +181,20 @@ func justWentLive(d api.Deployment, now time.Time) bool {
 
 // rollout explains replica counts during a rollout. Kubernetix lists every
 // replica, the old version's too, so right after a version goes live the
-// count runs over the app's set number while the old ones shut down (which
+// count runs over the set number while the old ones shut down (which
 // "1 of 2 ready" would make look like trouble), and while a new version
-// starts the live one keeps serving. Apps that autoscale have no set number
-// to compare with.
+// starts the live one keeps serving. The set number is what the live
+// version runs with: the app's own may be saved without a deploy yet.
+// Versions that autoscale have no set number to compare with.
 func rollout(r *replicasOut, app *api.App, deps []api.Deployment, live *api.Deployment) {
-	if app.Autoscales() || app.Replicas < 1 {
+	desired, autoscales := app.Replicas, app.Autoscales()
+	if live != nil && live.Replicas > 0 { // 0: an older API that doesn't say
+		desired, autoscales = live.Replicas, live.Autoscaling != nil && live.Autoscaling.MaxReplicas > 0
+	}
+	if autoscales || desired < 1 {
 		return
 	}
-	r.Desired = app.Replicas
+	r.Desired = desired
 	if live == nil || len(deps) == 0 || r.Total <= r.Desired {
 		return
 	}
