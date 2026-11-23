@@ -326,7 +326,13 @@ func (r *runner) deploy(ctx context.Context) (*Result, error) {
 	}
 	if same, known := sameDigest(dep.ImageURL, image); dep.Replayed || (known && !same) {
 		// Same key, earlier deployment: say so, and report what it deployed.
-		r.p.Info("This run already deployed v%d, so nothing new was started; kx reports that deploy.", dep.Version)
+		if o.Save != nil {
+			// A change's deploy has a key of its own: the earlier deployment
+			// came from this same command, a try that got through.
+			r.p.Info("Kubernetix had already started v%d for this change, so kx follows that one.", dep.Version)
+		} else {
+			r.p.Info("This run already deployed v%d, so nothing new was started; kx reports that deploy.", dep.Version)
+		}
 		res.Replayed = true
 		if dep.ImageURL != "" {
 			res.Image = dep.ImageURL

@@ -109,3 +109,20 @@ func paths(reqs []request) []string {
 	}
 	return out
 }
+
+// A change's deploy uses a new idempotency key each time, so a deployment
+// Kubernetix hands back for it was started by this same command (an
+// earlier try that got through): kx says that, not "This run already
+// deployed".
+func TestRun_SaveReplayIsThisChangesOwnDeploy(t *testing.T) {
+	e := newEnv(t)
+	e.api.deployments[testAppID] = append([]api.Deployment{{ID: "key-" + testKey, AppID: testAppID, Version: 15, Status: "ready"}}, e.api.deployments[testAppID]...)
+	res, err := e.run(e.configureOptions(func(context.Context) error { return nil }))
+	if err != nil || res.Version != 15 || !res.Replayed {
+		t.Fatalf("Run() = %+v, %v", res, err)
+	}
+	if !strings.Contains(e.errOut.String(), "Kubernetix had already started v15 for this change, so kx follows that one.\n") ||
+		strings.Contains(e.errOut.String(), "This run already deployed") {
+		t.Fatalf("stderr:\n%s", e.errOut.String())
+	}
+}
