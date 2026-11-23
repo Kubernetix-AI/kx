@@ -508,8 +508,10 @@ or create it in the Kubernetix dashboard. In CI, `--app` (the Action's `app:` in
 an app that already exists. To let the first CI run create the app instead, run
 `kx link <name>` once, commit the `.kx.json` it writes, and leave out `--app` (`app:`). That
 run needs a token that can deploy every app (Settings → API tokens): a deploy token made on
-an app's Deploy tab only reaches that app. If you later delete the app, the next CI run creates it again; remove
-`.kx.json` (or the workflow) first.
+an app's Deploy tab only reaches that app. If you later delete the app, the next CI run
+creates it again (kx says so when it does). To stop that, remove `.kx.json` (or the
+workflow), or, once the app exists, run `kx link <name>` again and commit the `.kx.json` it
+writes, which then includes the app's ID.
 
 Create a deploy token on the app's Deploy tab in the dashboard, save it as a secret named
 `KX_TOKEN`, and run `kx deploy`. On GitHub, the `Kubernetix-AI/deploy@v1` Action does this
