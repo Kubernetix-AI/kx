@@ -9,7 +9,8 @@
   },
   "replicas": {
     "ready": 2,
-    "total": 2
+    "total": 2,
+    "desired": 2
   },
   "deploys_today": {
     "used": 1,

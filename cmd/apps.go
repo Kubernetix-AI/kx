@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -59,8 +60,9 @@ type appOut struct {
 	Created  string `json:"created_at,omitempty"`
 }
 
-func toAppOut(app api.App) appOut {
-	out := appOut{Name: app.Name, ID: app.ID, Status: app.Status, Version: app.LatestReleaseVersion, URL: app.URL, Port: app.Port, Replicas: app.Replicas, Image: app.ImageURL}
+// toAppOut shows app with version, its live version (0 for none).
+func toAppOut(app api.App, version int) appOut {
+	out := appOut{Name: app.Name, ID: app.ID, Status: app.Status, Version: version, URL: app.URL, Port: app.Port, Replicas: app.Replicas, Image: app.ImageURL}
 	if !app.CreatedAt.IsZero() {
 		out.Created = app.CreatedAt.UTC().Format(time.RFC3339)
 	}
@@ -91,10 +93,11 @@ func runAppsList(ctx context.Context, a *App, cmd *cobra.Command) error {
 		return err
 	}
 
+	versions := liveVersions(ctx, c, apps)
 	if a.jsonOut {
 		out := make([]appOut, 0, len(apps))
 		for _, app := range apps {
-			out = append(out, toAppOut(app))
+			out = append(out, toAppOut(app, versions[app.ID]))
 		}
 		return s.P.PrintJSON(struct {
 			Apps []appOut `json:"apps"`
@@ -106,7 +109,7 @@ func runAppsList(ctx context.Context, a *App, cmd *cobra.Command) error {
 	}
 	rows := make([][]string, 0, len(apps))
 	for _, app := range apps {
-		rows = append(rows, []string{app.Name, app.Status, versionText(app.LatestReleaseVersion), app.URL})
+		rows = append(rows, []string{app.Name, app.Status, versionText(versions[app.ID]), app.URL})
 	}
 	s.P.Table([]string{"NAME", "STATUS", "VERSION", "URL"}, rows)
 	return nil
@@ -121,14 +124,19 @@ func runAppsGet(ctx context.Context, a *App, cmd *cobra.Command, name string) er
 	if err != nil {
 		return err
 	}
+	c, err := s.Client(ctx)
+	if err != nil {
+		return err
+	}
+	version := liveVersions(ctx, c, []api.App{*app})[app.ID]
 	if a.jsonOut {
-		return s.P.PrintJSON(toAppOut(*app))
+		return s.P.PrintJSON(toAppOut(*app, version))
 	}
 	rows := [][]string{
 		{"Name", app.Name},
 		{"ID", app.ID},
 		{"Status", app.Status},
-		{"Version", versionText(app.LatestReleaseVersion)},
+		{"Version", versionText(version)},
 		{"URL", dashIfEmpty(app.URL)},
 		{"Port", strconv.Itoa(app.Port)},
 		{"Replicas", strconv.Itoa(app.Replicas)},
@@ -141,6 +149,35 @@ func runAppsGet(ctx context.Context, a *App, cmd *cobra.Command, name string) er
 	}
 	s.P.Table(nil, rows)
 	return nil
+}
+
+// liveVersions finds each app's live version, the newest deployment that
+// went live (Kubernetix's own release counter only counts some deploys), a
+// few apps at a time. A lookup that fails leaves 0.
+func liveVersions(ctx context.Context, c *api.Client, apps []api.App) map[string]int {
+	out := make(map[string]int, len(apps))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, 6)
+	for _, app := range apps {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			deps, err := c.ListDeployments(ctx, id, 20)
+			if err != nil {
+				return
+			}
+			if live := liveDeployment(deps); live != nil {
+				mu.Lock()
+				out[id] = live.Version
+				mu.Unlock()
+			}
+		}(app.ID)
+	}
+	wg.Wait()
+	return out
 }
 
 func versionText(v int) string {

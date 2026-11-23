@@ -495,7 +495,7 @@ func TestStatus_JustDeployed_NoReplicasYet_SaysStarting(t *testing.T) {
 		t.Fatalf("stdout:\n%s", h.out.String())
 	}
 	h.expect(h.run("status", "--json"), 0)
-	if !strings.Contains(h.out.String(), "\"replicas\": {\n    \"ready\": 0,\n    \"total\": 0,\n    \"starting\": true\n  }") {
+	if !strings.Contains(h.out.String(), "\"replicas\": {\n    \"ready\": 0,\n    \"total\": 0,\n    \"starting\": true,\n    \"desired\": 2\n  }") {
 		t.Fatalf("json:\n%s", h.out.String())
 	}
 
