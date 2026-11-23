@@ -12,6 +12,11 @@ secret and one `kx deploy` step.
 - [What kx does differently in CI](#what-kx-does-differently-in-ci)
 - [Troubleshooting](#troubleshooting)
 
+## Create the app first
+
+Create the app first: run `kx deploy` once from your computer (it offers to create the app),
+or create it in the Kubernetix dashboard. In CI, kx deploys to an app that already exists.
+
 ## Get a deploy token
 
 Open the app in the dashboard, go to its **Deploy** tab and click **Create deploy token**. The
@@ -51,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: { name: production, url: "${{ steps.kx.outputs.url }}" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: kx
         uses: Kubernetix-AI/deploy@v1
         with: { app: shop-api, token: "${{ secrets.KX_TOKEN }}" }
