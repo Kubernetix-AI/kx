@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kubernetix-ai/kx/internal/api"
 	"github.com/kubernetix-ai/kx/internal/config"
@@ -138,6 +139,56 @@ func TestApps_VersionIsTheLiveOne(t *testing.T) {
 	h.expect(h.run("apps", "get", "shop-api"), 0)
 	if !strings.Contains(h.out.String(), "Version   v14\n") {
 		t.Fatalf("apps get:\n%s", h.out.String())
+	}
+}
+
+// A token may send a burst of about 10 requests: kx apps list looks up
+// live versions 4 apps at a time, waits out 429s, and shows ? for a
+// version it couldn't find out (- means nothing is live).
+func TestApps_LiveVersionsWithinTheRateLimit(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	for i := range 12 {
+		id := fmt.Sprintf("app-%02d", i)
+		h.api.apps = append(h.api.apps, api.App{ID: id, Name: "svc-" + id, Status: "ready"})
+		h.api.deployments[id] = []api.Deployment{{ID: "d-" + id, AppID: id, Version: 3, Status: "ready"}}
+	}
+	limited := map[string]bool{}
+	h.api.override = func(r *http.Request, _ string) (int, string, bool) {
+		if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/deployments") {
+			return 0, "", false
+		}
+		time.Sleep(5 * time.Millisecond) // let kx's lookups overlap
+		switch {
+		case strings.Contains(r.URL.Path, "app-11"):
+			return 500, `{"error":"internal_error","message":"oops"}`, true
+		case !limited[r.URL.Path]:
+			limited[r.URL.Path] = true
+			return 429, `{"error":"rate_limit_exceeded","message":"Too many requests"}`, true
+		}
+		return 0, "", false
+	}
+	h.expect(h.run("apps", "list"), 0)
+	if got := h.api.maxInFlight.Load(); got > 4 {
+		t.Fatalf("%d requests in flight at once, want at most 4", got)
+	}
+	out := h.out.String()
+	if !strings.Contains(out, "svc-app-00  ready   v3") || !strings.Contains(out, "svc-app-10  ready   v3") || !strings.Contains(out, "svc-app-11  ready   ?") {
+		t.Fatalf("apps list:\n%s", out)
+	}
+	if h.sleeps == 0 {
+		t.Fatal("kx didn't wait before asking again after a 429")
+	}
+	h.expect(h.run("apps", "list", "--json"), 0)
+	var res struct {
+		Apps []map[string]any `json:"apps"`
+	}
+	if err := json.Unmarshal(h.out.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	last := res.Apps[len(res.Apps)-1]
+	if last["version_unknown"] != true || res.Apps[2]["version_unknown"] != nil {
+		t.Fatalf("json = %v", res.Apps)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,8 +92,10 @@ type fakeAPI struct {
 	envPatches []map[string]any
 	appPuts    []map[string]any
 
-	requests   []string
-	userAgents []string
+	requests    []string
+	userAgents  []string
+	inFlight    atomic.Int32
+	maxInFlight atomic.Int32
 
 	now time.Time // the server's clock, for token expiry
 	// override, when it returns ok, answers a request (by bearer token)
@@ -154,6 +157,12 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 }
 
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Requests kx has in flight at once, counted before the lock (which
+	// makes the fake answer one at a time).
+	if n := f.inFlight.Add(1); n > f.maxInFlight.Load() {
+		f.maxInFlight.Store(n)
+	}
+	defer f.inFlight.Add(-1)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests = append(f.requests, r.Method+" "+r.URL.RequestURI())
