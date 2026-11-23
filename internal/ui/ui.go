@@ -205,6 +205,29 @@ func (p *Printer) Info(format string, args ...any) {
 	p.writeErr(fmt.Sprintf(format, cleanArgs(args)...) + "\n")
 }
 
+// minMask is the shortest piece of a value AddMask hides: GitHub hides a
+// masked string everywhere in the rest of the job's log, so masking "1" or
+// "on" would hide every such word.
+const minMask = 4
+
+// AddMask asks GitHub Actions to hide value in the rest of the job's log:
+// one ::add-mask:: line per line of value (the log is matched line by
+// line), written as is (no cleaning or redaction, which would mask a
+// different string) with % escaped the way GitHub's toolkit does it.
+// Lines shorter than minMask are skipped.
+func (p *Printer) AddMask(value string) {
+	lines := strings.FieldsFunc(value, func(r rune) bool { return r == '\n' || r == '\r' })
+	var b strings.Builder
+	for _, line := range lines {
+		if len(line) >= minMask {
+			b.WriteString("::add-mask::" + strings.ReplaceAll(line, "%", "%25") + "\n")
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, _ = io.WriteString(p.Err, b.String())
+}
+
 // Note prints an indented detail line on stderr.
 func (p *Printer) Note(format string, args ...any) {
 	p.writeErr("  " + fmt.Sprintf(format, cleanArgs(args)...) + "\n")

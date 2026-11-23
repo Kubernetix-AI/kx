@@ -78,14 +78,15 @@ func TestEnvSet_NoDeploy(t *testing.T) {
 func TestEnvSet_FromFileAndEnvironment(t *testing.T) {
 	h := configured(t)
 	file := filepath.Join(h.dir, ".env.production")
-	body := "# production\n\nexport DATABASE_URL=\"postgres://u:" + secretValue + "@db/app\"\nGREETING='hello world'\nEMPTY=\nPLAIN = spaced value \n"
+	body := "\ufeff# production\n\nexport\tDATABASE_URL=\"postgres://u:" + secretValue + "@db/app\"\nGREETING='hello world'\nEMPTY=\nPLAIN = spaced value # a comment\nHASH=a#b\nRAW=${HOME}/x\n"
 	if err := os.WriteFile(file, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	h.env["STRIPE_KEY"] = secretValue2
-	h.expect(h.run("env", "set", "--from-file", ".env.production", "STRIPE_KEY", "--no-deploy"), 0)
+	h.expect(h.run("env", "set", "--from-file", ".env.production", "STRIPE_KEY", "--no-deploy", "--allow-empty"), 0)
 	got := h.api.envPatches[0]["set"].(map[string]any)
-	want := map[string]string{"DATABASE_URL": "postgres://u:" + secretValue + "@db/app", "GREETING": "hello world", "EMPTY": "", "PLAIN": "spaced value", "STRIPE_KEY": secretValue2}
+	want := map[string]string{"DATABASE_URL": "postgres://u:" + secretValue + "@db/app", "GREETING": "hello world", "EMPTY": "", "PLAIN": "spaced value",
+		"HASH": "a#b", "RAW": "${HOME}/x", "STRIPE_KEY": secretValue2}
 	if len(got) != len(want) {
 		t.Fatalf("set = %v", got)
 	}
@@ -120,15 +121,18 @@ func TestEnvSet_BadArgumentsNeverShowAValue(t *testing.T) {
 		args      []string
 		what, fix string
 	}{
-		{[]string{"env", "set"}, "kx env set needs at least one KEY=VALUE.", "Run: kx env set LOG_LEVEL=debug"},
-		{[]string{"env", "set", "=" + secretValue}, "Argument 1 has no name before the =.", "Run: kx env set LOG_LEVEL=debug"},
-		{[]string{"env", "set", "BAD NAME=" + secretValue}, `"BAD NAME" isn't an environment variable name: use letters, digits, _ . and -, not starting with a digit.`, "Run: kx env set LOG_LEVEL=debug"},
-		{[]string{"env", "set", secretValue}, "Argument 1 has no = and kx's environment has no variable by that name, so it has no value to set.", "Run: kx env set LOG_LEVEL=debug"},
+		{[]string{"env", "set"}, "kx env set needs at least one NAME=VALUE.", "Run: kx env set LOG_LEVEL=debug"},
+		{[]string{"env", "set", "=" + secretValue}, "Argument 1 isn't NAME=VALUE: names use letters, digits and _, and don't start with a digit.", "Run: kx env set LOG_LEVEL=debug"},
+		{[]string{"env", "set", "OK=1", "BAD NAME=" + secretValue}, "Argument 2 isn't NAME=VALUE: names use letters, digits and _, and don't start with a digit.", "Run: kx env set LOG_LEVEL=debug"},
+		{[]string{"env", "set", "SPRING.PROFILE=" + secretValue}, "Argument 1 isn't NAME=VALUE: names use letters, digits and _, and don't start with a digit.", "Run: kx env set LOG_LEVEL=debug"},
+		{[]string{"env", "set", strings.Repeat("N", 129) + "=x"}, "Argument 1 isn't NAME=VALUE: names use letters, digits and _, and don't start with a digit.", "Run: kx env set LOG_LEVEL=debug"},
+		{[]string{"env", "set", secretValue}, "Argument 1 isn't NAME=VALUE, nor the name of a variable in kx's environment.", "Run: kx env set LOG_LEVEL=debug"},
 		{[]string{"env", "set", "A=1", "A=2"}, "A is given twice.", "Give each variable once."},
-		{[]string{"env", "set", "--from-file", "bad.env"}, "Line 2 of bad.env isn't KEY=VALUE.", "Fix that line, then run the command again."},
+		{[]string{"env", "set", "--from-file", "bad.env"}, "Line 2 of bad.env isn't NAME=VALUE.", "Fix that line, then run the command again."},
 		{[]string{"env", "set", "--from-file", "missing.env"}, "kx can't read missing.env.", "Check the --from-file path, then run the command again."},
 		{[]string{"env", "unset"}, "kx env unset needs at least one name.", "Run: kx env unset OLD_FLAG"},
-		{[]string{"env", "unset", "A=" + secretValue}, "Argument 1 holds a =: kx env unset takes names only.", "Run: kx env unset OLD_FLAG"},
+		{[]string{"env", "unset", "A=" + secretValue}, "Argument 1 isn't a name: kx env unset takes names only.", "Run: kx env unset OLD_FLAG"},
+		{[]string{"env", "unset", secretValue}, "Argument 1 isn't a name: kx env unset takes names only.", "Run: kx env unset OLD_FLAG"},
 	}
 	for _, tt := range tests {
 		h.expect(h.run(tt.args...), 2)

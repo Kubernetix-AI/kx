@@ -788,3 +788,15 @@ func TestUntil(t *testing.T) {
 		}
 	}
 }
+
+func TestPrinter_AddMask(t *testing.T) {
+	p, out, errOut := newTest("")
+	p.JSON = true // masks still go to stderr: GitHub reads commands there too
+	p.AddMask("kx_live_abcdef0123456789\tx 100%0A")
+	p.AddMask("line-one\r\nline-two\rpem\nab")
+	want := "::add-mask::kx_live_abcdef0123456789\tx 100%250A\n" +
+		"::add-mask::line-one\n::add-mask::line-two\n"
+	if errOut.String() != want || out.String() != "" {
+		t.Fatalf("stderr =\n%q\nwant\n%q (stdout %q)", errOut.String(), want, out.String())
+	}
+}

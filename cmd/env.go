@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/kubernetix-ai/kx/internal/api"
+	"github.com/kubernetix-ai/kx/internal/ci"
 	"github.com/kubernetix-ai/kx/internal/kxerr"
 )
 
@@ -33,25 +34,31 @@ func newEnvCmd(a *App) *cobra.Command {
 	list.Flags().StringVar(&listApp, "app", "", "the `app` (default: the one this folder is linked to)")
 
 	var setFlags configureFlags
-	var fromFile string
+	var in envInput
 	set := &cobra.Command{
-		Use:   "set KEY=VALUE...",
+		Use:   "set NAME=VALUE...",
 		Short: "Set environment variables, then deploy the app",
 		Long: `Set (add or change) environment variables of the app, keep the others, then deploy the app
 as configured and wait until it's live, like kx deploy. kx never prints a value.
 
-A KEY with no =VALUE takes its value from kx's own environment, so a CI secret never
-appears on the command line. --from-file reads KEY=VALUE lines from a file such as .env.`,
+For a secret, use --stdin: kx asks for the value without showing it (or reads it from
+standard input), so it stays out of your shell history. A NAME with no =VALUE takes its
+value from kx's own environment, so a CI secret never appears on the command line either.
+--from-file reads NAME=VALUE lines from a file such as .env (no ${...} expansion).
+Names use letters, digits and _; an empty value needs --allow-empty.`,
 		Example: `  kx env set LOG_LEVEL=debug FEATURE_X=on
+  kx env set STRIPE_KEY --stdin             asks for the value, or reads it from standard input
   kx env set STRIPE_KEY                     the value of $STRIPE_KEY
   kx env set --from-file .env.production
   kx env set LOG_LEVEL=info --no-deploy     save it; the next deploy applies it`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runEnvSet(cmd.Context(), a, cmd, setFlags, fromFile, args)
+			return runEnvSet(cmd.Context(), a, cmd, setFlags, in, args)
 		},
 	}
 	addConfigureFlags(set, &setFlags)
-	set.Flags().StringVar(&fromFile, "from-file", "", "read KEY=VALUE lines from this `file` (such as .env)")
+	set.Flags().StringVar(&in.fromFile, "from-file", "", "read NAME=VALUE lines from this `file` (such as .env)")
+	set.Flags().BoolVar(&in.stdin, "stdin", false, "read the one variable's value from standard input (or ask for it), never shown")
+	set.Flags().BoolVar(&in.allowEmpty, "allow-empty", false, "allow empty values (to remove a variable, use kx env unset)")
 
 	var unsetFlags configureFlags
 	unset := &cobra.Command{
@@ -119,11 +126,19 @@ func runEnvList(ctx context.Context, a *App, cmd *cobra.Command, appFlag string)
 	return nil
 }
 
-func runEnvSet(ctx context.Context, a *App, cmd *cobra.Command, f configureFlags, fromFile string, args []string) error {
-	values, err := envValues(a, fromFile, args)
+// envInput is where kx env set's values come from besides its arguments.
+type envInput struct {
+	fromFile   string
+	stdin      bool
+	allowEmpty bool
+}
+
+func runEnvSet(ctx context.Context, a *App, cmd *cobra.Command, f configureFlags, in envInput, args []string) error {
+	values, err := envValues(ctx, a, in, args)
 	if err != nil {
 		return err
 	}
+	maskValues(a, values)
 	names := sortedKeys(values)
 	return runConfigure(ctx, a, cmd, f, appChange{
 		command: "kx env",
@@ -142,11 +157,9 @@ func runEnvUnset(ctx context.Context, a *App, cmd *cobra.Command, f configureFla
 	}
 	seen := map[string]bool{}
 	for i, k := range args {
-		if strings.Contains(k, "=") {
-			return usageLine("kx env unset", fmt.Sprintf("Argument %d holds a =: kx env unset takes names only.", i+1), "OLD_FLAG")
-		}
 		if !envNameRe.MatchString(k) {
-			return usageLine("kx env unset", badEnvName(k), "OLD_FLAG")
+			// It could be a value typed by mistake: name the position only.
+			return usageLine("kx env unset", fmt.Sprintf("Argument %d isn't a name: kx env unset takes names only.", i+1), "OLD_FLAG")
 		}
 		if seen[k] {
 			return &kxerr.Usage{What: k + " is given twice.", Fix: "Give each variable once."}
@@ -166,18 +179,35 @@ func runEnvUnset(ctx context.Context, a *App, cmd *cobra.Command, f configureFla
 	})
 }
 
-// envNameRe is what a container's environment allows as a variable name.
-var envNameRe = regexp.MustCompile(`^[-._a-zA-Z][-._a-zA-Z0-9]{0,254}$`)
+// envNameRe is the names kx env takes: letters, digits and _, not
+// starting with a digit, at most 128 characters.
+var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 
-func badEnvName(k string) string {
-	return fmt.Sprintf("%q isn't an environment variable name: use letters, digits, _ . and -, not starting with a digit.", k)
+const envExample = "LOG_LEVEL=debug"
+
+// Errors about kx env set's arguments name the argument's position and
+// never its text: an argument could be a secret typed without NAME=.
+func notNameValue(i int) error {
+	return usageLine("kx env set", fmt.Sprintf("Argument %d isn't NAME=VALUE: names use letters, digits and _, and don't start with a digit.", i), envExample)
 }
 
-// envValues reads the variables kx env set was given: KEY=VALUE arguments,
-// KEY arguments (the value of kx's own KEY variable), and the KEY=VALUE
-// lines of fromFile. Errors name a variable or a position, never a value.
-func envValues(a *App, fromFile string, args []string) (map[string]string, error) {
-	const example = "LOG_LEVEL=debug"
+// emptyValue refuses an empty value given without --allow-empty. where is
+// "Argument 2" or "Line 5 of .env".
+func emptyValue(where string, arg bool) error {
+	if arg {
+		return &kxerr.Usage{
+			What: where + " sets an empty value: if it's a value, write NAME=value; to set an empty value, add --allow-empty.",
+			Fix:  "To remove a variable instead: kx env unset NAME",
+		}
+	}
+	return &kxerr.Usage{What: where + " sets an empty value; to set it empty, add --allow-empty.", Fix: "To remove a variable instead: kx env unset NAME"}
+}
+
+// envValues reads the variables kx env set was given: NAME=VALUE
+// arguments, NAME arguments (the value of kx's own NAME variable), the
+// NAME=VALUE lines of --from-file, or one NAME with --stdin. Errors name a
+// variable, a position or a line, never a value.
+func envValues(ctx context.Context, a *App, in envInput, args []string) (map[string]string, error) {
 	values := map[string]string{}
 	add := func(k, v string) error {
 		if _, dup := values[k]; dup {
@@ -186,8 +216,11 @@ func envValues(a *App, fromFile string, args []string) (map[string]string, error
 		values[k] = v
 		return nil
 	}
-	if fromFile != "" {
-		lines, err := readEnvFile(a, fromFile)
+	if in.stdin {
+		return stdinValue(ctx, a, in, args)
+	}
+	if in.fromFile != "" {
+		lines, err := readEnvFile(a, in.fromFile, in.allowEmpty)
 		if err != nil {
 			return nil, err
 		}
@@ -200,35 +233,79 @@ func envValues(a *App, fromFile string, args []string) (map[string]string, error
 	for i, arg := range args {
 		k, v, hasValue := strings.Cut(arg, "=")
 		switch {
-		case hasValue && k == "":
-			return nil, usageLine("kx env set", fmt.Sprintf("Argument %d has no name before the =.", i+1), example)
-		case hasValue && !envNameRe.MatchString(k):
-			return nil, usageLine("kx env set", badEnvName(k), example)
+		case !envNameRe.MatchString(k) && hasValue:
+			return nil, notNameValue(i + 1)
 		case !hasValue:
-			// A bare argument could be a value typed by mistake: never
-			// repeat it.
 			if v = a.Getenv(arg); !envNameRe.MatchString(arg) || v == "" {
-				return nil, usageLine("kx env set", fmt.Sprintf("Argument %d has no = and kx's environment has no variable by that name, so it has no value to set.", i+1), example)
+				return nil, usageLine("kx env set", fmt.Sprintf("Argument %d isn't NAME=VALUE, nor the name of a variable in kx's environment.", i+1), envExample)
 			}
-			k = arg
+		case strings.Trim(v, "=") == "" && v != "":
+			// The = padding of a base64 secret typed without a name.
+			return nil, usageLine("kx env set", fmt.Sprintf("Argument %d looks like a value: write NAME=value, or NAME to take the value from kx's environment.", i+1), envExample)
+		case v == "" && !in.allowEmpty:
+			return nil, emptyValue(fmt.Sprintf("Argument %d", i+1), true)
 		}
 		if err := add(k, v); err != nil {
 			return nil, err
 		}
 	}
 	if len(values) == 0 {
-		return nil, usageLine("kx env set", "kx env set needs at least one KEY=VALUE.", example)
+		return nil, usageLine("kx env set", "kx env set needs at least one NAME=VALUE.", envExample)
 	}
 	return values, nil
 }
 
+// maxStdinValue is the longest value --stdin reads.
+const maxStdinValue = 1 << 20
+
+// stdinValue reads the one value --stdin is for: asked for without echo on
+// a terminal, else all of standard input without its last line break.
+func stdinValue(ctx context.Context, a *App, in envInput, args []string) (map[string]string, error) {
+	if len(args) != 1 || !envNameRe.MatchString(args[0]) || in.fromFile != "" {
+		return nil, &kxerr.Usage{What: "--stdin reads one value: give just its name, like kx env set API_KEY --stdin.", Fix: "Run: kx env set API_KEY --stdin"}
+	}
+	name, p := args[0], a.printer()
+	var v string
+	var err error
+	if p.InTTY && p.ReadPassword != nil {
+		v, err = p.ReadSecret(ctx, "Value for "+name+": ")
+	} else {
+		v, err = p.ReadAll(ctx, maxStdinValue)
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, &kxerr.Usage{What: "kx couldn't read the value from standard input.", Fix: "Run: echo \"$VALUE\" | kx env set " + name + " --stdin"}
+	}
+	if v == "" && !in.allowEmpty {
+		return nil, &kxerr.Usage{What: "Standard input holds an empty value; to set an empty value, add --allow-empty.", Fix: "To remove a variable instead: kx env unset " + name}
+	}
+	return map[string]string{name: v}, nil
+}
+
+// maskValues tells GitHub Actions to hide the values kx sets from the
+// job's log (the app's own log lines, which kx shows when a deploy fails,
+// could print them), before kx prints anything else.
+func maskValues(a *App, values map[string]string) {
+	if ci.Detect(a.Getenv).Provider != ci.GitHub {
+		return
+	}
+	p := a.printer()
+	for _, k := range sortedKeys(values) {
+		p.AddMask(values[k])
+	}
+}
+
 const maxEnvFile = 1 << 20
 
-// readEnvFile reads KEY=VALUE lines: blank lines and # comments are
-// skipped, "export " in front is allowed, and a value may be in double
-// quotes (with \n, \" and \\) or single quotes (as written). Spaces around
-// an unquoted value are dropped. Errors name the line, never its text.
-func readEnvFile(a *App, name string) ([][2]string, error) {
+// readEnvFile reads NAME=VALUE lines the way the common dotenv tools do: a
+// UTF-8 BOM at the start is dropped, blank lines and # comments are
+// skipped, "export" and a space in front are allowed, an unquoted value
+// ends at " #" (a comment) and loses its outer spaces, and a value in
+// double quotes takes \n, \" and \\ while one in single quotes is taken as
+// written. ${...} is not expanded. Errors name the line, never its text.
+func readEnvFile(a *App, name string, allowEmpty bool) ([][2]string, error) {
 	path := name
 	if !filepath.IsAbs(path) && a.Dir != "" {
 		path = filepath.Join(a.Dir, path)
@@ -243,16 +320,19 @@ func readEnvFile(a *App, name string) ([][2]string, error) {
 	if err != nil || len(data) > maxEnvFile {
 		return nil, cantRead
 	}
+	text := strings.TrimPrefix(string(data), "\ufeff")
 	var out [][2]string
-	sc := bufio.NewScanner(strings.NewReader(string(data)))
+	sc := bufio.NewScanner(strings.NewReader(text))
 	sc.Buffer(make([]byte, 0, 64<<10), maxEnvFile)
 	for n := 1; sc.Scan(); n++ {
 		line := strings.TrimSpace(strings.TrimSuffix(sc.Text(), "\r"))
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		bad := &kxerr.Usage{What: fmt.Sprintf("Line %d of %s isn't KEY=VALUE.", n, name), Fix: "Fix that line, then run the command again."}
-		line = strings.TrimPrefix(line, "export ")
+		bad := &kxerr.Usage{What: fmt.Sprintf("Line %d of %s isn't NAME=VALUE.", n, name), Fix: "Fix that line, then run the command again."}
+		if rest, ok := strings.CutPrefix(line, "export"); ok && rest != "" && (rest[0] == ' ' || rest[0] == '\t') {
+			line = strings.TrimSpace(rest)
+		}
 		k, v, ok := strings.Cut(line, "=")
 		k = strings.TrimSpace(k)
 		if !ok || !envNameRe.MatchString(k) {
@@ -262,6 +342,9 @@ func readEnvFile(a *App, name string) ([][2]string, error) {
 		if !ok {
 			return nil, bad
 		}
+		if v == "" && !allowEmpty {
+			return nil, emptyValue(fmt.Sprintf("Line %d of %s", n, name), false)
+		}
 		out = append(out, [2]string{k, v})
 	}
 	if err := sc.Err(); err != nil {
@@ -270,36 +353,48 @@ func readEnvFile(a *App, name string) ([][2]string, error) {
 	return out, nil
 }
 
-// envFileValue unquotes a value from an env file.
+// envFileValue unquotes a value from an env file; ok is false for a
+// quote that doesn't close on the line.
 func envFileValue(v string) (string, bool) {
 	switch {
-	case len(v) >= 2 && v[0] == '\'' && v[len(v)-1] == '\'':
-		return v[1 : len(v)-1], true
-	case len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"':
+	case strings.HasPrefix(v, "'"):
+		end := strings.Index(v[1:], "'")
+		if end < 0 || strings.TrimSpace(v[end+2:]) != "" && !strings.HasPrefix(strings.TrimSpace(v[end+2:]), "#") {
+			return "", false
+		}
+		return v[1 : end+1], true
+	case strings.HasPrefix(v, `"`):
 		var b strings.Builder
-		in := v[1 : len(v)-1]
-		for i := 0; i < len(in); i++ {
-			if in[i] != '\\' || i+1 == len(in) {
-				if in[i] == '"' {
+		for i := 1; i < len(v); i++ {
+			switch c := v[i]; {
+			case c == '\\' && i+1 < len(v):
+				i++
+				switch v[i] {
+				case 'n':
+					b.WriteByte('\n')
+				case '"', '\\':
+					b.WriteByte(v[i])
+				default:
+					b.WriteByte('\\')
+					b.WriteByte(v[i])
+				}
+			case c == '"':
+				rest := strings.TrimSpace(v[i+1:])
+				if rest != "" && !strings.HasPrefix(rest, "#") {
 					return "", false
 				}
-				b.WriteByte(in[i])
-				continue
-			}
-			i++
-			switch in[i] {
-			case 'n':
-				b.WriteByte('\n')
-			case '"', '\\':
-				b.WriteByte(in[i])
+				return b.String(), true
 			default:
-				b.WriteByte('\\')
-				b.WriteByte(in[i])
+				b.WriteByte(c)
 			}
 		}
-		return b.String(), true
-	case strings.HasPrefix(v, "'") || strings.HasPrefix(v, `"`):
-		return "", false // an opening quote with no closing one (or a value over several lines)
+		return "", false // no closing quote (or the closing one is escaped)
+	}
+	// An unquoted value ends where a comment starts.
+	for i := 1; i < len(v); i++ {
+		if v[i] == '#' && (v[i-1] == ' ' || v[i-1] == '\t') {
+			return strings.TrimSpace(v[:i]), true
+		}
 	}
 	return v, true
 }
