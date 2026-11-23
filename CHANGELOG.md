@@ -35,29 +35,47 @@
 - `kx env` (or `kx env list`) lists the names of the app's environment variables; Kubernetix
   hides the values from tokens, and kx says so. `--json` gives `"names"` and
   `"values_hidden": true`.
-- `kx env set KEY=VALUE...` and `kx env unset KEY...` change the app's environment variables,
-  keeping the others, and `kx scale <replicas>` sets how many replicas it runs. Each then
-  deploys the app as configured and waits like `kx deploy` (the same lines, URL and exit
-  codes); `--no-deploy` only saves the change. Every check that could stop the deploy (the
-  token's permissions, a multi-region app, an earlier deploy still running, today's deploys)
-  comes before anything is saved.
-- `kx env set KEY` takes the value from kx's own environment, so a CI secret stays off the
-  command line, and `--from-file .env` reads `KEY=VALUE` lines. kx never prints a value: not in
-  errors (they name the variable or the argument's position), `--json`, or logs.
-- These commands need the Configure permission. Without it kx says so before changing
-  anything, with a fix for where the token came from (log in again with Configure ticked, or in
-  CI an API token with Configure); the platform's own refusal gets the same fix.
-- `kx scale` warns when the app autoscales, since autoscaling then decides the count.
+- `kx env set NAME=VALUE...` and `kx env unset NAME...` change the app's environment
+  variables, keeping the others, and `kx scale <replicas>` sets how many replicas it runs. Each
+  then deploys the app as configured and waits like `kx deploy` (the same lines, URL and exit
+  codes); `--no-deploy` only saves the change. Every check kx can make (the token's
+  permissions, a multi-region app, an earlier deploy still running, today's deploys) comes
+  before anything is saved.
+- When the deploy after a saved change doesn't go live, kx says what became of the change: still
+  saved for the next deploy (refused, or kx can't tell whether the deploy started), or undone
+  ("Kubernetix put shop-api back to v14, so this change was undone."; kx checks the app when
+  it can, and says "most likely undone" for a new value of an existing variable, since it never
+  sees values). `--json` results and errors carry `"saved"` and `"deployed"` (live; false with
+  `--no-wait`), and errors `"change"`, `"restored_to"`, `"deployment_id"` and `"version"`.
+- `kx env set NAME --stdin` reads a value from standard input, or asks for it without showing
+  it, and is the way to set a secret. `kx env set NAME` takes the value from kx's own
+  environment, so a CI secret stays off the command line. `--from-file .env` reads `NAME=VALUE`
+  lines like the common dotenv tools (a UTF-8 BOM dropped, `export` allowed, an unquoted value
+  ending at ` #`, no `${...}` expansion). Names use letters, digits and `_`; an empty value
+  needs `--allow-empty`, and a value made only of `=` is refused as a secret typed without a
+  name.
+- kx never prints a value: not in its output, errors (they name the argument's position or
+  the line of the file, never its text) or `--json`. In GitHub Actions it masks each value it
+  sets before printing anything.
+- These commands need the Configure permission, and Deploy unless `--no-deploy`. Without them
+  kx says so before changing anything, with a fix for where the token came from (log in again
+  with Configure ticked, or in CI an API token with Configure; for Deploy, also `--no-deploy`);
+  the platform's own refusal gets the same fix.
+- Changes that change nothing don't deploy: `kx env unset` of names the app doesn't have, `kx
+  scale` to the count the app already runs. `kx scale` on an app that autoscales is refused
+  unless `--no-deploy`, which saves the count for when autoscaling is off.
 
 ### Fixes from the first real runs
 
 - `kx status` during a rollout says what the replicas are doing instead of "1 of 2 ready":
   "v4 ready (1 of 1); v3 stopping" right after a version goes live, "v5 starting; v4 serving
-  (2 of 3 ready)" while a new one starts. `--json` adds `"desired"`, and `"stopping"`,
+  (2 of 3 ready)" while a new one starts, comparing with the count the live version runs (not
+  one saved for the next deploy). `--json` adds `"desired"`, and `"stopping"`,
   `"stopping_version"` or `"starting_version"` when they apply.
 - `kx status --json` always has `"latest"`, the newest version, also when it is the live one.
 - `kx apps list` and `kx apps get` show each app's live version (the VERSION column was
-  empty for most apps); `--json`'s `"version"` is that version.
+  empty for most apps); `--json`'s `"version"` is that version. kx looks up 4 apps at a time
+  and waits out rate limits; a version it couldn't find out shows `?` (`"version_unknown"`).
 - `kx whoami` asks Kubernetix about each saved login that hasn't ended, so a login revoked or
   ended in the dashboard shows as "revoked" or "ended" at once, with how to log in again;
   `--json` adds `"status"`. A login kx couldn't check says "not checked".

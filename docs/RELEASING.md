@@ -69,6 +69,24 @@ first tag:
    including publishing the Action for it. Candidates never become "latest" and don't move the
    Action's `v1`.
 
+## Before releasing 1.1
+
+kx 1.1 relies on parts of the Kubernetix API that must be live in production first. Check each
+before tagging `v1.1.0` (a release candidate can go out before):
+
+1. **Logins.** The dashboard's token page honours `expires=1d` (and `30d`) from `kx login`,
+   and offers the Configure permission on the token it makes for kx.
+2. **Changing settings.** Tokens can have the `configure` permission; `PATCH
+   /api/v1/apps/{id}/env` takes `{"set"}` and `{"unset"}`; a token's `PUT /api/v1/apps/{id}`
+   takes `{"replicas": n}`; `POST /api/v1/apps/{id}/deployments` with an empty body deploys
+   the app as configured; app and deployment responses hide variable values from tokens and
+   list the names.
+3. **A real run** on a test organization, with a token from `kx login`:
+   - `kx env set`, `kx env unset` and `kx scale`, with and without `--no-deploy`;
+   - a value that makes the app crash on start: kx must say "Kubernetix put <app> back to vN,
+     so this change was undone.", and `kx env` must no longer list a name it added;
+   - a token without Configure: kx stops before changing anything, with the fix for a login.
+
 ## Release checklist
 
 1. **CI is green on `main`.** The commit you release must be on `main` and its "CI" check must

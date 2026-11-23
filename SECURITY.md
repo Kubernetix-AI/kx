@@ -65,6 +65,10 @@ CI runner, and reports produced only by automated scanners without a demonstrate
 - **What a login token can do.** Deploy, push images and read; also configure (environment
   variables and replicas, whose values stay hidden) when the dashboard creates it with
   Configure. kx says which after logging in, from what Kubernetix reports for the token.
+- **Environment variable values.** kx never prints a value it sets: not in its output, errors
+  (which name an argument's position or a file's line, never its text) or `--json`. Use
+  `kx env set NAME --stdin` for secrets, so they stay out of shell history. In GitHub Actions
+  kx masks each value (each line of 4 characters or more) before printing anything.
 
 ## Supported versions
 
