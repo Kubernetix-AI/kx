@@ -126,10 +126,12 @@ type Options struct {
 	Sleep func(ctx context.Context, d time.Duration) error
 
 	// OnCredential sees every registry credential before anything else
-	// does (GitHub mode masks it). OnBuild runs before the build and
-	// OnDeploy once the deployment exists.
+	// does (GitHub mode masks it). OnBuild runs before the build,
+	// OnCreated (when set) just after kx created the app, and OnDeploy
+	// once the deployment exists.
 	OnCredential func(api.RegistryCredential)
 	OnBuild      func()
+	OnCreated    func(app *api.App)
 	OnDeploy     func(app *api.App, d *api.Deployment)
 
 	// StopCommands wraps every block of untrusted output (Docker's, the
@@ -306,6 +308,9 @@ func (r *runner) deploy(ctx context.Context) (*Result, error) {
 		app = created
 		res.AppID, res.CreatedApp = app.ID, true
 		r.p.Step("Created", "app "+app.Name, 0)
+		if o.OnCreated != nil {
+			o.OnCreated(app)
+		}
 	}
 
 	if !res.CreatedApp && o.Image == "" && o.Save == nil {

@@ -427,6 +427,13 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 		opts.OnNotLive = func(what, fix string) { gh.Warning(what + "\n" + fix) }
 	}
 
+	if s.CI.IsCI && d.linkedToNewApp() {
+		// Every CI run finds the app by name, so one after the app was
+		// deleted creates it again.
+		opts.OnCreated = func(app *api.App) {
+			s.P.Note("Created %s because .kx.json names it; commit the app_id kx link writes if you don't want CI to create it again.", app.Name)
+		}
+	}
 	res, err := deploy.Run(ctx, c, opts, *s.P)
 	if res != nil && res.CreatedApp {
 		d.rememberAppID(res)

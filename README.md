@@ -241,7 +241,8 @@ have always been in, pass `--repository shop-frontend`, or add `"repository": "s
 to `.kx.json`, where it applies when kx deploys the app that `.kx.json` links. A repository
 name is lowercase letters and digits with single `.`, `_` or `-` between them and `/` between
 parts (`web/frontend`), without the registry's address or the organization, and with no part
-called `tags` (Kubernetix's image routes would read it as a tag). A token with Push
+called `tags` (Kubernetix's image routes would read it as a tag; an app called `tags` needs
+`--repository`). A token with Push
 images can push to every repository in the organization's registry, so a token made for one
 app can push to a repository named differently from the app.
 
@@ -501,7 +502,8 @@ or create it in the Kubernetix dashboard. In CI, `--app` (the Action's `app:` in
 an app that already exists. To let the first CI run create the app instead, run
 `kx link <name>` once, commit the `.kx.json` it writes, and leave out `--app` (`app:`). That
 run needs a token that can deploy every app (Settings → API tokens): a deploy token made on
-an app's Deploy tab only reaches that app.
+an app's Deploy tab only reaches that app. If you later delete the app, the next CI run creates it again; remove
+`.kx.json` (or the workflow) first.
 
 Create a deploy token on the app's Deploy tab in the dashboard, save it as a secret named
 `KX_TOKEN`, and run `kx deploy`. On GitHub, the `Kubernetix-AI/deploy@v1` Action does this

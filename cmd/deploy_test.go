@@ -378,6 +378,23 @@ func TestDeploy_LinkedNewAppIsCreated(t *testing.T) {
 	}
 }
 
+// A committed .kx.json without an app_id makes every CI run look the app
+// up by name, so a run after the app was deleted creates it again: kx
+// says why it created the app.
+func TestDeploy_CICreatesTheAppKxJSONNames(t *testing.T) {
+	h := newHarness(t)
+	h.inFolder("billing-worker")
+	h.link("billing-worker", "", "acme-corp")
+	h.dockerfile("FROM scratch\nEXPOSE 9000\n")
+	h.env["KX_TOKEN"], h.env["CI"] = tokCorp, "true"
+	h.expect(h.run("deploy"), 0)
+	want := "✓ Created   app billing-worker\n" +
+		"  Created billing-worker because .kx.json names it; commit the app_id kx link writes if you don't want CI to create it again.\n"
+	if len(h.api.newApps) != 1 || !strings.Contains(h.err.String(), want) {
+		t.Fatalf("POST /apps = %v, stderr:\n%s", h.api.newApps, h.err.String())
+	}
+}
+
 func TestDeploy_AppTokenCannotCreateApps(t *testing.T) {
 	h := newHarness(t)
 	h.env["KX_TOKEN"] = tokDeploy

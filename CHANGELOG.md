@@ -79,6 +79,9 @@
 - `kx whoami` asks Kubernetix about each saved login that hasn't ended, so a login revoked or
   ended in the dashboard shows as "revoked" or "ended" at once, with how to log in again;
   `--json` adds `"status"`. A login kx couldn't check says "not checked".
+- When a CI run creates the app because a committed `.kx.json` names it (it has no `app_id`),
+  kx says so, and that committing the `app_id` `kx link` writes stops CI from creating it again
+  (for example after the app was deleted in the dashboard).
 
 ### Version tags and repositories
 
@@ -106,7 +109,8 @@
 - `kx deploy --repository <name>`, or `"repository"` in `.kx.json`, pushes to
   `registry.kubernetix.ai/<org>/<name>` instead of the repository named after the app. `kx link`
   keeps a `.kx.json`'s `"repository"`. A name with a part called `tags` is refused (exit 2):
-  Kubernetix's image routes would read it as a tag.
+  Kubernetix's image routes would read it as a tag. So is an app called `tags` deploying to the
+  repository named after it, before anything is built.
 
 ### Logging in
 
