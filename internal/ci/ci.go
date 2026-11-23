@@ -1,16 +1,14 @@
 // Package ci recognises the CI system kx runs in and reads the facts kx
-// needs from it: the commit, the run identity (for idempotency keys), the
-// name for the User-Agent, and whether the run is for a pull or merge
+// needs from it: the commit and tag the run is for (which kx reports; it
+// builds what is checked out), the run identity (for idempotency keys),
+// the name for the User-Agent, and whether the run is for a pull or merge
 // request, which kx never deploys. Every other run deploys the commit it
 // checked out.
 package ci
 
 import (
-	"context"
-	"errors"
 	"strings"
 
-	"github.com/kubernetix-ai/kx/internal/procenv"
 	"github.com/kubernetix-ai/kx/internal/uuid"
 )
 
@@ -48,7 +46,9 @@ type Env struct {
 	// "Bitbucket Pipelines" or "CI". Empty outside CI.
 	Name string
 	IsCI bool
-	// CommitSHA is the commit the CI system says it is building, if any.
+	// CommitSHA is the commit the CI system says it is building, if any. kx
+	// reports it (commit status, job summary) but builds and tags what is
+	// checked out.
 	CommitSHA  string
 	Repository string
 	// RunID is the run, pipeline or build number; RunAttempt tells retries
@@ -61,6 +61,10 @@ type Env struct {
 	Event string
 	// IsPullRequest is true for pull and merge request pipelines.
 	IsPullRequest bool
+	// Tag is the git tag the run was started for (a tag push or a
+	// release), as the CI system names it; "" for a branch run. It is the
+	// tag of CommitSHA.
+	Tag string
 }
 
 // Detect reads the environment through getenv.
@@ -76,6 +80,7 @@ func Detect(getenv func(string) string) Env {
 			RunAttempt:    getenv("GITHUB_RUN_ATTEMPT"),
 			Event:         event,
 			IsPullRequest: githubPullRequestEvents[event],
+			Tag:           githubTag(getenv),
 		}
 	case getenv("GITLAB_CI") == "true":
 		source := getenv("CI_PIPELINE_SOURCE")
@@ -90,6 +95,7 @@ func Detect(getenv func(string) string) Env {
 			// repository (GitLab CI/CD for GitHub repositories).
 			IsPullRequest: source == "merge_request_event" || source == "external_pull_request_event" ||
 				getenv("CI_MERGE_REQUEST_IID") != "" || getenv("CI_EXTERNAL_PULL_REQUEST_IID") != "",
+			Tag: getenv("CI_COMMIT_TAG"),
 		}
 	case getenv("BITBUCKET_BUILD_NUMBER") != "":
 		pr := getenv("BITBUCKET_PR_ID") != ""
@@ -105,6 +111,7 @@ func Detect(getenv func(string) string) Env {
 			RunAttempt:    getenv("BITBUCKET_STEP_UUID"),
 			Event:         event,
 			IsPullRequest: pr,
+			Tag:           getenv("BITBUCKET_TAG"),
 		}
 	}
 	switch strings.ToLower(getenv("CI")) {
@@ -112,6 +119,19 @@ func Detect(getenv func(string) string) Env {
 		return Env{Provider: Generic, Name: "CI", IsCI: true}
 	}
 	return Env{}
+}
+
+// githubTag is the tag a GitHub Actions run is for: GITHUB_REF_NAME when
+// GITHUB_REF_TYPE says it is a tag, or the name after refs/tags/ in
+// GITHUB_REF.
+func githubTag(getenv func(string) string) string {
+	if getenv("GITHUB_REF_TYPE") == "tag" && getenv("GITHUB_REF_NAME") != "" {
+		return getenv("GITHUB_REF_NAME")
+	}
+	if name, ok := strings.CutPrefix(getenv("GITHUB_REF"), "refs/tags/"); ok {
+		return name
+	}
+	return ""
 }
 
 // SkipsDeploy reports whether kx must not deploy in this run because it is
@@ -145,23 +165,4 @@ func (e Env) IdempotencyKey(app string) string {
 		return ""
 	}
 	return key
-}
-
-// Commit returns the commit being built: the CI system's value when it
-// gives one, otherwise `git rev-parse HEAD` in dir.
-func (e Env) Commit(ctx context.Context, dir string) (string, error) {
-	if e.CommitSHA != "" {
-		return e.CommitSHA, nil
-	}
-	cmd := procenv.Command(ctx, "git", "rev-parse", "HEAD")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return "", errors.New("this folder is not a git repository with a commit")
-	}
-	sha := strings.TrimSpace(string(out))
-	if sha == "" {
-		return "", errors.New("git did not report a commit")
-	}
-	return sha, nil
 }

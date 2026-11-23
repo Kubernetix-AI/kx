@@ -133,9 +133,10 @@ func FuzzExposedPort(f *testing.F) {
 
 func TestImageTag(t *testing.T) {
 	now := time.Date(2026, 11, 12, 9, 30, 5, 0, time.UTC)
-	t.Run("CI commit", func(t *testing.T) {
+	t.Run("CI outside a repository", func(t *testing.T) {
+		// kx tags what is checked out; the CI system's commit doesn't name it.
 		env := ci.Env{IsCI: true, CommitSHA: "3F9C2A1B7D4E5F60718293A4B5C6D7E8F9012345"}
-		if got := ImageTag(context.Background(), env, t.TempDir(), now); got != "3f9c2a1b7d4e" {
+		if got := ImageTag(context.Background(), env, t.TempDir(), now); got != "local-20261112093005" {
 			t.Fatalf("tag = %q", got)
 		}
 	})
@@ -171,10 +172,22 @@ func TestImageTag(t *testing.T) {
 			t.Fatalf("tag in a subfolder = %q", got)
 		}
 	})
+	t.Run("CI tags what is checked out", func(t *testing.T) {
+		env := ci.Env{IsCI: true, CommitSHA: strings.Repeat("a", 40)}
+		if got := ImageTag(context.Background(), env, dir, now); got != sha[:12] {
+			t.Fatalf("tag = %q, want HEAD's %q, not the CI system's commit", got, sha[:12])
+		}
+	})
 	t.Run("dirty", func(t *testing.T) {
 		writeFile(t, filepath.Join(dir, "new.txt"), "x")
 		if got := ImageTag(context.Background(), ci.Env{}, dir, now); got != sha[:12]+"-dirty-20261112093005" {
 			t.Fatalf("tag = %q", got)
+		}
+	})
+	t.Run("CI builds the folder as it is", func(t *testing.T) {
+		env := ci.Env{IsCI: true, CommitSHA: sha}
+		if got := ImageTag(context.Background(), env, dir, now); got != sha[:12] {
+			t.Fatalf("tag = %q, want %q", got, sha[:12])
 		}
 	})
 }

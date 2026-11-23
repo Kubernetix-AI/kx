@@ -59,9 +59,12 @@ CI runner, and reports produced only by automated scanners without a demonstrate
   revoke it. If Kubernetix refuses the token because of the account that created it, kx
   can't revoke it and says to do so in the dashboard. Logging in again to the same
   organization revokes the token it replaces, unless tokens made with it depend on it.
-- **Expiry.** Tokens made for `kx login` last 30 days (or 1 day with `--expires 1d`);
-  other dashboard tokens default to 90 days. A token can't create tokens. Revoking a token
-  takes effect immediately.
+- **Expiry.** Tokens made for `kx login` last 1 day (or 30 days with `--expires 30d`): kx
+  asks the token page for that length itself. Other dashboard tokens default to 90 days. A
+  token can't create tokens. Revoking a token takes effect immediately.
+- **What a login token can do.** Deploy, push images and read; also configure (environment
+  variables and replicas, whose values stay hidden) when the dashboard creates it with
+  Configure. kx says which after logging in, from what Kubernetix reports for the token.
 
 ## Supported versions
 

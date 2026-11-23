@@ -411,6 +411,21 @@ func TestWriteSummary_Live(t *testing.T) {
 	}
 }
 
+func TestWriteSummary_Tags(t *testing.T) {
+	r, _, env, _ := newTestReporter(t)
+	err := r.WriteSummary(Summary{
+		App: "shop-api", Version: 15, Image: "registry.example.test/acme-corp/shop-api@sha256:" + strings.Repeat("ab", 32),
+		Tags: []string{"3f9c2a1b7d4e", "0.0.11"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(env["GITHUB_STEP_SUMMARY"])
+	if want := "| Tags | `3f9c2a1b7d4e`, `0.0.11` |"; !strings.Contains(string(b), want) {
+		t.Errorf("summary lacks %q:\n%s", want, b)
+	}
+}
+
 func TestWriteSummary_Failed(t *testing.T) {
 	r, _, env, _ := newTestReporter(t)
 	_ = r.WriteSummary(Summary{

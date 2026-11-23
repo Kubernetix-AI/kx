@@ -766,3 +766,25 @@ func TestPrinter_LogLineColourFollowsStdout(t *testing.T) {
 		t.Fatalf("terminal stdout = %q", out2.String())
 	}
 }
+
+func TestUntil(t *testing.T) {
+	old := Local
+	Local = time.FixedZone("UTC-5", -5*60*60)
+	defer func() { Local = old }()
+	now := time.Date(2026, 11, 12, 20, 0, 0, 0, time.UTC)
+	tests := []struct {
+		end  time.Time
+		want string
+	}{
+		{now.Add(24 * time.Hour), "13 Nov 15:00"},     // within two days: local date and time
+		{now.Add(47 * time.Hour), "14 Nov 14:00"},     // still within two days
+		{now.Add(72 * time.Hour), "15 Nov 2026"},      // further off: the date, as before
+		{now.Add(30 * 24 * time.Hour), "12 Dec 2026"}, // a 30-day token
+		{now.Add(-time.Hour), "12 Nov 2026"},          // already ended: the date
+	}
+	for _, tt := range tests {
+		if got := Until(tt.end, now); got != tt.want {
+			t.Errorf("Until(%v) = %q, want %q", tt.end, got, tt.want)
+		}
+	}
+}

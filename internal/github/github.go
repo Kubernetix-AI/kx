@@ -334,6 +334,7 @@ type Summary struct {
 	Version int // 0 if no deployment was created
 	URL     string
 	Image   string
+	Tags    []string // the tags the image was pushed under (image tags, so no | or `)
 	Commit  string
 	Took    time.Duration
 	Started bool // --no-wait: the deploy started and kx didn't wait
@@ -378,6 +379,13 @@ func (r *Reporter) WriteSummary(s Summary) error {
 	}
 	if s.Image != "" {
 		rows = append(rows, [2]string{"Image", code(s.Image)})
+	}
+	if len(s.Tags) > 0 {
+		shown := make([]string, len(s.Tags))
+		for i, t := range s.Tags {
+			shown[i] = code(t)
+		}
+		rows = append(rows, [2]string{"Tags", strings.Join(shown, ", ")})
 	}
 	if c := s.Commit; c != "" {
 		if len(c) > 12 {

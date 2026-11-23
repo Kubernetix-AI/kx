@@ -28,6 +28,9 @@ type Project struct {
 	App   string `json:"app"`
 	AppID string `json:"app_id,omitempty"`
 	Org   string `json:"org,omitempty"`
+	// Repository is the registry repository kx deploy pushes the app's
+	// images to, under the organization; empty means the app's name.
+	Repository string `json:"repository,omitempty"`
 }
 
 // OrgLogin is one organization's saved login.
@@ -45,9 +48,13 @@ type User struct {
 }
 
 var (
-	appRe   = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
-	appIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,63}$`)
-	orgRe   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$`)
+	// repositoryRe is the registry's rule for repository names: parts of
+	// lowercase letters and digits with single separators (. _ -) inside,
+	// joined by /.
+	repositoryRe = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$`)
+	appRe        = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+	appIDRe      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,63}$`)
+	orgRe        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$`)
 )
 
 // validApp matches the platform's rule for app names: lowercase letters,
@@ -88,6 +95,27 @@ func AppNameFrom(s string) string {
 		return ""
 	}
 	return name
+}
+
+// maxRepository is kx's limit on a repository name's length.
+const maxRepository = 128
+
+// ValidRepository reports whether s can be a repository name in the
+// registry, such as shop-api or web/frontend: lowercase letters and
+// digits, with single . _ or - between them and / between parts, at most
+// 128 characters.
+func ValidRepository(s string) bool { return len(s) <= maxRepository && repositoryRe.MatchString(s) }
+
+// HasTagsSegment reports whether the repository name has a part called
+// "tags": Kubernetix's image routes would read .../tags/... as a tag, so
+// such a repository couldn't be deleted from the dashboard.
+func HasTagsSegment(repo string) bool {
+	for _, part := range strings.Split(repo, "/") {
+		if part == "tags" {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidOrgName reports whether s can be an organization name.
@@ -208,6 +236,9 @@ func ParseProject(data []byte) (*Project, error) {
 	}
 	if p.Org != "" && !validOrg(p.Org) {
 		return nil, errors.New(`"org" is not valid`)
+	}
+	if p.Repository != "" && !ValidRepository(p.Repository) {
+		return nil, errors.New(`"repository" must be a repository name like shop-api or web/frontend`)
 	}
 	return &p, nil
 }

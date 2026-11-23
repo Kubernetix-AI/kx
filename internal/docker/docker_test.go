@@ -123,6 +123,29 @@ func TestBuild_LinuxAmd64(t *testing.T) {
 	}
 }
 
+func TestBuild_Labels(t *testing.T) {
+	calls := useFakeDocker(t)
+	dir := t.TempDir()
+	labels := map[string]string{
+		"org.opencontainers.image.revision": "3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345",
+		"ai.kubernetix.kx.context":          "services/api",
+	}
+	if err := Build(context.Background(), BuildOptions{Dir: dir, Tag: "shop-api:3f9c2a1b7d4e", Labels: labels}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("Build() = %v", err)
+	}
+	want := []string{"build", "--platform", "linux/amd64", "--tag", "shop-api:3f9c2a1b7d4e",
+		"--label", "ai.kubernetix.kx.context=services/api",
+		"--label", "org.opencontainers.image.revision=3f9c2a1b7d4e5f60718293a4b5c6d7e8f9012345", dir}
+	if got := callsTo(calls(), "build")[0].Args; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("args = %q\nwant  %q", got, want)
+	}
+	for _, bad := range []map[string]string{{"Bad Key": "x"}, {"a.b": "line\nbreak"}, {"": "x"}, {"a.b": strings.Repeat("x", 600)}} {
+		if err := Build(context.Background(), BuildOptions{Dir: dir, Tag: "shop-api:abc", Labels: bad}, &bytes.Buffer{}); err == nil {
+			t.Errorf("Build() accepted the label %q", bad)
+		}
+	}
+}
+
 func TestBuild_LoadsFromAContainerBuilder(t *testing.T) {
 	tests := []struct {
 		buildx, buildkit string

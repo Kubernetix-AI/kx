@@ -12,6 +12,15 @@ secret and one `kx deploy` step.
 - [What kx does differently in CI](#what-kx-does-differently-in-ci)
 - [Troubleshooting](#troubleshooting)
 
+## Create the app first
+
+Create the app first: run `kx deploy` once from your computer (it offers to create the app),
+or create it in the Kubernetix dashboard. In CI, `--app` (the Action's `app:` input) deploys to
+an app that already exists. To let the first CI run create the app instead, run
+`kx link <name>` once, commit the `.kx.json` it writes, and leave out `--app` (`app:`). That
+run needs a token that can deploy every app (Settings → API tokens): a deploy token made on
+an app's Deploy tab only reaches that app.
+
 ## Get a deploy token
 
 Open the app in the dashboard, go to its **Deploy** tab and click **Create deploy token**. The
@@ -51,7 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: { name: production, url: "${{ steps.kx.outputs.url }}" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: kx
         uses: Kubernetix-AI/deploy@v1
         with: { app: shop-api, token: "${{ secrets.KX_TOKEN }}" }
@@ -63,12 +72,14 @@ ending in the URL. GitHub then shows:
 - the commit status **Kubernetix / production**: "Building", "Deploying v15", then "Live in
   3m 14s" linking to your app, or the first line of the error;
 - a **production** deployment with **View deployment**, from the job's `environment:` line;
-- a job summary with the version, URL, image digest, commit, how long it took and the
-  rollback command;
+- a job summary with the version, URL, image digest, the image's tags, commit, how long it
+  took and the rollback command;
 - the step outputs `url`, `deployment-id`, `version` and `image`, for later steps.
 
 `concurrency` makes deploys of one app run one at a time: a running deploy is never cancelled
-and a newer push replaces the waiting run, so the latest commit wins. `statuses: write` lets
+and a newer push replaces the waiting run, so the latest commit wins. A replaced run can be a
+tag push's, whose image then never gets the version tag: re-run that workflow, or give tag
+pushes a group of their own (`group: kubernetix-shop-api-${{ github.ref_type }}`). `statuses: write` lets
 kx set the commit status; without it kx prints a warning and deploys anyway.
 
 Use `runs-on: ubuntu-latest`. Windows runners can't build Linux images.
@@ -82,11 +93,48 @@ Use `runs-on: ubuntu-latest`. Windows runners can't build Linux images.
 | `path` | `.` | The folder to build. |
 | `dockerfile` | the Dockerfile in `path` | The Dockerfile to build with, from the repository root or, if it isn't there, from `path`. |
 | `image` | | Deploy an image that's already pushed instead of building one. |
+| `repository` | the app's name | The repository to push to, `registry.kubernetix.ai/<org>/<repository>`. |
 | `environment` | `production` | The name in the commit status, "Kubernetix / production". Use your job's environment name. |
 | `wait` | `true` | `false` stops once the deploy has started. |
 | `timeout` | `18m` | How long to wait for the deploy to go live. |
 | `github-token` | `${{ github.token }}` | The token kx sets the commit status with. |
 | `kx-version` | pinned per Action release | The kx version to run. |
+
+### Version tags
+
+kx also pushes the image under the commit's version tag, such as `1.4.0` for a tag `v1.4.0`
+(see [Image tags and repositories](../README.md#image-tags-and-repositories)). For that, the
+commit's tags must be in the checkout, and `actions/checkout` fetches one commit and no tags by
+default. A run started by pushing the tag has it:
+
+```yaml
+on:
+  push: { tags: ["v*"] }
+```
+
+A re-run, or a second run for the same commit (a workflow on both branch and tag pushes starts
+two when you push a tagged commit to the branch), builds again and deploys its own build; the
+version tag stays on the first build of the commit, with a warning in the log.
+
+When you deploy on pushes to a branch and tag the commit as well, the Action looks up the
+commit's version tags on `origin` before it builds (that needs the checkout's credentials,
+which `actions/checkout` keeps unless `persist-credentials: false`). Or fetch them in the
+checkout yourself:
+
+```yaml
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }   # or: fetch-tags: true
+```
+
+On GitLab CI and Bitbucket Pipelines, a pipeline started by pushing a tag gets its version from
+`CI_COMMIT_TAG` or `BITBUCKET_TAG`. Whether a branch pipeline's clone has the commit's tags
+depends on your project's clone settings; to be sure, fetch them before kx deploy (this fetches
+every tag, one commit each, so it takes longer in a repository with many tags):
+
+```sh
+git fetch --depth=1 origin "+refs/tags/*:refs/tags/*"
+kx deploy --app shop-api
+```
 
 ### Pin the Action to a commit
 
@@ -243,8 +291,12 @@ kx recognises GitHub Actions, GitLab CI, Bitbucket Pipelines, and any CI that se
   `pull_request_target`, the two pull request review events and `merge_group`; GitLab: merge
   request and external pull request pipelines; Bitbucket: `BITBUCKET_PR_ID` set). Every other
   run deploys the commit it checked out.
-- **Images are tagged with the commit**: the first 12 characters of the commit the CI system
-  is building.
+- **Images are tagged with the commit checked out**: the first 12 characters of
+  `git rev-parse HEAD`, and its version when the commit has a version tag or the run is for one
+  (GitHub's tag pushes and releases, GitLab's `CI_COMMIT_TAG`, Bitbucket's `BITBUCKET_TAG`). The
+  commit the CI system names only goes into the commit status and summary; when it differs, kx
+  says so. The folder is built as it is, with any files earlier steps wrote into it. CI
+  checkouts are often shallow and without tags; see [Version tags](#version-tags).
 - **Retries never deploy twice.** Every deploy request carries an idempotency key, and when
   kx retries a request after a network or server hiccup it sends the same key, so Kubernetix
   returns the deploy it already started. On GitHub Actions and GitLab CI the key is made from
@@ -276,9 +328,17 @@ started from the dashboard or another computer in the same moment can still race
 
 ## Troubleshooting
 
-- **"This commit was already pushed; uploaded it as 3f9c2a1b7d4e-20261114081530."** The
-  registry keeps image tags it has seen (for example on a re-run of the same commit), so kx
-  uploaded the image under a new tag. It deploys exactly the image it just uploaded.
+- **"registry.kubernetix.ai/acme-corp/shop-api:1.4.0 already holds another image…" (exit 7).**
+  The version tag names an image from another commit, or one without kx's labels (pushed by an
+  earlier kx or by hand). kx doesn't move a version tag, so it deployed nothing. Tag a new
+  version, or, if you know the image the tag holds (anyone who can push to the organization's
+  registry can write a tag), deploy it with the command the error names,
+  `kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:<digest>` (the Action's
+  `image` input).
+- **"This commit was already pushed; uploaded it as 3f9c2a1b7d4e-20261114081530."** Only with a
+  registry that refuses to replace a tag it has: the commit's tag was taken (for example by an
+  earlier run of the same commit), so kx uploaded the image under a new tag. It deploys exactly
+  the image it just uploaded.
 - **"… isn't live yet: for 2 minutes its container has kept crashing or hasn't answered health
   checks on / at port 8080."** The new version's container runs but isn't getting ready. kx
   prints this as a warning (an annotation on GitHub) with the container's last log lines and

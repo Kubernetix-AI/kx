@@ -30,6 +30,44 @@
 - `kx --help` shows the commands most people need under "Get started:" and the rest under
   "More commands:". `kx` on its own shows two steps: install, then `kx deploy`.
 
+### Version tags and repositories
+
+- `kx deploy` always builds the folder as it is and tags it with the commit checked out there
+  (`git rev-parse HEAD`), in CI too: the commit a CI system names only goes into the commit
+  status and job summary, and when it isn't the one checked out kx says so in one line.
+- `kx deploy` also gives the image the commit's version when the commit has a git tag that looks
+  like one (`v1.4.0` or `1.4.0`, optionally with a pre-release such as `-rc.1`; the highest if
+  there are several), without the `v`: `1.4.0`. In CI, the tag a tag push or release run was
+  started for counts too, when the run is for the commit checked out. On a laptop, a folder with
+  uncommitted changes gets no version tag. `--tag <tag>` uses that tag instead, for names that
+  never move.
+- kx never moves a version tag. It looks the tag up before building and again after pushing: a
+  free tag is given to the new image (in the registry, without a second upload), one on an
+  earlier build of the same commit stays there with a warning while the new build deploys, and
+  one on another commit's image (or an image without the commit label) stops kx with exit 7
+  (problem code `tag_taken`; `tag_check_failed` when kx can't tell, with a fix that depends on
+  why), before it builds when it could look first and right after pushing otherwise. It still deploys by digest, so a tag someone else took can only stop a
+  deploy, never change what it ships.
+- kx labels the images it builds with the commit (`org.opencontainers.image.revision`) and, when
+  it can, where the build sits in the repository (`ai.kubernetix.kx.context`,
+  `ai.kubernetix.kx.dockerfile`).
+- The Pushed line shows the version tag, `--json` adds `"tags"` and `"version_tag"`, and the
+  GitHub job summary lists the image's tags.
+- `kx deploy --repository <name>`, or `"repository"` in `.kx.json`, pushes to
+  `registry.kubernetix.ai/<org>/<name>` instead of the repository named after the app. `kx link`
+  keeps a `.kx.json`'s `"repository"`. A name with a part called `tags` is refused (exit 2):
+  Kubernetix's image routes would read it as a tag.
+
+### Logging in
+
+- A login lasts one day by default: kx asks the token page for a 1-day token (`expires=1d`),
+  and `kx login --expires 30d` asks for 30 days. The token can deploy, push images and read; it
+  can also configure (change environment variables and replicas, whose values stay hidden)
+  when the dashboard creates it with Configure. The line after logging in says which: "This
+  token can deploy and configure every app in acme-corp until 13 Nov 10:00." An end less than
+  two days away is shown with the local time, after logging in and in `kx whoami` and
+  `kx token list`.
+
 ### Questions before a deploy that can't work
 
 - When kx is about to create an app and the Dockerfile has no `EXPOSE` line, it asks which
@@ -59,3 +97,7 @@
 ## 1.0.0
 
 First release.
+
+- Docs: the GitHub Actions example uses `actions/checkout@v7`, so runs show no Node 20
+  deprecation notice, and the CI docs say how the first CI deploy gets its app: create it
+  first, or let the first run create it from a committed `.kx.json`.

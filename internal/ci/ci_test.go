@@ -1,13 +1,6 @@
 package ci
 
-import (
-	"context"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strings"
-	"testing"
-)
+import "testing"
 
 func envOf(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
@@ -252,49 +245,25 @@ func TestEventUnknown(t *testing.T) {
 	}
 }
 
-func TestCommit_FromEnv(t *testing.T) {
-	e := Env{IsCI: true, CommitSHA: "3f9c2a1b7d4e5f60718293a4b5c6d7e8f9a0b1c2"}
-	got, err := e.Commit(context.Background(), t.TempDir())
-	if err != nil || got != e.CommitSHA {
-		t.Fatalf("Commit() = %q, %v", got, err)
+func TestDetect_Tag(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"GitHub tag push", map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "v1.4.0", "GITHUB_REF": "refs/tags/v1.4.0"}, "v1.4.0"},
+		{"GitHub release", map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "release", "GITHUB_REF": "refs/tags/1.4.0-rc.1"}, "1.4.0-rc.1"},
+		{"GitHub branch push", map[string]string{"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "branch", "GITHUB_REF_NAME": "v1.4.0", "GITHUB_REF": "refs/heads/v1.4.0"}, ""},
+		{"GitLab tag pipeline", map[string]string{"GITLAB_CI": "true", "CI_PIPELINE_SOURCE": "push", "CI_COMMIT_TAG": "v2.0.1"}, "v2.0.1"},
+		{"GitLab branch pipeline", map[string]string{"GITLAB_CI": "true", "CI_PIPELINE_SOURCE": "push", "CI_COMMIT_BRANCH": "main"}, ""},
+		{"Bitbucket tag build", map[string]string{"BITBUCKET_BUILD_NUMBER": "88", "BITBUCKET_TAG": "3.1.0"}, "3.1.0"},
+		{"generic CI", map[string]string{"CI": "true", "CI_COMMIT_TAG": "v9.9.9"}, ""},
 	}
-}
-
-func TestCommit_FromGit(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not installed")
-	}
-	dir := t.TempDir()
-	run := func(args ...string) string {
-		t.Helper()
-		cmd := exec.Command("git", append([]string{"-c", "user.name=kx", "-c", "user.email=kx@example.com", "-c", "commit.gpgsign=false"}, args...)...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
-	run("init", "-q")
-	if err := os.WriteFile(filepath.Join(dir, "f"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	run("add", "f")
-	run("commit", "-q", "-m", "x")
-	want := run("rev-parse", "HEAD")
-
-	got, err := (Env{}).Commit(context.Background(), dir)
-	if err != nil || got != want {
-		t.Fatalf("Commit() = %q, %v; want %q", got, err, want)
-	}
-}
-
-func TestCommit_NotARepo(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not installed")
-	}
-	if _, err := (Env{}).Commit(context.Background(), t.TempDir()); err == nil {
-		t.Fatal("Commit() outside a repository returned no error")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Detect(envOf(tt.env)).Tag; got != tt.want {
+				t.Fatalf("Tag = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

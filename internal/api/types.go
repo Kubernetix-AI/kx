@@ -13,6 +13,9 @@ const (
 	PermDeploy = "deploy"
 	PermRead   = "read"
 	PermPush   = "registry:push"
+	// PermConfigure lets a token change an app's environment variables and
+	// replicas.
+	PermConfigure = "configure"
 )
 
 // Deployment statuses reported by the API.
