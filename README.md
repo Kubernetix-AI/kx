@@ -437,6 +437,13 @@ above.
 
 ## Use in CI
 
+Create the app first: run `kx deploy` once from your computer (it offers to create the app),
+or create it in the Kubernetix dashboard. In CI, `--app` (the Action's `app:` input) deploys to
+an app that already exists. To let the first CI run create the app instead, run
+`kx link <name>` once, commit the `.kx.json` it writes, and leave out `--app` (`app:`). That
+run needs a token that can deploy every app (Settings → API tokens): a deploy token made on
+an app's Deploy tab only reaches that app.
+
 Create a deploy token on the app's Deploy tab in the dashboard, save it as a secret named
 `KX_TOKEN`, and run `kx deploy`. On GitHub, the `Kubernetix-AI/deploy@v1` Action does this
 for you. kx recognises GitHub Actions, GitLab CI and Bitbucket Pipelines, retries safely
