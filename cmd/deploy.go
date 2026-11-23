@@ -259,6 +259,13 @@ func (d *deployRun) repository(org string) (string, error) {
 			}
 		}
 	}
+	if repo == "" && config.HasTagsSegment(d.appName) {
+		// The repository is the app's name (an app called "tags").
+		return "", &kxerr.Usage{
+			What: `kx names the image's repository after the app, and a repository can't be called "tags": Kubernetix's image routes would read it as a tag.`,
+			Fix:  fmt.Sprintf("Give the image another repository: kx deploy --repository %s-app (or %q in .kx.json)", d.appName, "repository"),
+		}
+	}
 	rest, nested := strings.CutPrefix(repo, org+"/")
 	if org == "" || !nested {
 		return repo, nil
