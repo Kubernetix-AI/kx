@@ -304,15 +304,20 @@ type ErrorBody struct {
 	Message string `json:"message"`
 	Fix     string `json:"fix"`
 	// The rest comes with the errors of kx env and kx scale: what became
-	// of the change (Change, a sentence), whether it is on the app (Saved)
-	// and live (Deployed), the version Kubernetix put the app back to, and
-	// the deploy kx started.
-	Change       string `json:"change,omitempty"`
-	Saved        *bool  `json:"saved,omitempty"`
-	Deployed     *bool  `json:"deployed,omitempty"`
-	RestoredTo   int    `json:"restored_to,omitempty"`
-	DeploymentID string `json:"deployment_id,omitempty"`
-	Version      int    `json:"version,omitempty"`
+	// of the change (Change, a sentence); whether it is on the app (Saved),
+	// live (Deployed) and, after a failed deploy, undone (Restored), each
+	// true, false or null when kx doesn't know, with the reason in
+	// SavedUnknown or RestoredUnknown; the version Kubernetix put the app
+	// back to; and the deploy kx started.
+	Change          string          `json:"change,omitempty"`
+	Saved           json.RawMessage `json:"saved,omitempty"`
+	SavedUnknown    string          `json:"saved_unknown,omitempty"`
+	Deployed        json.RawMessage `json:"deployed,omitempty"`
+	Restored        json.RawMessage `json:"restored,omitempty"`
+	RestoredUnknown string          `json:"restored_unknown,omitempty"`
+	RestoredTo      int             `json:"restored_to,omitempty"`
+	DeploymentID    string          `json:"deployment_id,omitempty"`
+	Version         int             `json:"version,omitempty"`
 }
 
 // Fail prints a problem: two lines on stderr, or with --json
@@ -325,6 +330,7 @@ func (p *Printer) Fail(code, what, fix string) {
 // is one, then the fix on stderr; or with --json {"error":b} on stdout.
 func (p *Printer) FailBody(b ErrorBody) {
 	b.Message, b.Fix, b.Change = CleanField(b.Message), CleanField(b.Fix), CleanField(b.Change)
+	b.SavedUnknown, b.RestoredUnknown = CleanField(b.SavedUnknown), CleanField(b.RestoredUnknown)
 	if p.JSON {
 		_ = p.PrintJSONLine(ErrorJSON{b})
 		return

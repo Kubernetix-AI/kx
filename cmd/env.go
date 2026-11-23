@@ -165,7 +165,9 @@ func runEnvSet(ctx context.Context, a *App, cmd *cobra.Command, f configureFlags
 				return !still, true
 			}
 		},
-		out: func(o *configureJSON) { o.Set = names },
+		unknowable: "kx sees the names of variables, not their values, so it can't check that Kubernetix put %[1]s back to %[2]s.",
+		checkWith:  envCheck,
+		out:        func(o *configureJSON) { o.Set = names },
 	})
 }
 
@@ -229,7 +231,8 @@ func runEnvUnset(ctx context.Context, a *App, cmd *cobra.Command, f configureFla
 				return back, true
 			}
 		},
-		out: func(o *configureJSON) { o.Unset = sortedCopy(present) },
+		checkWith: envCheck,
+		out:       func(o *configureJSON) { o.Unset = sortedCopy(present) },
 	})
 }
 
@@ -452,6 +455,9 @@ func envFileValue(v string) (string, bool) {
 	}
 	return v, true
 }
+
+// envCheck is the command that shows an app's variables.
+func envCheck(*api.App) string { return "kx env list" }
 
 // sortedCopy returns names sorted, leaving names as it was.
 func sortedCopy(names []string) []string {

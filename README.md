@@ -341,10 +341,14 @@ saves the change, for the next deploy. `kx env set` keeps every variable you don
 - **If the deploy doesn't go live**, kx says what became of the change, on a line before the
   fix: still saved for the next deploy (the deploy was refused, for example today's deploys
   ran out), or undone, because Kubernetix puts the app back to the version still serving when
-  a deploy fails ("Kubernetix put shop-api back to v14, so this change was undone."). With
-  `--json` the result and the error both say `"saved"` (the change is on the app) and
-  `"deployed"` (it went live), and an error adds `"change"` (that line) and `"restored_to"`.
-  `--no-wait` gives `"deployed": false`, since kx didn't see it go live.
+  a deploy fails ("Kubernetix put shop-api back to v14, so this change was undone."). kx
+  checks the app to confirm that; when it can't (a new value for a variable the app already
+  had: kx never sees values), it says the change is most likely undone. With `--json` the
+  result and the error both say `"saved"` (the change is on the app) and `"deployed"` (kx saw
+  it go live; `--no-wait` gives false), and an error after a failed deploy adds `"restored"`
+  (the change was undone). Each is `true`, `false`, or `null` when kx doesn't know, with the
+  reason in `"saved_unknown"` or `"restored_unknown"`; a save request that got no answer kx
+  could use gives `"saved": null` too, and the line says how to check.
 - **Nothing to change.** `kx env unset` of names the app doesn't have, or `kx scale` to the
   count the app already runs, changes nothing and doesn't deploy. `kx scale` on an app that
   autoscales is refused, since the count has no effect while autoscaling is on;
@@ -431,7 +435,9 @@ standard output as:
 
 The errors of `kx env set`, `kx env unset` and `kx scale` also say what became of the change:
 `"saved"` and `"deployed"`, and, after the change was saved, `"change"` (the line kx prints
-about it), `"restored_to"`, `"deployment_id"` and `"version"` when they apply.
+about it), `"restored"`, `"restored_to"` (once the undo is confirmed), `"deployment_id"` and
+`"version"` when they apply. `"saved"` and `"restored"` are `null` when kx doesn't know, with
+the reason in `"saved_unknown"` or `"restored_unknown"`.
 
 ## When something goes wrong
 

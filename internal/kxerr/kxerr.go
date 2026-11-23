@@ -117,20 +117,36 @@ func (e *TokenLacks) Error() string {
 	return fmt.Sprintf("token lacks the %v permissions", e.Permissions)
 }
 
+// State is what kx knows of a fact: Yes, No or Unknown. The zero value
+// means the fact doesn't apply.
+type State int
+
+// The States.
+const (
+	NotApplicable State = iota
+	Yes
+	No
+	Unknown
+)
+
 // Change is an error from a command that changes an app's configuration
 // (kx env set and unset, kx scale), with what became of the change. Saved
-// says whether the change is on the app as kx stops. RestoredTo is the
-// version Kubernetix put the app back to after a failed deploy, undoing
-// the change (0 when it didn't). DeploymentID and Version are the deploy kx
-// started, if any. Note is the line that says what became of the change,
-// empty when nothing was saved.
+// is whether the change is on the app as kx stops; Restored, after a
+// failed deploy, whether Kubernetix put the app back, undoing it (to
+// RestoredTo, when that is a version). SavedUnknown and RestoredUnknown say
+// why kx doesn't know, when it doesn't. DeploymentID and Version are the
+// deploy kx started, if any. Note is the line that says what became of the
+// change, empty when nothing was saved.
 type Change struct {
-	Err          error
-	Saved        bool
-	RestoredTo   int
-	DeploymentID string
-	Version      int
-	Note         string
+	Err             error
+	Saved           State
+	SavedUnknown    string
+	Restored        State
+	RestoredUnknown string
+	RestoredTo      int
+	DeploymentID    string
+	Version         int
+	Note            string
 }
 
 func (e *Change) Error() string { return e.Err.Error() }

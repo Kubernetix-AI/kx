@@ -59,22 +59,27 @@ func runScale(ctx context.Context, a *App, cmd *cobra.Command, f configureFlags,
 				a.printer().Warn("%s The count applies once autoscaling is off.", what)
 				return "", nil
 			}
-			if app.Replicas != n {
+			setAlready := fmt.Sprintf("Nothing to change: %s is already set to %d %s.", app.Name, n, plural)
+			switch {
+			case app.Replicas != n:
+				return "", nil
+			case f.noDeploy:
+				return setAlready, nil
+			}
+			// The app is set to n already, but what's live may run another
+			// count (n saved without a deploy): then deploying changes it.
+			// When kx can't tell what runs, it deploys.
+			deps, err := c.ListDeployments(ctx, app.ID, 20)
+			if err != nil {
 				return "", nil
 			}
-			// The app is set to n already. What's live may still run another
-			// count (n saved without a deploy): then deploying changes it.
-			var live *api.Deployment
-			if deps, err := c.ListDeployments(ctx, app.ID, 20); err == nil {
-				live = liveDeployment(deps)
-			}
-			if live != nil && live.Replicas == n {
+			switch live := liveDeployment(deps); {
+			case live == nil:
+				return setAlready, nil
+			case live.Replicas == n:
 				return fmt.Sprintf("Nothing to change: %s already runs %d %s.", app.Name, n, plural), nil
 			}
-			if !f.noDeploy && live != nil && live.Replicas > 0 {
-				return "", nil
-			}
-			return fmt.Sprintf("Nothing to change: %s is already set to %d %s.", app.Name, n, plural), nil
+			return "", nil // another count, or a version that doesn't say
 		},
 		step: func(app *api.App) (string, string) { return "Scaled", fmt.Sprintf("%s to %d %s", app.Name, n, plural) },
 		save: func(ctx context.Context, c *api.Client, app *api.App) error {
@@ -84,6 +89,7 @@ func runScale(ctx context.Context, a *App, cmd *cobra.Command, f configureFlags,
 		undone: func(*api.App) func(*api.App) (bool, bool) {
 			return func(fresh *api.App) (bool, bool) { return fresh.Replicas != n, true }
 		},
-		out: func(o *configureJSON) { o.Replicas = n },
+		checkWith: func(app *api.App) string { return "kx apps get " + app.Name },
+		out:       func(o *configureJSON) { o.Replicas = n },
 	})
 }

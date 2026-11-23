@@ -7,6 +7,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -101,12 +102,32 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	prob := api.Explain(err)
 	body := ui.ErrorBody{Code: prob.Code, Message: prob.What, Fix: prob.Fix}
 	if ch := (*kxerr.Change)(nil); errors.As(err, &ch) {
-		deployed := false // an error means the change didn't go live
-		body.Change, body.Saved, body.Deployed = ch.Note, &ch.Saved, &deployed
+		saved := ch.Saved
+		if saved == kxerr.NotApplicable {
+			saved = kxerr.No
+		}
+		body.Change = ch.Note
+		body.Saved, body.SavedUnknown = stateJSON(saved), ch.SavedUnknown
+		body.Deployed = stateJSON(kxerr.No) // an error means the change didn't go live
+		body.Restored, body.RestoredUnknown = stateJSON(ch.Restored), ch.RestoredUnknown
 		body.RestoredTo, body.DeploymentID, body.Version = ch.RestoredTo, ch.DeploymentID, ch.Version
 	}
 	a.printer().FailBody(body)
 	return prob.Exit
+}
+
+// stateJSON is s in --json: true, false, null when kx doesn't know, or
+// nothing when it doesn't apply.
+func stateJSON(s kxerr.State) json.RawMessage {
+	switch s {
+	case kxerr.Yes:
+		return json.RawMessage("true")
+	case kxerr.No:
+		return json.RawMessage("false")
+	case kxerr.Unknown:
+		return json.RawMessage("null")
+	}
+	return nil
 }
 
 func (a *App) defaults() {

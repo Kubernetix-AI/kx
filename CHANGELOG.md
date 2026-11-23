@@ -46,7 +46,10 @@
   ("Kubernetix put shop-api back to v14, so this change was undone."; kx checks the app when
   it can, and says "most likely undone" for a new value of an existing variable, since it never
   sees values). `--json` results and errors carry `"saved"` and `"deployed"` (live; false with
-  `--no-wait`), and errors `"change"`, `"restored_to"`, `"deployment_id"` and `"version"`.
+  `--no-wait`), and errors `"change"`, `"restored"`, `"restored_to"`, `"deployment_id"` and
+  `"version"`. What kx doesn't know is `null` with the reason (`"saved_unknown"`,
+  `"restored_unknown"`), never a guess: an undo it couldn't confirm, or a save request that got
+  no answer kx could use (the line then says how to check).
 - `kx env set NAME --stdin` reads a value from standard input, or asks for it without showing
   it, and is the way to set a secret. `kx env set NAME` takes the value from kx's own
   environment, so a CI secret stays off the command line. `--from-file .env` reads `NAME=VALUE`

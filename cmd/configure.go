@@ -49,8 +49,12 @@ type appChange struct {
 	// undone, given the app as it was before the change, returns the check
 	// kx makes on the app after a failed deploy: whether the change is gone
 	// again, and whether kx can tell at all (it sees variable names, never
-	// values). It may be nil.
-	undone func(before *api.App) func(fresh *api.App) (undone, known bool)
+	// values). It may be nil. unknowable is the reason kx gives when the
+	// check can't tell, with %[1]s the app and %[2]s what it goes back to.
+	undone     func(before *api.App) func(fresh *api.App) (undone, known bool)
+	unknowable string
+	// checkWith is the command that shows whether the change is on the app.
+	checkWith func(app *api.App) string
 	// out fills in what the change was, for --json.
 	out func(o *configureJSON)
 }
@@ -84,7 +88,7 @@ func asChange(err error) error {
 	if ch := (*kxerr.Change)(nil); errors.As(err, &ch) {
 		return err
 	}
-	return &kxerr.Change{Err: err}
+	return &kxerr.Change{Err: err, Saved: kxerr.No}
 }
 
 // runConfigure saves change on the app and, unless --no-deploy, deploys
@@ -137,8 +141,9 @@ func runConfigure(ctx context.Context, a *App, cmd *cobra.Command, f configureFl
 			return nil
 		}
 	}
-	isSaved := false
+	isSaved, saveSent := false, false
 	saved := func(ctx context.Context) error {
+		saveSent = true
 		if err := change.save(ctx, c, app); err != nil {
 			return err
 		}
@@ -156,7 +161,7 @@ func runConfigure(ctx context.Context, a *App, cmd *cobra.Command, f configureFl
 
 	if f.noDeploy {
 		if err := saved(ctx); err != nil {
-			return err
+			return saveFailed(app, change, err)
 		}
 		out.Saved = true
 		if a.jsonOut {
@@ -177,10 +182,13 @@ func runConfigure(ctx context.Context, a *App, cmd *cobra.Command, f configureFl
 		StopCommands: s.CI.Provider == ci.GitHub,
 	}, *p)
 	if err != nil {
-		if !isSaved {
-			return err
+		switch {
+		case isSaved:
+			return afterSave(ctx, a, c, app, change, res, err)
+		case saveSent:
+			return saveFailed(app, change, err)
 		}
-		return afterSave(ctx, a, c, app, change, res, err)
+		return err
 	}
 	out.Saved, out.Deployed = true, res.Status == "live"
 	out.DeploymentID, out.Version, out.Status = res.DeploymentID, res.Version, res.Status
@@ -200,17 +208,29 @@ func runConfigure(ctx context.Context, a *App, cmd *cobra.Command, f configureFl
 	return nil
 }
 
+// saveFailed is err from saving change: when the request got no usable
+// answer, the change may be on the app all the same.
+func saveFailed(app *api.App, change appChange, err error) error {
+	if !outcomeUnknown(err) {
+		return err
+	}
+	return &kxerr.Change{
+		Err: err, Saved: kxerr.Unknown, SavedUnknown: "The request to save the change got no answer kx could use.",
+		Note: fmt.Sprintf("kx can't tell whether the change was saved on %s; check: %s", app.Name, change.checkWith(app)),
+	}
+}
+
 // afterSave turns err, from a deploy kx started after saving change on app,
 // into a *kxerr.Change that says what became of the change: refused, and
 // still saved for the next deploy; started, with the outcome not seen; or
 // failed, after which Kubernetix puts the app back to the version still
-// serving, undoing the change (kx looks, when it can tell).
+// serving, undoing the change. kx looks at the app to confirm that, and
+// says when it can't tell.
 func afterSave(ctx context.Context, a *App, c *api.Client, app *api.App, change appChange, res *deploy.Result, err error) error {
-	ch := &kxerr.Change{Err: err, Saved: true}
+	ch := &kxerr.Change{Err: err, Saved: kxerr.Yes}
 	if res != nil {
 		ch.DeploymentID, ch.Version = res.DeploymentID, res.Version
 	}
-	stillSaved := fmt.Sprintf("The change is still saved on %s but not deployed; the next deploy applies it.", app.Name)
 	var failed *kxerr.DeployFailed
 	switch {
 	case errors.As(err, &failed):
@@ -219,15 +239,20 @@ func afterSave(ctx context.Context, a *App, c *api.Client, app *api.App, change 
 		if failed.ServingVersion > 0 {
 			back = fmt.Sprintf("v%d", failed.ServingVersion)
 		}
-		switch undone, known := confirmUndone(ctx, a, c, app, change); {
-		case known && undone:
-			ch.Saved, ch.RestoredTo = false, failed.ServingVersion
+		undone, why := confirmUndone(ctx, a, c, app, change, back)
+		switch {
+		case why == "" && undone:
+			ch.Saved, ch.Restored, ch.RestoredTo = kxerr.No, kxerr.Yes, failed.ServingVersion
 			ch.Note = fmt.Sprintf("Kubernetix put %s back to %s, so this change was undone.", app.Name, back)
-		case !known && failed.ServingVersion > 0:
-			ch.Saved, ch.RestoredTo = false, failed.ServingVersion
-			ch.Note = fmt.Sprintf("Kubernetix puts %s back to %s after a failed deploy, so this change is most likely undone.", app.Name, back)
+		case why == "":
+			ch.Restored = kxerr.No
+			ch.Note = fmt.Sprintf("The change is still saved on %s but not live; the next deploy applies it.", app.Name)
 		default:
-			ch.Note = stillSaved
+			ch.Saved, ch.SavedUnknown, ch.Restored, ch.RestoredUnknown = kxerr.Unknown, why, kxerr.Unknown, why
+			ch.Note = fmt.Sprintf("kx can't tell whether the change is still on %s; check: %s", app.Name, change.checkWith(app))
+			if failed.ServingVersion > 0 {
+				ch.Note = fmt.Sprintf("Kubernetix puts %s back to %s after a failed deploy, so this change is most likely undone.", app.Name, back)
+			}
 		}
 	case ch.DeploymentID != "":
 		ch.Note = fmt.Sprintf("The change is saved on %s; if v%d doesn't go live, Kubernetix puts the app back, which undoes it.", app.Name, ch.Version)
@@ -244,26 +269,31 @@ func afterSave(ctx context.Context, a *App, c *api.Client, app *api.App, change 
 var undoChecks = []time.Duration{0, time.Second, 2 * time.Second, 3 * time.Second}
 
 // confirmUndone reads app until change.undone sees the change gone, or kx
-// has looked len(undoChecks) times. known is false when kx can't tell.
-func confirmUndone(ctx context.Context, a *App, c *api.Client, app *api.App, change appChange) (undone, known bool) {
+// has looked len(undoChecks) times. why, when not empty, is why kx can't
+// tell; back is what Kubernetix puts the app back to, for that sentence.
+func confirmUndone(ctx context.Context, a *App, c *api.Client, app *api.App, change appChange, back string) (undone bool, why string) {
+	unknowable := fmt.Sprintf(change.unknowable, app.Name, back)
 	if change.undone == nil {
-		return false, false
+		return false, unknowable
 	}
 	check := change.undone(app)
 	for _, wait := range undoChecks {
 		if wait > 0 && a.Sleep(ctx, wait) != nil {
-			return false, false
+			return false, fmt.Sprintf("kx stopped before it could check that Kubernetix put %s back to %s.", app.Name, back)
 		}
 		fresh, err := c.GetApp(ctx, app.ID)
 		if err != nil {
-			return false, false
+			return false, fmt.Sprintf("kx couldn't read %s to check that Kubernetix put it back to %s.", app.Name, back)
 		}
 		undone, known := check(fresh)
-		if !known || undone {
-			return undone, known
+		switch {
+		case !known:
+			return false, unknowable
+		case undone:
+			return true, ""
 		}
 	}
-	return false, true
+	return false, ""
 }
 
 // outcomeUnknown reports whether err leaves open whether the request it
