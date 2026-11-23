@@ -15,7 +15,11 @@ secret and one `kx deploy` step.
 ## Create the app first
 
 Create the app first: run `kx deploy` once from your computer (it offers to create the app),
-or create it in the Kubernetix dashboard. In CI, kx deploys to an app that already exists.
+or create it in the Kubernetix dashboard. In CI, `--app` (the Action's `app:` input) deploys to
+an app that already exists. To let the first CI run create the app instead, run
+`kx link <name>` once, commit the `.kx.json` it writes, and leave out `--app` (`app:`). That
+run needs a token that can deploy every app (Settings → API tokens): a deploy token made on
+an app's Deploy tab only reaches that app.
 
 ## Get a deploy token
 
