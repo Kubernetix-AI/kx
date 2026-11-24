@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Docs: with a committed `.kx.json` that has no app ID, deleting the app means the next CI run
+  creates it again; the CI docs say how to stop that (remove `.kx.json` or the workflow, or
+  commit the `.kx.json` that `kx link` writes once the app exists).
+
 ## 1.0.0
 
 First release.
