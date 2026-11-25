@@ -1,0 +1,448 @@
+package cmd
+
+import (
+	"encoding/json"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/kubernetix-ai/kx/internal/api"
+)
+
+// errJSON reads kx's --json error object.
+func errJSON(t *testing.T, h *harness) map[string]any {
+	t.Helper()
+	var out struct {
+		Error map[string]any `json:"error"`
+	}
+	if err := json.Unmarshal(h.out.Bytes(), &out); err != nil || out.Error == nil {
+		t.Fatalf("stdout is not a JSON error: %v\n%s", err, h.out.String())
+	}
+	return out.Error
+}
+
+// noteBeforeFix checks that the line about the change comes right after
+// what went wrong, before the fix (the last line).
+func noteBeforeFix(t *testing.T, h *harness, note string) {
+	t.Helper()
+	lines := strings.Split(strings.TrimRight(h.err.String(), "\n"), "\n")
+	if len(lines) < 3 || lines[len(lines)-2] != note {
+		t.Fatalf("stderr:\n%s\nwant the second-to-last line %q", h.err.String(), note)
+	}
+}
+
+// failNewDeploys makes a new deployment fail to go live.
+func failNewDeploys(h *harness) {
+	h.api.statuses = []string{"pending", "deploying", "failed"}
+	h.api.failReason = "your container is crashing on start"
+}
+
+// restoreAfterFailure puts shop-api back the way Kubernetix does after a
+// failed deploy (replicas, and the names of the env vars), once kx has
+// read the app gets times since the deployment failed.
+func restoreAfterFailure(h *harness, replicas int, names map[string]string, gets int) {
+	failed := false
+	h.api.onFailed = func() { failed = true }
+	h.api.override = func(r *http.Request, _ string) (int, string, bool) {
+		if failed && r.Method == http.MethodGet && r.URL.Path == "/api/v1/apps/"+appShopID {
+			if gets--; gets <= 0 {
+				h.api.apps[0].Replicas = replicas
+				if h.api.envValues == nil {
+					h.api.envValues = map[string]map[string]string{}
+				}
+				h.api.envValues[appShopID] = names
+			}
+		}
+		return 0, "", false
+	}
+}
+
+func TestConfigure_RefusedAfterSave(t *testing.T) {
+	h := configured(t)
+	h.api.override = func(r *http.Request, _ string) (int, string, bool) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/deployments") {
+			return 402, `{"error":"tier_limit_exceeded","limit_name":"max_deployments_per_day","limit":5,"current":5,"message":"Daily deploy limit reached"}`, true
+		}
+		return 0, "", false
+	}
+	h.expect(h.run("env", "set", "API_KEY="+secretValue), 5)
+	noteBeforeFix(t, h, "The change is saved on shop-api but not deployed; the next deploy applies it.")
+	h.noSecrets(secretValue)
+
+	h.expect(h.run("env", "set", "API_KEY="+secretValue, "--json"), 5)
+	e := errJSON(t, h)
+	if e["saved"] != true || e["deployed"] != false || e["code"] != "deploy_limit_reached" ||
+		e["change"] != "The change is saved on shop-api but not deployed; the next deploy applies it." {
+		t.Fatalf("error = %v", e)
+	}
+	if _, ok := e["restored_to"]; ok {
+		t.Fatalf("error = %v: nothing was restored", e)
+	}
+	h.noSecrets(secretValue)
+}
+
+// The deploy after a change deploys the app's own image: when the registry
+// doesn't have it any more, the way out is a new image.
+func TestConfigure_AppImageGone(t *testing.T) {
+	h := configured(t)
+	h.api.override = func(r *http.Request, _ string) (int, string, bool) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/deployments") {
+			return 400, `{"error":"image_not_found","message":"'registry.kubernetix.ai/acme-corp/shop-api@sha256:00' wasn't found on registry.kubernetix.ai.","field":"image_url","hint":"Check the repository name and tag; tags are case-sensitive."}`, true
+		}
+		return 0, "", false
+	}
+	h.expect(h.run("env", "set", "A=1"), 4)
+	want := "The change is saved on shop-api but not deployed; the next deploy applies it.\n" +
+		"Deploy a new image of the app, which applies the change too: kx deploy\n"
+	if !strings.HasSuffix(h.err.String(), want) {
+		t.Fatalf("stderr:\n%s\nwant it to end with\n%s", h.err.String(), want)
+	}
+}
+
+// A saved variable that collides with one a bound database injects makes
+// Kubernetix refuse every deploy of the app until it's removed: kx says
+// so, not that the next deploy applies it.
+func TestConfigure_SavedVariableBlocksDeploys(t *testing.T) {
+	h := configured(t)
+	h.api.override = func(r *http.Request, _ string) (int, string, bool) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/deployments") {
+			return 409, `{"error":"env_prefix_conflict","message":"env_vars[\"DATABASE_URL\"] collides with the variable injected by database \"main\" (env_prefix \"DATABASE\").","field":"env_vars.DATABASE_URL","hint":"Rename your variable, or rebind the database with a different env_prefix."}`, true
+		}
+		return 0, "", false
+	}
+	h.expect(h.run("env", "set", "DATABASE_URL="+secretValue), 2)
+	want := "The change is saved on shop-api, and it stops shop-api's deploys (CI's included) until you remove it: kx env unset DATABASE_URL\n" +
+		"To keep the variable instead, rebind the database with another prefix in the dashboard.\n"
+	if !strings.HasSuffix(h.err.String(), want) {
+		t.Fatalf("stderr:\n%s\nwant it to end with\n%s", h.err.String(), want)
+	}
+	h.noSecrets(secretValue)
+	h.expect(h.run("env", "set", "DATABASE_URL="+secretValue, "--json"), 2)
+	if e := errJSON(t, h); e["saved"] != true || e["code"] != "env_prefix_conflict" || !strings.Contains(e["change"].(string), "stops shop-api's deploys") {
+		t.Fatalf("error = %v", e)
+	}
+
+	// The same refusal for a variable this change didn't set keeps the
+	// usual line: the change itself isn't what blocks the deploy.
+	h.expect(h.run("env", "set", "OTHER=1"), 2)
+	if !strings.Contains(h.err.String(), "The change is saved on shop-api but not deployed; the next deploy applies it.\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+}
+
+func TestConfigure_DeployOutcomeUnknown(t *testing.T) {
+	h := configured(t)
+	h.api.failPosts = 99 // the deploy POST never gets an answer kx can use
+	h.expect(h.run("scale", "3", "--json"), 1)
+	e := errJSON(t, h)
+	want := "The change is saved on shop-api; kx can't tell whether its deploy started (see kx status). If none did, the next deploy applies it."
+	if e["saved"] != true || e["deployed"] != false || e["change"] != want {
+		t.Fatalf("error = %v", e)
+	}
+}
+
+func TestConfigure_FailedAndRestored(t *testing.T) {
+	h := configured(t)
+	failNewDeploys(h)
+	restoreAfterFailure(h, 2, map[string]string{}, 2) // the restore lands a moment after the failure
+	h.expect(h.run("scale", "3"), 8)
+	noteBeforeFix(t, h, "Kubernetix put shop-api back to v14, so this change was undone.")
+
+	h = configured(t)
+	failNewDeploys(h)
+	restoreAfterFailure(h, 2, map[string]string{}, 1)
+	h.expect(h.run("env", "set", "NEW_FLAG=on", "--json"), 8)
+	e := errJSON(t, h)
+	if e["saved"] != false || e["deployed"] != false || e["restored"] != true || e["restored_to"] != float64(14) || e["version"] != float64(16) ||
+		e["change"] != "Kubernetix put shop-api back to v14, so this change was undone." {
+		t.Fatalf("error = %v", e)
+	}
+	if _, ok := e["saved_unknown"]; ok {
+		t.Fatalf("error = %v: nothing is unknown", e)
+	}
+}
+
+// Kubernetix records the put-back as a new version (an automatic
+// rollback): kx names the version that serves again.
+func TestConfigure_FailedAndRestoredAsANewVersion(t *testing.T) {
+	h := configured(t)
+	failNewDeploys(h)
+	restoreAfterFailure(h, 2, map[string]string{}, 1)
+	onFailed := h.api.onFailed
+	h.api.onFailed = func() {
+		onFailed()
+		for _, d := range h.api.deployments[appShopID] {
+			if strings.HasPrefix(d.ID, "new-") && d.Status == "failed" {
+				h.api.deployments[appShopID] = append([]api.Deployment{{ID: "auto-rb", AppID: appShopID, Version: 17, Status: "ready",
+					Rollback: &api.DeploymentRollback{Automatic: true, TargetVersion: 14, TargetDeploymentID: "dep-14", FailedVersion: d.Version, FailedDeploymentID: d.ID}}},
+					h.api.deployments[appShopID]...)
+				return
+			}
+		}
+	}
+	h.expect(h.run("scale", "3", "--json"), 8)
+	e := errJSON(t, h)
+	if e["restored_to"] != float64(14) || e["change"] != "Kubernetix put shop-api back to v14, so this change was undone." ||
+		!strings.Contains(e["message"].(string), "Version 14 is serving again, recorded as v17.") {
+		t.Fatalf("error = %v", e)
+	}
+}
+
+func TestConfigure_FailedButKept(t *testing.T) {
+	// The app changed again since (or Kubernetix had nothing to go back
+	// to): the change is still there after kx has looked a few times.
+	h := configured(t)
+	failNewDeploys(h)
+	h.expect(h.run("scale", "3", "--json"), 8)
+	e := errJSON(t, h)
+	if e["saved"] != true || e["deployed"] != false || e["restored"] != false || e["change"] != "The change is still saved on shop-api but not live; the next deploy applies it." {
+		t.Fatalf("error = %v", e)
+	}
+	if _, ok := e["restored_to"]; ok {
+		t.Fatalf("error = %v", e)
+	}
+
+	// A new name still on the app is the same.
+	h = configured(t)
+	failNewDeploys(h)
+	h.expect(h.run("env", "set", "NEW_FLAG=on"), 8)
+	noteBeforeFix(t, h, "The change is still saved on shop-api but not live; the next deploy applies it.")
+}
+
+func TestConfigure_FailedValueChangeCantBeChecked(t *testing.T) {
+	// kx sees names, not values: a new value for a variable the app
+	// already has can't be checked, so kx says what Kubernetix does.
+	h := configured(t)
+	h.api.envValues = map[string]map[string]string{appShopID: {"API_KEY": "old"}}
+	failNewDeploys(h)
+	h.expect(h.run("env", "set", "API_KEY="+secretValue), 8)
+	noteBeforeFix(t, h, "Kubernetix puts shop-api back to v14 after a failed deploy, so this change is most likely undone.")
+	h.noSecrets(secretValue)
+
+	// --json says so: unknown (null) with the reason, not a guess.
+	h.expect(h.run("env", "set", "API_KEY="+secretValue, "--json"), 8)
+	e := errJSON(t, h)
+	why := "kx sees the names of variables, not their values, so it can't check that Kubernetix put shop-api back to v14."
+	for _, k := range []string{"saved", "restored"} {
+		if v, ok := e[k]; !ok || v != nil || e[k+"_unknown"] != why {
+			t.Fatalf("error = %v: want %s null with the reason", e, k)
+		}
+	}
+	if _, ok := e["restored_to"]; ok {
+		t.Fatalf("error = %v: restored_to only once the undo is confirmed", e)
+	}
+	h.noSecrets(secretValue)
+}
+
+func TestConfigure_FailedAndTheAppCantBeRead(t *testing.T) {
+	h := configured(t)
+	failNewDeploys(h)
+	failed := false
+	h.api.onFailed = func() { failed = true }
+	h.api.override = func(r *http.Request, _ string) (int, string, bool) {
+		if failed && r.Method == http.MethodGet && r.URL.Path == "/api/v1/apps/"+appShopID {
+			return 500, `{"error":"internal_error","message":"oops"}`, true
+		}
+		return 0, "", false
+	}
+	h.expect(h.run("scale", "3", "--json"), 8)
+	e := errJSON(t, h)
+	if v, ok := e["saved"]; !ok || v != nil || e["saved_unknown"] != "kx couldn't read shop-api to check that Kubernetix put it back to v14." ||
+		e["change"] != "Kubernetix puts shop-api back to v14 after a failed deploy, so this change is most likely undone." {
+		t.Fatalf("error = %v", e)
+	}
+}
+
+// A save request that got no usable answer may have gone through.
+func TestConfigure_SaveOutcomeUnknown(t *testing.T) {
+	h := configured(t)
+	h.api.override = func(r *http.Request, _ string) (int, string, bool) {
+		if r.Method == http.MethodPatch || r.Method == http.MethodPut {
+			return 503, `{"error":"service_unavailable","message":"try again"}`, true
+		}
+		return 0, "", false
+	}
+	h.expect(h.run("env", "set", "A=1"), 1)
+	noteBeforeFix(t, h, "kx can't tell whether the change was saved on shop-api; check: kx env list")
+	h.expect(h.run("env", "set", "A=1", "--no-deploy", "--json"), 1)
+	e := errJSON(t, h)
+	if v, ok := e["saved"]; !ok || v != nil || e["saved_unknown"] != "The request to save the change got no answer kx could use." || e["deployed"] != false {
+		t.Fatalf("error = %v", e)
+	}
+	h.expect(h.run("scale", "3"), 1)
+	noteBeforeFix(t, h, "kx can't tell whether the change was saved on shop-api; check: kx apps get shop-api")
+	if len(h.api.deployPosts) != 0 {
+		t.Fatal("deployed after a save kx can't vouch for")
+	}
+
+	// A save Kubernetix refused is definitely not saved.
+	h.api.override = func(r *http.Request, _ string) (int, string, bool) {
+		if r.Method == http.MethodPatch {
+			return 403, `{"error":"token_not_allowed","message":"This API token doesn't have the configure permission."}`, true
+		}
+		return 0, "", false
+	}
+	h.expect(h.run("env", "set", "A=1", "--json"), 3)
+	if e := errJSON(t, h); e["saved"] != false || e["change"] != nil {
+		t.Fatalf("error = %v", e)
+	}
+}
+
+func TestConfigure_WaitEndsBeforeTheOutcome(t *testing.T) {
+	h := configured(t)
+	h.api.statuses = []string{"pending", "deploying"}
+	h.sleepHook = func(int) error { h.now = h.now.Add(time.Minute); return nil }
+	h.expect(h.run("scale", "3", "--timeout", "3m", "--json"), 9)
+	e := errJSON(t, h)
+	if e["saved"] != true || e["deployed"] != false || e["version"] != float64(16) ||
+		e["change"] != "The change is saved on shop-api; if v16 doesn't go live, Kubernetix puts the app back, which undoes it." {
+		t.Fatalf("error = %v", e)
+	}
+
+	h = configured(t)
+	h.expect(h.run("scale", "3", "--no-wait"), 0)
+	if !strings.Contains(h.err.String(), "If v16 doesn't go live, Kubernetix puts the app back, which undoes this change.\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	h = configured(t) // v16 above is still starting: a new kx run would wait for it
+	h.expect(h.run("scale", "4", "--no-wait", "--json"), 0)
+	var out map[string]any
+	if err := json.Unmarshal(h.out.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["saved"] != true || out["deployed"] != false || out["status"] != "started" {
+		t.Fatalf("json = %v: started is not deployed", out)
+	}
+}
+
+func TestConfigure_JSONSaysSavedAndDeployed(t *testing.T) {
+	h := configured(t)
+	h.expect(h.run("scale", "3", "--json"), 0)
+	var out map[string]any
+	if err := json.Unmarshal(h.out.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["saved"] != true || out["deployed"] != true || out["status"] != "live" {
+		t.Fatalf("json = %v", out)
+	}
+
+	// Refused before anything was saved: both false, and no line about
+	// a change.
+	h.api.apps[0].Regions = []api.AppRegion{{Region: "us-central1"}, {Region: "europe-west1"}}
+	h.expect(h.run("scale", "4", "--json"), 2)
+	e := errJSON(t, h)
+	if e["saved"] != false || e["deployed"] != false || e["change"] != nil {
+		t.Fatalf("error = %v", e)
+	}
+	h.expect(h.run("env", "set", "BAD NAME=x", "--json"), 2)
+	if e := errJSON(t, h); e["saved"] != false || e["deployed"] != false {
+		t.Fatalf("error = %v", e)
+	}
+}
+
+// Without the Deploy permission kx stops before saving, unless
+// --no-deploy says not to deploy.
+func TestConfigure_TokenWithoutDeploy(t *testing.T) {
+	h := configured(t)
+	tok := h.api.who[tokCorp].Token
+	tok.Permissions = []string{api.PermConfigure, api.PermRead}
+	h.expect(h.run("env", "set", "A=1"), 3)
+	want := "The token this computer uses for acme-corp doesn't have the Deploy permission, which kx env needs.\n" +
+		"Add --no-deploy to save the change without deploying, or log in again with Deploy ticked: kx login --org acme-corp\n"
+	if !strings.HasSuffix(h.err.String(), want) {
+		t.Fatalf("stderr:\n%s\nwant it to end with\n%s", h.err.String(), want)
+	}
+	if len(h.api.envPatches)+len(h.api.deployPosts) != 0 {
+		t.Fatal("saved a change kx couldn't deploy")
+	}
+	h.expect(h.run("env", "set", "A=1", "--no-deploy"), 0)
+	if len(h.api.envPatches) != 1 {
+		t.Fatal("--no-deploy needs no Deploy permission")
+	}
+}
+
+func TestConfigure_NothingToChange(t *testing.T) {
+	h := configured(t)
+	h.api.envValues = map[string]map[string]string{appShopID: {"OLD_FLAG": "x"}}
+	h.api.deployments[appShopID][1].Replicas = 2 // v14 runs 2, like the app
+
+	h.expect(h.run("env", "unset", "MISSING", "ALSO_MISSING"), 0)
+	if !strings.Contains(h.err.String(), "Nothing to change: shop-api has none of those variables.\n") || strings.Contains(h.err.String(), "MISSING") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	h.expect(h.run("scale", "2"), 0)
+	if !strings.Contains(h.err.String(), "Nothing to change: shop-api already runs 2 replicas.\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	h.expect(h.run("scale", "2", "--json"), 0)
+	var out map[string]any
+	if err := json.Unmarshal(h.out.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["saved"] != false || out["deployed"] != false || out["unchanged"] != true {
+		t.Fatalf("json = %v", out)
+	}
+	if len(h.api.envPatches)+len(h.api.appPuts)+len(h.api.deployPosts) != 0 {
+		t.Fatal("changed or deployed the app for nothing")
+	}
+
+	// Some names exist: only those are removed, and the others are counted,
+	// not named (a name typed here could be a value by mistake).
+	h.expect(h.run("env", "unset", "OLD_FLAG", "NOT_THERE", "--no-deploy"), 0)
+	if len(h.api.envPatches) != 1 || len(h.api.envPatches[0]["unset"].([]any)) != 1 ||
+		!strings.Contains(h.err.String(), "✓ Unset     OLD_FLAG on shop-api\n  1 of the names isn't set on shop-api.\n") || strings.Contains(h.err.String(), "NOT_THERE") {
+		t.Fatalf("patches %v, stderr:\n%s", h.api.envPatches, h.err.String())
+	}
+
+	// Saved but not deployed yet: the same count is deployed now.
+	h.api.apps[0].Replicas = 3
+	h.expect(h.run("scale", "3"), 0)
+	if len(h.api.deployPosts) != 1 {
+		t.Fatalf("deploys = %d: 3 is saved but v14 runs 2", len(h.api.deployPosts))
+	}
+}
+
+// When kx can't find out what the live version runs, it doesn't claim
+// there is nothing to change: it deploys.
+func TestScale_SameCountButWhatRunsIsUnknown(t *testing.T) {
+	h := configured(t)
+	lookups := 0
+	h.api.override = func(r *http.Request, _ string) (int, string, bool) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/deployments") {
+			if lookups++; lookups == 1 {
+				return 500, `{"error":"internal_error","message":"oops"}`, true
+			}
+		}
+		return 0, "", false
+	}
+	h.expect(h.run("scale", "2"), 0) // the app is set to 2
+	if len(h.api.deployPosts) != 1 || strings.Contains(h.err.String(), "Nothing to change") {
+		t.Fatalf("deploys = %d, stderr:\n%s", len(h.api.deployPosts), h.err.String())
+	}
+	// A live version that doesn't say what it runs (an older API): the same.
+	h = configured(t)
+	h.expect(h.run("scale", "2"), 0)
+	if len(h.api.deployPosts) != 1 {
+		t.Fatalf("deploys = %d: v14 doesn't say how many it runs", len(h.api.deployPosts))
+	}
+	// --no-deploy only saves, and the app is already set to 2.
+	h.expect(h.run("scale", "2", "--no-deploy"), 0)
+	if !strings.Contains(h.err.String(), "Nothing to change: shop-api is already set to 2 replicas.\n") || len(h.api.appPuts) != 1 {
+		t.Fatalf("puts %v, stderr:\n%s", h.api.appPuts, h.err.String())
+	}
+}
+
+func TestScale_AutoscalingRefusedUnlessNoDeploy(t *testing.T) {
+	h := configured(t)
+	two := 2
+	h.api.apps[0].Autoscaling = &api.Autoscaling{MinReplicas: &two, MaxReplicas: 6}
+	h.expect(h.run("scale", "3"), 2)
+	if !strings.HasSuffix(h.err.String(), "shop-api autoscales between 2 and 6 replicas, so a replica count has no effect while autoscaling is on.\n"+
+		"To save the count for when autoscaling is off: kx scale 3 --no-deploy\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	if len(h.api.appPuts)+len(h.api.deployPosts) != 0 {
+		t.Fatal("changed the app")
+	}
+}

@@ -43,9 +43,13 @@ type Error struct {
 	LimitName      string
 	Reason         string // what lifts a billing block, e.g. outstanding_invoice; or too_many_tries
 	TriesLimit     int    // with too_many_tries: the deploys a day the org may start, failed ones included (0 if not given)
-	Method         string
-	Path           string // relative to the API base, e.g. /registry/credentials
-	Ctx            ErrContext
+	// Field and Hint come with a refused field: which one (e.g.
+	// env_vars.API_KEY) and what to do about it.
+	Field  string
+	Hint   string
+	Method string
+	Path   string // relative to the API base, e.g. /registry/credentials
+	Ctx    ErrContext
 }
 
 func (e *Error) Error() string {
@@ -96,6 +100,8 @@ func parseErrorBody(status int, body []byte, h http.Header) *Error {
 		e.TokenPrefix = p
 	}
 	e.LimitName = cleanCode(str("limit_name"))
+	e.Field = clean(str("field"), maxNameLen)
+	e.Hint = clean(str("hint"), maxMessageLen)
 	e.Reason = cleanCode(str("reason"))
 	var tries float64
 	if v, ok := raw["tries_limit"]; ok && json.Unmarshal(v, &tries) == nil && tries >= 1 && tries <= maxTriesLimit && tries == math.Trunc(tries) {

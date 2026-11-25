@@ -614,3 +614,107 @@ func TestClient_SetTokenAppliesToTheNextRequest(t *testing.T) {
 		t.Fatalf("Authorization headers = %q", auth)
 	}
 }
+
+func TestPatchAppEnv(t *testing.T) {
+	var got map[string]any
+	var method, path string
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		writeJSON(w, 200, map[string]any{"id": "app-1", "name": "shop-api", "env_vars": map[string]string{"FEATURE_X": "", "LOG_LEVEL": ""}, "env_vars_hidden": true})
+	})
+	app, err := c.PatchAppEnv(context.Background(), "app-1", map[string]string{"FEATURE_X": "on"}, []string{"OLD_FLAG"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if method != http.MethodPatch || path != "/api/v1/apps/app-1/env" {
+		t.Fatalf("request = %s %s", method, path)
+	}
+	if fmt.Sprint(got) != "map[set:map[FEATURE_X:on] unset:[OLD_FLAG]]" {
+		t.Fatalf("body = %v", got)
+	}
+	if !app.EnvVarsHidden || len(app.EnvVars) != 2 {
+		t.Fatalf("app = %+v", app)
+	}
+	// Only the side that has something is sent.
+	c2, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		got = nil
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		writeJSON(w, 200, map[string]any{"id": "app-1"})
+	})
+	if _, err := c2.PatchAppEnv(context.Background(), "app-1", nil, []string{"OLD_FLAG"}); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(got) != "map[unset:[OLD_FLAG]]" {
+		t.Fatalf("body = %v", got)
+	}
+}
+
+func TestPatchAppEnv_RetriedOnGatewayErrors(t *testing.T) {
+	// Sending the same change again changes nothing, so a retry is safe.
+	n := 0
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		n++
+		if n == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"id": "app-1"})
+	})
+	if _, err := c.PatchAppEnv(context.Background(), "app-1", map[string]string{"A": "b"}, nil); err != nil || n != 2 {
+		t.Fatalf("PatchAppEnv() = %v after %d tries", err, n)
+	}
+}
+
+func TestSetReplicas(t *testing.T) {
+	var got map[string]any
+	var method, path string
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		writeJSON(w, 200, map[string]any{"id": "app-1", "replicas": 3, "autoscaling": map[string]any{"min_replicas": 2, "max_replicas": 6}})
+	})
+	app, err := c.SetReplicas(context.Background(), "app-1", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if method != http.MethodPut || path != "/api/v1/apps/app-1" || fmt.Sprint(got) != "map[replicas:3]" {
+		t.Fatalf("request = %s %s %v; a token may send replicas only", method, path, got)
+	}
+	if app.Replicas != 3 || !app.Autoscales() || app.Autoscaling.MaxReplicas != 6 || app.Autoscaling.Min() != 2 {
+		t.Fatalf("app = %+v", app)
+	}
+}
+
+func TestCreateDeployment_AsConfiguredSendsAnEmptyBody(t *testing.T) {
+	var body string
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		writeJSON(w, 202, map[string]any{"id": "dep-1", "version": 16, "status": "pending"})
+	})
+	if _, err := c.CreateDeployment(context.Background(), "app-1", CreateDeploymentRequest{}, "f1498b64-ba27-5f9a-8704-8b6910db9ac2"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(body) != "{}" {
+		t.Fatalf("body = %q, want {} (deploy the app as configured)", body)
+	}
+}
+
+func TestApp_Autoscales(t *testing.T) {
+	for _, tt := range []struct {
+		a    App
+		want bool
+	}{
+		{App{}, false},
+		{App{Autoscaling: &Autoscaling{}}, false},
+		{App{Autoscaling: &Autoscaling{MaxReplicas: 4}}, true},
+	} {
+		if got := tt.a.Autoscales(); got != tt.want {
+			t.Errorf("Autoscales(%+v) = %v", tt.a.Autoscaling, got)
+		}
+	}
+	if (&Autoscaling{MaxReplicas: 4}).Min() != 1 {
+		t.Error("no min_replicas means 1")
+	}
+}

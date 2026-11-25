@@ -32,13 +32,23 @@ func newStatusCmd(a *App) *cobra.Command {
 }
 
 type statusOut struct {
-	App          string       `json:"app"`
-	AppID        string       `json:"app_id"`
-	LiveVersion  int          `json:"live_version"`
-	URL          string       `json:"url"`
-	Latest       *latestOut   `json:"latest,omitempty"`
-	Replicas     *replicasOut `json:"replicas,omitempty"`
-	DeploysToday *deploysOut  `json:"deploys_today,omitempty"`
+	App         string `json:"app"`
+	AppID       string `json:"app_id"`
+	LiveVersion int    `json:"live_version"`
+	// LiveRollback is set when the live version is a rollback: Kubernetix
+	// put an earlier version back (automatic, after a failed deploy) or
+	// someone rolled back.
+	LiveRollback *liveRollbackOut `json:"live_rollback,omitempty"`
+	URL          string           `json:"url"`
+	Latest       *latestOut       `json:"latest,omitempty"`
+	Replicas     *replicasOut     `json:"replicas,omitempty"`
+	DeploysToday *deploysOut      `json:"deploys_today,omitempty"`
+}
+
+type liveRollbackOut struct {
+	Automatic     bool `json:"automatic"`
+	TargetVersion int  `json:"target_version,omitempty"`
+	FailedVersion int  `json:"failed_version,omitempty"`
 }
 
 type latestOut struct {
@@ -52,6 +62,17 @@ type replicasOut struct {
 	// Starting means none are counted yet, but the newest version went
 	// live moments ago: counts can take a minute to appear.
 	Starting bool `json:"starting,omitempty"`
+	// Desired is how many replicas the app is set to run; left out when
+	// autoscaling decides.
+	Desired int `json:"desired,omitempty"`
+	// Stopping counts the replicas beyond Desired right after the newest
+	// version went live: the version before it (StoppingVersion, when
+	// known) shutting down.
+	Stopping        int `json:"stopping,omitempty"`
+	StoppingVersion int `json:"stopping_version,omitempty"`
+	// StartingVersion is a newer version on its way while the live one
+	// serves.
+	StartingVersion int `json:"starting_version,omitempty"`
 }
 
 // countsLag is how long after a version goes live kx takes "no replicas"
@@ -86,8 +107,11 @@ func runStatus(ctx context.Context, a *App, cmd *cobra.Command, appFlag string) 
 	live := liveDeployment(deps)
 	if live != nil {
 		out.LiveVersion = live.Version
+		if rb := live.Rollback; rb != nil {
+			out.LiveRollback = &liveRollbackOut{Automatic: rb.Automatic, TargetVersion: rb.TargetVersion, FailedVersion: rb.FailedVersion}
+		}
 	}
-	if len(deps) > 0 && (live == nil || deps[0].ID != live.ID) {
+	if len(deps) > 0 {
 		out.Latest = &latestOut{Version: deps[0].Version, Status: deps[0].Status}
 	}
 	// Replicas and usage are nice to have: a failure leaves them out.
@@ -99,6 +123,7 @@ func runStatus(ctx context.Context, a *App, cmd *cobra.Command, appFlag string) 
 			}
 		}
 		r.Starting = r.Total == 0 && len(deps) > 0 && justWentLive(deps[0], a.Now())
+		rollout(r, app, deps, live)
 		out.Replicas = r
 	}
 	if u, err := c.Usage(ctx, org); err == nil {
@@ -112,11 +137,11 @@ func runStatus(ctx context.Context, a *App, cmd *cobra.Command, appFlag string) 
 	}
 	rows := [][]string{{"App", app.Name}}
 	if live != nil {
-		rows = append(rows, []string{"Live", fmt.Sprintf("v%d", live.Version)})
+		rows = append(rows, []string{"Live", fmt.Sprintf("v%d", live.Version) + rollbackNote(live.Rollback)})
 	} else {
 		rows = append(rows, []string{"Live", "nothing yet"})
 	}
-	if out.Latest != nil {
+	if out.Latest != nil && (live == nil || deps[0].ID != live.ID) {
 		rows = append(rows, []string{"Newest", fmt.Sprintf("v%d %s", out.Latest.Version, (api.Deployment{Status: out.Latest.Status}).Phase())})
 	}
 	rows = append(rows, []string{"URL", dashIfEmpty(app.URL)})
@@ -127,6 +152,18 @@ func runStatus(ctx context.Context, a *App, cmd *cobra.Command, appFlag string) 
 		rows = append(rows, []string{"Replicas", "starting (counts can take a minute to appear)"})
 	case out.Replicas.Total == 0:
 		rows = append(rows, []string{"Replicas", "none running"})
+	case out.Replicas.Stopping > 0:
+		r := out.Replicas
+		line := fmt.Sprintf("v%d ready (%d of %d); ", live.Version, min(r.Ready, r.Desired), r.Desired)
+		if r.StoppingVersion > 0 {
+			line += fmt.Sprintf("v%d stopping", r.StoppingVersion)
+		} else {
+			line += "the version before it stopping"
+		}
+		rows = append(rows, []string{"Replicas", line})
+	case out.Replicas.StartingVersion > 0:
+		r := out.Replicas
+		rows = append(rows, []string{"Replicas", fmt.Sprintf("v%d starting; v%d serving (%d of %d ready)", r.StartingVersion, live.Version, r.Ready, r.Total)})
 	default:
 		rows = append(rows, []string{"Replicas", fmt.Sprintf("%d of %d ready", out.Replicas.Ready, out.Replicas.Total)})
 	}
@@ -153,6 +190,54 @@ func justWentLive(d api.Deployment, now time.Time) bool {
 		at = *d.CompletedAt
 	}
 	return d.Status == api.StatusReady && !at.IsZero() && now.Sub(at) < countsLag
+}
+
+// rollout explains replica counts during a rollout. Kubernetix lists every
+// replica, the old version's too, so right after a version goes live the
+// count runs over the set number while the old ones shut down (which
+// "1 of 2 ready" would make look like trouble), and while a new version
+// starts the live one keeps serving. The set number is what the live
+// version runs with: the app's own may be saved without a deploy yet.
+// Versions that autoscale have no set number to compare with.
+func rollout(r *replicasOut, app *api.App, deps []api.Deployment, live *api.Deployment) {
+	desired, autoscales := app.Replicas, app.Autoscales()
+	if live != nil && live.Replicas > 0 { // 0: an older API that doesn't say
+		desired, autoscales = live.Replicas, live.Autoscaling != nil && live.Autoscaling.MaxReplicas > 0
+	}
+	if autoscales || desired < 1 {
+		return
+	}
+	r.Desired = desired
+	if live == nil || len(deps) == 0 || r.Total <= r.Desired {
+		return
+	}
+	switch newest := deps[0]; {
+	case newest.ID == live.ID:
+		r.Stopping = r.Total - r.Desired
+		for _, d := range deps[1:] {
+			if d.Status == api.StatusReady {
+				r.StoppingVersion = d.Version
+				break
+			}
+		}
+	case !newest.Done():
+		r.StartingVersion = newest.Version
+	}
+}
+
+// rollbackNote says what a live rollback put back: " (v14 put back after
+// v16 failed)" for one Kubernetix made after a failed deploy, " (rollback
+// to v14)" for one someone asked for.
+func rollbackNote(rb *api.DeploymentRollback) string {
+	switch {
+	case rb == nil || rb.TargetVersion <= 0:
+		return ""
+	case rb.Automatic && rb.FailedVersion > 0:
+		return fmt.Sprintf(" (v%d put back after v%d failed)", rb.TargetVersion, rb.FailedVersion)
+	case rb.Automatic:
+		return fmt.Sprintf(" (v%d put back automatically)", rb.TargetVersion)
+	}
+	return fmt.Sprintf(" (rollback to v%d)", rb.TargetVersion)
 }
 
 // liveDeployment is the newest deployment that went live. Deployments are

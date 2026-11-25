@@ -95,6 +95,14 @@ type Options struct {
 	// Repository is the repository in the organization's registry that kx
 	// pushes to; "" means the app's name.
 	Repository string
+	// Save, when set, changes the app's configuration (its env vars or
+	// replicas) instead of building: Run makes every check first (the app,
+	// an earlier deploy, today's deploys), then calls Save, then deploys
+	// the app as configured (an empty deploy request) and waits as for
+	// any deploy. Nothing is saved when a check fails. App must be set;
+	// Image, Build, VersionTag, Repository and Provenance must not.
+	Save func(ctx context.Context) error
+
 	// Provenance, when the build is of a commit as it is (ProvenanceOf),
 	// goes on the image as labels. Its commit also tells a version tag on
 	// an earlier build of the same commit, which kx leaves where it is,
@@ -118,10 +126,12 @@ type Options struct {
 	Sleep func(ctx context.Context, d time.Duration) error
 
 	// OnCredential sees every registry credential before anything else
-	// does (GitHub mode masks it). OnBuild runs before the build and
-	// OnDeploy once the deployment exists.
+	// does (GitHub mode masks it). OnBuild runs before the build,
+	// OnCreated (when set) just after kx created the app, and OnDeploy
+	// once the deployment exists.
 	OnCredential func(api.RegistryCredential)
 	OnBuild      func()
+	OnCreated    func(app *api.App)
 	OnDeploy     func(app *api.App, d *api.Deployment)
 
 	// StopCommands wraps every block of untrusted output (Docker's, the
@@ -194,9 +204,11 @@ func (o *Options) prepare() error {
 		return errors.New("deploy: give exactly one of App and NewApp")
 	case o.NewApp != "" && !config.ValidAppName(o.NewApp):
 		return fmt.Errorf("deploy: %q is not an app name", o.NewApp)
-	case o.Image == "" && (o.Build == nil || o.Builder == nil):
+	case o.Save != nil && (o.App == nil || o.Image != "" || o.Build != nil || o.VersionTag != "" || o.Repository != "" || o.Provenance != nil):
+		return errors.New("deploy: Save deploys an existing app as configured, and nothing else")
+	case o.Save == nil && o.Image == "" && (o.Build == nil || o.Builder == nil):
 		return errors.New("deploy: building needs Build and Builder")
-	case o.Image == "" && !tagRe.MatchString(o.Tag):
+	case o.Save == nil && o.Image == "" && !tagRe.MatchString(o.Tag):
 		return fmt.Errorf("deploy: %q is not an image tag", o.Tag)
 	case o.Image != "" && (o.VersionTag != "" || o.Repository != ""):
 		return errors.New("deploy: VersionTag and Repository are for images kx builds")
@@ -258,9 +270,12 @@ func (r *runner) deploy(ctx context.Context) (*Result, error) {
 		r.c.Ctx.App = o.NewApp
 	}
 
-	port, err := r.check(ctx, app)
-	if err != nil {
-		return nil, err
+	port := 0
+	if o.Save == nil {
+		var err error
+		if port, err = r.check(ctx, app); err != nil {
+			return nil, err
+		}
 	}
 	if app != nil {
 		if err := r.waitForPrevious(ctx, app); err != nil {
@@ -272,7 +287,11 @@ func (r *runner) deploy(ctx context.Context) (*Result, error) {
 	}
 
 	image := o.Image
-	if image == "" {
+	if o.Save != nil {
+		if err := o.Save(ctx); err != nil {
+			return nil, err
+		}
+	} else if image == "" {
 		built, tags, version, err := r.image(ctx, res.App)
 		if err != nil {
 			return nil, err
@@ -289,9 +308,12 @@ func (r *runner) deploy(ctx context.Context) (*Result, error) {
 		app = created
 		res.AppID, res.CreatedApp = app.ID, true
 		r.p.Step("Created", "app "+app.Name, 0)
+		if o.OnCreated != nil {
+			o.OnCreated(app)
+		}
 	}
 
-	if !res.CreatedApp && o.Image == "" {
+	if !res.CreatedApp && o.Image == "" && o.Save == nil {
 		// The build took a while: check again that nothing (a dashboard
 		// deploy, another computer) started meanwhile, so two deploys of
 		// the app never run at once from kx's side.
@@ -304,9 +326,18 @@ func (r *runner) deploy(ctx context.Context) (*Result, error) {
 		return res, r.deployLimit(ctx, err)
 	}
 	res.DeploymentID, res.Version, res.Status = dep.ID, dep.Version, dep.Status
+	if o.Save != nil {
+		res.Image = dep.ImageURL // the image the app is configured with
+	}
 	if same, known := sameDigest(dep.ImageURL, image); dep.Replayed || (known && !same) {
 		// Same key, earlier deployment: say so, and report what it deployed.
-		r.p.Info("This run already deployed v%d, so nothing new was started; kx reports that deploy.", dep.Version)
+		if o.Save != nil {
+			// A change's deploy has a key of its own: the earlier deployment
+			// came from this same command, a try that got through.
+			r.p.Info("Kubernetix had already started v%d for this change, so kx follows that one.", dep.Version)
+		} else {
+			r.p.Info("This run already deployed v%d, so nothing new was started; kx reports that deploy.", dep.Version)
+		}
 		res.Replayed = true
 		if dep.ImageURL != "" {
 			res.Image = dep.ImageURL
@@ -827,30 +858,39 @@ func (r *runner) failed(ctx context.Context, app *api.App, d *api.Deployment) *k
 	if reason == "" && d.Status == api.StatusRolledBack {
 		reason = "Kubernetix rolled it back"
 	}
-	return &kxerr.DeployFailed{App: app.Name, Version: d.Version, ServingVersion: r.serving(ctx, app, d), Reason: reason, Code: d.ErrorCode, NotStarting: r.likely}
+	serving, restoredAs := r.serving(ctx, app, d)
+	return &kxerr.DeployFailed{App: app.Name, Version: d.Version, ServingVersion: serving, RestoredAs: restoredAs, Reason: reason, Code: d.FailureClass(), NotStarting: r.likely}
 }
 
-// deploymentLogs returns the last 20 lines of d's build and rollout logs.
-func (r *runner) deploymentLogs(ctx context.Context, d *api.Deployment) []string {
+// deploymentLogs returns the last 20 lines of d's build and rollout logs,
+// without probe and scraper noise, and whether kx could read them.
+func (r *runner) deploymentLogs(ctx context.Context, d *api.Deployment) ([]string, bool) {
 	logs, err := r.c.DeploymentLogs(ctx, d.ID)
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	return lastLines(logs.BuildLogs+"\n"+logs.DeploymentLogs, shownLogLines)
+	all := lastLines(logs.BuildLogs+"\n"+logs.DeploymentLogs, 1<<20)
+	return lastLines(joinLines(withoutNoise(all)), shownLogLines), true
 }
 
 // serving returns the version still serving after d failed, 0 if none.
-func (r *runner) serving(ctx context.Context, app *api.App, d *api.Deployment) int {
+func (r *runner) serving(ctx context.Context, app *api.App, d *api.Deployment) (version, restoredAs int) {
 	deps, err := r.c.ListDeployments(ctx, app.ID, 20)
 	if err != nil {
-		return 0
+		return 0, 0
 	}
 	for _, other := range deps {
-		if other.Status == api.StatusReady && other.ID != d.ID {
-			return other.Version
+		if other.Status != api.StatusReady || other.ID == d.ID {
+			continue
 		}
+		// Kubernetix may record putting the earlier version back as a new
+		// version: name the version it put back.
+		if rb := other.Rollback; rb != nil && rb.Automatic && rb.FailedDeploymentID == d.ID && rb.TargetVersion > 0 {
+			return rb.TargetVersion, other.Version
+		}
+		return other.Version, 0
 	}
-	return 0
+	return 0, 0
 }
 
 func joinLines(lines []string) string { return strings.Join(lines, "\n") }

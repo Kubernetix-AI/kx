@@ -104,16 +104,55 @@ func (e *TokenOrgMismatch) Error() string {
 var ErrTokenCreateMoved = errors.New("tokens are created in the dashboard")
 
 // TokenLacks means the token in use (from Source, for Org) doesn't have
-// Permissions ("deploy", "read", "registry:push"), which the command needs.
+// Permissions ("deploy", "read", "registry:push", "configure"), which
+// Command ("kx env"; "" means kx deploy) needs.
 type TokenLacks struct {
 	Permissions []string
 	Source      TokenSource
 	Org         string
+	Command     string
 }
 
 func (e *TokenLacks) Error() string {
 	return fmt.Sprintf("token lacks the %v permissions", e.Permissions)
 }
+
+// State is what kx knows of a fact: Yes, No or Unknown. The zero value
+// means the fact doesn't apply.
+type State int
+
+// The States.
+const (
+	NotApplicable State = iota
+	Yes
+	No
+	Unknown
+)
+
+// Change is an error from a command that changes an app's configuration
+// (kx env set and unset, kx scale), with what became of the change. Saved
+// is whether the change is on the app as kx stops; Restored, after a
+// failed deploy, whether Kubernetix put the app back, undoing it (to
+// RestoredTo, when that is a version). SavedUnknown and RestoredUnknown say
+// why kx doesn't know, when it doesn't. DeploymentID and Version are the
+// deploy kx started, if any. Note is the line that says what became of the
+// change, empty when nothing was saved.
+type Change struct {
+	Err             error
+	Saved           State
+	SavedUnknown    string
+	Restored        State
+	RestoredUnknown string
+	RestoredTo      int
+	DeploymentID    string
+	Version         int
+	Note            string
+	// Fix, when set, replaces the fix line of Err's explanation.
+	Fix string
+}
+
+func (e *Change) Error() string { return e.Err.Error() }
+func (e *Change) Unwrap() error { return e.Err }
 
 // TokenAppMismatch means an app-scoped token for TokenApp was asked to act on App.
 type TokenAppMismatch struct{ TokenApp, App string }
@@ -159,7 +198,11 @@ func (e *InsecureURL) Error() string {
 }
 
 // Usage is a mistake in how kx was called. What and Fix are shown as-is.
-type Usage struct{ What, Fix string }
+type Usage struct {
+	What, Fix string
+	// Code, when set, is the problem code instead of "usage".
+	Code string
+}
 
 func (e *Usage) Error() string { return e.What }
 
@@ -218,9 +261,13 @@ type DeployFailed struct {
 	App            string
 	Version        int
 	ServingVersion int
-	Reason         string
-	Code           string
-	NotStarting    *NotStarting
+	// RestoredAs is the version Kubernetix recorded when it put
+	// ServingVersion back after this deploy failed (an automatic
+	// rollback), 0 when it recorded none.
+	RestoredAs  int
+	Reason      string
+	Code        string
+	NotStarting *NotStarting
 }
 
 // NotStarting describes what kx saw of a version whose containers ran but

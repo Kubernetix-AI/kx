@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -32,19 +33,43 @@ const (
 
 // App is an application.
 type App struct {
-	ID                   string      `json:"id"`
-	Name                 string      `json:"name"`
-	Status               string      `json:"status,omitempty"`
-	URL                  string      `json:"url,omitempty"`
-	SourceType           string      `json:"source_type,omitempty"`
-	ImageURL             string      `json:"image_url,omitempty"`
-	Port                 int         `json:"port"`
-	Replicas             int         `json:"replicas"`
-	LatestReleaseVersion int         `json:"latest_release_version"`
-	Regions              []AppRegion `json:"regions,omitempty"`
-	CreatedAt            time.Time   `json:"created_at"`
-	UpdatedAt            time.Time   `json:"updated_at"`
+	ID          string       `json:"id"`
+	Name        string       `json:"name"`
+	Status      string       `json:"status,omitempty"`
+	URL         string       `json:"url,omitempty"`
+	SourceType  string       `json:"source_type,omitempty"`
+	ImageURL    string       `json:"image_url,omitempty"`
+	Port        int          `json:"port"`
+	Replicas    int          `json:"replicas"`
+	Autoscaling *Autoscaling `json:"autoscaling,omitempty"`
+	// EnvVars holds the names of the app's environment variables. Tokens
+	// never see the values: each is "" and EnvVarsHidden is set. kx never
+	// sends this map back, since every "" would overwrite a real value.
+	EnvVars              map[string]string `json:"env_vars,omitempty"`
+	EnvVarsHidden        bool              `json:"env_vars_hidden,omitempty"`
+	LatestReleaseVersion int               `json:"latest_release_version"`
+	Regions              []AppRegion       `json:"regions,omitempty"`
+	CreatedAt            time.Time         `json:"created_at"`
+	UpdatedAt            time.Time         `json:"updated_at"`
 }
+
+// Autoscaling is an app's autoscaling setting: it runs between Min() and
+// MaxReplicas replicas, whatever its replica count says.
+type Autoscaling struct {
+	MinReplicas *int `json:"min_replicas,omitempty"`
+	MaxReplicas int  `json:"max_replicas"`
+}
+
+// Min is the fewest replicas autoscaling runs (1 when not set).
+func (a *Autoscaling) Min() int {
+	if a == nil || a.MinReplicas == nil || *a.MinReplicas < 1 {
+		return 1
+	}
+	return *a.MinReplicas
+}
+
+// Autoscales reports whether autoscaling decides how many replicas run.
+func (a App) Autoscales() bool { return a.Autoscaling != nil && a.Autoscaling.MaxReplicas > 0 }
 
 // AppRegion is one region of a multi-region app (GetApp only).
 type AppRegion struct {
@@ -79,9 +104,20 @@ type Deployment struct {
 	// ErrorCode is the platform's class for a failure, e.g. quota_blocked
 	// (the plan had no room for the version); new classes may appear.
 	ErrorCode string `json:"error_code,omitempty"`
+	// ErrorMessage is the platform's own text for a failure, which can
+	// hold internal detail and log lines: kx only reads the class at its
+	// start (FailureClass) and never prints it.
+	ErrorMessage string `json:"error_message,omitempty"`
 	// RetryCount is how many times Kubernetix has started this deployment
 	// again after an attempt that didn't go live.
-	RetryCount  int          `json:"retry_count,omitempty"`
+	RetryCount int `json:"retry_count,omitempty"`
+	// Rollback is set on a deployment that rolled back to an earlier one;
+	// Automatic when Kubernetix made it after a failed deploy.
+	Rollback *DeploymentRollback `json:"rollback,omitempty"`
+	// Replicas and Autoscaling are what the deployment runs with, copied
+	// from the app when it was made (0 and nil from an older API).
+	Replicas    int          `json:"replicas,omitempty"`
+	Autoscaling *Autoscaling `json:"autoscaling,omitempty"`
 	Port        int          `json:"port,omitempty"`
 	HealthCheck *HealthCheck `json:"health_check,omitempty"`
 	CreatedAt   time.Time    `json:"created_at"`
@@ -90,6 +126,52 @@ type Deployment struct {
 	// Replayed is set by CreateDeployment when Kubernetix handed back a
 	// deployment made earlier with the same idempotency key.
 	Replayed bool `json:"-"`
+}
+
+// FailureClasses are the classes Kubernetix gives a failed version it
+// knows the cause of, in error_code: a plan with no room (quota_blocked),
+// or a version that can't run.
+var FailureClasses = []string{
+	"quota_blocked", "crash_loop", "image_pull_failed", "oom_killed", "image_not_found", "image_not_allowed",
+	"image_access_denied", "image_credential_rejected", "image_platform_unsupported", "invalid_image_name",
+	"container_config_error", "container_create_error",
+}
+
+// failurePrefixes wrap the class at the start of the worker's own message
+// ("deployment failed: crash_loop: …").
+var failurePrefixes = []string{"deployment failed: ", "failed to prepare image: "}
+
+// FailureClass is d's failure class: error_code when Kubernetix sends it,
+// else a known class at the start of error_message, else "".
+func (d Deployment) FailureClass() string {
+	if d.ErrorCode != "" {
+		return d.ErrorCode
+	}
+	msg := d.ErrorMessage
+	for trimmed := true; trimmed; {
+		trimmed = false
+		for _, p := range failurePrefixes {
+			if rest, ok := strings.CutPrefix(msg, p); ok {
+				msg, trimmed = rest, true
+			}
+		}
+	}
+	class, _, found := strings.Cut(msg, ":")
+	if found && slices.Contains(FailureClasses, class) {
+		return class
+	}
+	return ""
+}
+
+// DeploymentRollback says what a rollback deployment restored: the
+// deployment (and version) whose configuration it runs, and for one
+// Kubernetix made itself (Automatic), the deployment that had failed.
+type DeploymentRollback struct {
+	Automatic          bool   `json:"automatic"`
+	TargetDeploymentID string `json:"target_deployment_id,omitempty"`
+	TargetVersion      int    `json:"target_version,omitempty"`
+	FailedDeploymentID string `json:"failed_deployment_id,omitempty"`
+	FailedVersion      int    `json:"failed_version,omitempty"`
 }
 
 // HealthCheck is how Kubernetix checks an app's containers: liveness

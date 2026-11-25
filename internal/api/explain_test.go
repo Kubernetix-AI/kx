@@ -49,8 +49,76 @@ func explainCases() []explainCase {
 		{"KX_TOKEN lacks read", &kxerr.TokenLacks{Permissions: []string{"read"}, Source: kxerr.SourceEnv}, Problem{"token_not_allowed", "The token in the KX_TOKEN secret doesn't have the Read permission, which kx deploy needs.", "Create a deploy token on the app's Deploy tab (it has Deploy, Read and Push images) and replace the KX_TOKEN secret.", 3}},
 		{"login lacks deploy and push", &kxerr.TokenLacks{Permissions: []string{"deploy", "registry:push"}, Source: kxerr.SourceLogin, Org: "acme-corp"}, Problem{"token_not_allowed", "The token this computer uses for acme-corp doesn't have the Deploy and Push images permissions, which kx deploy needs.", "Log in with a token that can deploy: kx login --org acme-corp", 3}},
 		{"server names the missing permission", withPath(&Error{Status: 403, Code: "token_not_allowed", Message: "This API token doesn't have the read permission.", Ctx: envCtx}, "GET", "/apps/a1"), Problem{"token_not_allowed", "The token in the KX_TOKEN secret doesn't have the Read permission.", "Create a token with the access you need on the app's Deploy tab and replace the KX_TOKEN secret.", 3}},
-		{"server names the configure permission", withPath(&Error{Status: 403, Code: "token_not_allowed", Message: "This API token doesn't have the configure permission.", Ctx: envCtx}, "PATCH", "/apps/a1"), Problem{"token_not_allowed", "The token in the KX_TOKEN secret doesn't have the Configure permission.", "Create a token with the access you need on the app's Deploy tab and replace the KX_TOKEN secret.", 3}},
-		{"login lacks configure", &kxerr.TokenLacks{Permissions: []string{"configure"}, Source: kxerr.SourceLogin, Org: "acme-corp"}, Problem{"token_not_allowed", "The token this computer uses for acme-corp doesn't have the Configure permission, which kx deploy needs.", "Log in with a token that can deploy: kx login --org acme-corp", 3}},
+		{"server names the configure permission", withPath(&Error{Status: 403, Code: "token_not_allowed", Message: "This API token doesn't have the configure permission.", Ctx: envCtx}, "PATCH", "/apps/a1"), Problem{"token_not_allowed", "The token in the KX_TOKEN secret doesn't have the Configure permission.", "Create an API token with Configure (Settings → API tokens) and replace the KX_TOKEN secret.", 3}},
+		// Kubernetix checks an image before it deploys it.
+		{"image not found", withPath(&Error{Status: 400, Code: "image_not_found", Message: "'registry.kubernetix.ai/acme-corp/web:1.2' wasn't found on registry.kubernetix.ai.",
+			Hint: "Check the repository name and tag; tags are case-sensitive.", Ctx: loginCtx}, "POST", "/apps/a1/deployments"),
+			Problem{"image_not_found", "'registry.kubernetix.ai/acme-corp/web:1.2' wasn't found on registry.kubernetix.ai.", "Check the repository name and tag; tags are case-sensitive.", 4}},
+		{"image not allowed", withPath(&Error{Status: 400, Code: "image_not_allowed", Message: "Images from other organizations' private repositories can't be used.",
+			Hint: "Use your own registry, add a Bring-Your-Own-Registry credential, or use a public image.", Ctx: loginCtx}, "POST", "/apps/a1/deployments"),
+			Problem{"image_refused", "Images from other organizations' private repositories can't be used.", "Use your own registry, add a Bring-Your-Own-Registry credential, or use a public image.", 2}},
+		{"image refused, no hint", withPath(&Error{Status: 400, Code: "image_platform_unsupported", Message: "This image has no linux/amd64 build.", Ctx: loginCtx}, "POST", "/apps"),
+			Problem{"image_refused", "This image has no linux/amd64 build.", "Use another image, then run the command again.", 2}},
+		{"bound database not running", withPath(&Error{Status: 409, Code: "database_not_ready", Message: `Database "main" is "updating", not "running". Deploying now would start your app without its database credentials.`,
+			Hint: "Wait for the database to finish provisioning (Databases shows its status), then deploy again.", Ctx: loginCtx}, "POST", "/apps/a1/deployments"),
+			Problem{"database_not_ready", `Database "main" is "updating", not "running"; deploying now would start your app without its database credentials.`, "Wait until the database is running (the dashboard's Databases page shows it), then run the command again.", 2}},
+		{"env var collides with a database's", withPath(&Error{Status: 400, Code: "env_prefix_conflict", Field: "env_vars.DATABASE_URL",
+			Message: `env_vars["DATABASE_URL"] collides with the variable injected by database "main" (env_prefix "DATABASE").`, Ctx: loginCtx}, "POST", "/apps/a1/deployments"),
+			Problem{"env_prefix_conflict", `env_vars["DATABASE_URL"] collides with the variable injected by database "main" (env_prefix "DATABASE").`, "Remove DATABASE_URL from the app (kx env unset DATABASE_URL), or rebind the database with another prefix in the dashboard.", 2}},
+		{"validation error with a hint", withPath(&Error{Status: 400, Code: "validation_error", Message: "replicas must be at least 1.", Hint: "Set replicas to 1 or more.", Ctx: loginCtx}, "PUT", "/apps/a1"),
+			Problem{"validation_error", "Kubernetix didn't accept the request: replicas must be at least 1.", "Set replicas to 1 or more.", 2}},
+		// The class of a failed version (error_code, or the class the worker
+		// names in its message) picks the words and the exit code.
+		{"failed: crash loop", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Code: "crash_loop", Reason: "Your container is crashing on start.", NotStarting: &kxerr.NotStarting{After: 2 * time.Minute, Path: "/", Port: 8080, HealthCheck: true}},
+			Problem{"crash_loop", "shop-api v15 didn't go live: its container kept crashing on start. Version 14 is still serving.", "Find the error in the log lines above (or kx logs --deployment v15), fix it or the start command, then run kx deploy again.", 8}},
+		{"failed: out of memory", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Code: "oom_killed"},
+			Problem{"oom_killed", "shop-api v15 didn't go live: it ran out of memory. Version 14 is still serving.", "Give the app more memory (a larger size, in the dashboard) or make it use less, then run kx deploy again.", 8}},
+		{"failed: image pull", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "image_pull_failed"},
+			Problem{"image_pull_failed", "shop-api v15 didn't go live: Kubernetix couldn't pull its image.", "Check the image name and that Kubernetix may pull it (Registries, in the dashboard), then run kx deploy again.", 8}},
+		{"failed: container config", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "container_config_error"},
+			Problem{"container_config_error", "shop-api v15 didn't go live: its container couldn't be configured.", "Check its environment variables (kx env), secrets and volumes, then run kx deploy again.", 8}},
+		{"failed: container create", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "container_create_error"},
+			Problem{"container_create_error", "shop-api v15 didn't go live: its container couldn't be created.", "Check its start command, arguments and mounted paths, then run kx deploy again.", 8}},
+		{"failed: image not found", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Code: "image_not_found"},
+			Problem{"image_not_found", "shop-api v15 didn't go live: its image isn't in the registry. Version 14 is still serving.", "Check the image name and tag, then run kx deploy again.", 8}},
+		{"failed: image not allowed", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "image_not_allowed"},
+			Problem{"image_not_allowed", "shop-api v15 didn't go live: its image is in another organization's private repository.", "Use your own registry, a public image, or a registry you added a credential for in the dashboard.", 8}},
+		{"failed: image access denied", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "image_access_denied"},
+			Problem{"image_access_denied", "shop-api v15 didn't go live: its image is private, and Kubernetix has no credential for that registry.", "Add a credential for the registry (Registries, in the dashboard), or fix the image name.", 8}},
+		{"failed: credential rejected", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "image_credential_rejected"},
+			Problem{"image_credential_rejected", "shop-api v15 didn't go live: the registry rejected the credential for its image.", "Rotate the credential (Registries, in the dashboard), then run kx deploy again.", 8}},
+		{"failed: invalid image name", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "invalid_image_name"},
+			Problem{"invalid_image_name", "shop-api v15 didn't go live: its image name isn't valid.", "Use registry/repository:tag, then run kx deploy again.", 8}},
+		{"failed: image platform", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "image_platform_unsupported"},
+			Problem{"image_platform_unsupported", "shop-api v15 didn't go live: its image has no linux/amd64 build.", "Build it for linux/amd64 (kx deploy does) or publish a multi-arch image, then deploy again.", 8}},
+		{"env var collides, a name to quote", withPath(&Error{Status: 409, Code: "env_prefix_conflict", Field: "env_vars.MY-DB_URL",
+			Message: `env_vars["MY-DB_URL"] collides with the variable injected by database "main" (env_prefix "MY-DB").`, Ctx: loginCtx}, "POST", "/apps/a1/deployments"),
+			Problem{"env_prefix_conflict", `env_vars["MY-DB_URL"] collides with the variable injected by database "main" (env_prefix "MY-DB").`, "Remove 'MY-DB_URL' from the app (kx env unset 'MY-DB_URL'), or rebind the database with another prefix in the dashboard.", 2}},
+		// A refusal kx has no words of its own for: the platform's hint is
+		// the fix.
+		{"unknown refusal with a hint", withPath(&Error{Status: 400, Code: "invalid_port", Message: "port must be between 1 and 65535; got 0.", Hint: "Use the port your container listens on, e.g. 8080.", Ctx: loginCtx}, "POST", "/apps"),
+			Problem{"request_rejected", "Kubernetix didn't accept the request: port must be between 1 and 65535; got 0.", "Use the port your container listens on, for example 8080.", 2}},
+		// A token may only roll back to a version that differs in what it
+		// could change itself; the platform's sentence says what else differs.
+		{"token can't roll back to that version", withPath(&Error{Status: 403, Code: "token_not_allowed",
+			Message: "v12 also has a different size and secret bindings, which this token can't change. Roll back in the dashboard, or deploy a new version.", Ctx: loginCtx}, "POST", "/deployments/dep-12/rollback"),
+			Problem{"token_not_allowed", "v12 also has a different size and secret bindings, which this token can't change.", "Roll back in the dashboard, or deploy a new version.", 3}},
+		// A token made for one app, used on another: the fix is a token for
+		// that app, wherever the refusal comes.
+		{"token only works for another app", withPath(&Error{Status: 403, Code: "token_not_allowed", Message: "This API token only works for the app web.",
+			Ctx: ErrContext{Org: "acme-corp", App: "shop-api", TokenSource: kxerr.SourceLogin}}, "POST", "/deployments/dep-12/rollback"),
+			Problem{"token_app_mismatch", "This token only works for web, not shop-api.", "Log in with a token that can reach shop-api: kx login --org acme-corp", 3}},
+		{"KX_TOKEN only works for one app", withPath(&Error{Status: 403, Code: "token_not_allowed", Message: "This API token only works for one app.",
+			Ctx: ErrContext{App: "shop-api", TokenSource: kxerr.SourceEnv}}, "GET", "/apps/a2"),
+			Problem{"token_app_mismatch", "This token only works for another app, not shop-api.", "Create a deploy token on shop-api's Deploy tab and replace the KX_TOKEN secret.", 3}},
+		// A check that didn't come out either way: try again.
+		{"image check error", withPath(&Error{Status: 400, Code: "image_check_error", Message: "Unexpected image check outcome.", Hint: "Try again; if this persists, contact support.", Ctx: loginCtx}, "POST", "/apps/a1/deployments"),
+			Problem{"image_check_error", "Kubernetix couldn't check the image just now.", "Wait a minute, then try again.", 1}},
+		// Without the platform's sentence kx can't tell why: the general words.
+		{"token can't roll back, no sentence", withPath(&Error{Status: 403, Code: "token_not_allowed", Ctx: loginCtx}, "POST", "/deployments/dep-12/rollback"),
+			Problem{"token_not_allowed", "This token isn't allowed to do that.", "Log in with a token that can: kx login --org acme-corp", 3}},
+		{"login lacks configure", &kxerr.TokenLacks{Permissions: []string{"configure"}, Source: kxerr.SourceLogin, Org: "acme-corp", Command: "kx env"}, Problem{"token_not_allowed", "The token this computer uses for acme-corp doesn't have the Configure permission, which kx env needs.", "Log in again and keep Configure ticked: kx login --org acme-corp", 3}},
+		{"login token lacks configure (API)", withPath(&Error{Status: 403, Code: "token_not_allowed", Message: "This API token doesn't have the configure permission.", Ctx: ErrContext{Org: "acme-corp", TokenSource: kxerr.SourceLogin}}, "PUT", "/apps/a1"), Problem{"token_not_allowed", "This token doesn't have the Configure permission.", "Log in again and keep Configure ticked: kx login --org acme-corp", 3}},
 		{"token create", kxerr.ErrTokenCreateMoved, Problem{"token_create_not_allowed", "kx can't create tokens; only people signed in to the dashboard can.", "Create one in the dashboard: Settings → API tokens (for CI, the app's Deploy tab)", 2}},
 		{"app-scoped token, other app", &kxerr.TokenAppMismatch{TokenApp: "shop-api", App: "web"}, Problem{"token_app_mismatch", "This token can only deploy shop-api, and you asked to deploy web.", "Log in with a token that can deploy web: kx login", 3}},
 		{"folder's org not logged in", &kxerr.OrgNotLoggedIn{Org: "acme-labs", LoggedIn: []string{"acme-corp"}, FromFolder: true}, Problem{"org_not_logged_in", "This folder deploys to acme-labs, but this computer is only logged in to acme-corp.", "Run: kx login --org acme-labs", 3}},
@@ -145,9 +213,23 @@ func explainCases() []explainCase {
 			Problem{"quota_blocked", "shop-api v15 didn't go live: " + quotaRestoredMsg, quotaFix, 5}},
 		{"unknown failure class", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Code: "some_new_class", Reason: "your container is crashing on start"},
 			Problem{"deploy_failed", "shop-api v15 didn't go live: your container is crashing on start. Version 14 is still serving.", "See why: kx logs --deployment v15", 8}},
+		{"env var refused", &kxerr.Usage{Code: "invalid_env_var", What: "Kubernetix didn't accept the change: 'BIG' has a 40000-byte value; the limit is 32768.", Fix: "BIG is already on shop-api: remove it first (kx env unset BIG), then run the command again."},
+			Problem{"invalid_env_var", "Kubernetix didn't accept the change: 'BIG' has a 40000-byte value; the limit is 32768.", "BIG is already on shop-api: remove it first (kx env unset BIG), then run the command again.", 2}},
+		// Kubernetix put the serving version back and recorded that as a
+		// new version (an automatic rollback).
+		{"deploy crashed, restored as a new version", &kxerr.DeployFailed{App: "shop-api", Version: 16, ServingVersion: 14, RestoredAs: 17},
+			Problem{"deploy_failed", "shop-api v16 didn't go live: your container is crashing on start. Version 14 is serving again, recorded as v17.", "See why: kx logs --deployment v16", 8}},
 		{"deploy failed with reason, no earlier version", &kxerr.DeployFailed{App: "shop-api", Version: 1, Reason: "the image could not be pulled."}, Problem{"deploy_failed", "shop-api v1 didn't go live: the image could not be pulled.", "See why: kx logs --deployment v1", 8}},
 		{"never ready, platform failed it", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Reason: "Deployment failed.", NotStarting: &kxerr.NotStarting{After: 2*time.Minute + 10*time.Second, Path: "/", Port: 8080, HealthCheck: true}},
 			Problem{"deploy_failed", "shop-api v15 didn't go live: its container kept crashing or didn't answer health checks on / at port 8080. Version 14 is still serving.", "Make your app start and answer on / at port 8080 (the log lines above may say why it didn't), then run kx deploy again.", 8}},
+		// A cause the platform named for the pods (it fails these at once)
+		// beats what kx guessed from the replicas.
+		{"never ready, platform says out of memory", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14,
+			Reason: "Your pod ran out of memory. Increase resources.limits.memory or check your app for memory leaks.", NotStarting: &kxerr.NotStarting{After: 2 * time.Minute, Path: "/", Port: 8080, HealthCheck: true}},
+			Problem{"deploy_failed", "shop-api v15 didn't go live: your pod ran out of memory. Version 14 is still serving.", "Increase resources.limits.memory or check your app for memory leaks.", 8}},
+		{"never ready, platform says the image can't be pulled", &kxerr.DeployFailed{App: "shop-api", Version: 15,
+			Reason: "Couldn't pull the container image. Check the image URL is correct and the registry credentials are valid.", NotStarting: &kxerr.NotStarting{After: 90 * time.Second}},
+			Problem{"deploy_failed", "shop-api v15 didn't go live: couldn't pull the container image.", "Check the image URL is correct and the registry credentials are valid.", 8}},
 		{"never ready, path not known", &kxerr.DeployFailed{App: "shop-api", Version: 1, NotStarting: &kxerr.NotStarting{After: 5 * time.Minute, Port: 3000, HealthCheck: true}},
 			Problem{"deploy_failed", "shop-api v1 didn't go live: its container kept crashing or didn't answer health checks at port 3000.", "Make your app start and answer health checks at port 3000 (the log lines above may say why it didn't), then run kx deploy again.", 8}},
 		{"never ready, no health check", &kxerr.DeployFailed{App: "shop-api", Version: 1, NotStarting: &kxerr.NotStarting{After: 90 * time.Second}},
@@ -255,7 +337,10 @@ func checkShape(t *testing.T, p Problem) {
 	sentences := strings.Count(strings.TrimSuffix(p.What, "."), ". ") + 1
 	maxSentences := 1
 	switch p.Code {
-	case "deploy_failed":
+	case "deploy_failed", "crash_loop", "oom_killed", "image_pull_failed", "container_config_error", "container_create_error",
+		"image_not_found", "image_refused", "image_not_allowed", "image_access_denied", "image_credential_rejected",
+		"image_platform_unsupported", "invalid_image_name":
+		// The cause, then which version still serves.
 		maxSentences = 2
 	case "billing_unpaid", "subscription_ended":
 		// Line one is the platform's own customer message, which says
@@ -698,6 +783,14 @@ func TestClient_ParsesTheTriesCeiling(t *testing.T) {
 		var apiErr *Error
 		if !errors.As(err, &apiErr) || apiErr.TriesLimit != want {
 			t.Errorf("%s: %+v", body, err)
+		}
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	for in, want := range map[string]string{"DATABASE_URL": "DATABASE_URL", "MY VAR": "'MY VAR'", "my-var": "'my-var'", "it's": `'it'\''s'`, "": "''"} {
+		if got := ShellQuote(in); got != want {
+			t.Errorf("ShellQuote(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

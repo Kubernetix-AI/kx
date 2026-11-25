@@ -241,7 +241,8 @@ have always been in, pass `--repository shop-frontend`, or add `"repository": "s
 to `.kx.json`, where it applies when kx deploys the app that `.kx.json` links. A repository
 name is lowercase letters and digits with single `.`, `_` or `-` between them and `/` between
 parts (`web/frontend`), without the registry's address or the organization, and with no part
-called `tags` (Kubernetix's image routes would read it as a tag). A token with Push
+called `tags` (Kubernetix's image routes would read it as a tag; an app called `tags` needs
+`--repository`). A token with Push
 images can push to every repository in the organization's registry, so a token made for one
 app can push to a repository named differently from the app.
 
@@ -284,7 +285,9 @@ build and push the image yourself, then deploy it:
 | `kx logs` | The last 100 lines your app printed in the past hour. |
 | `kx open` | Opens the live URL in your browser (and prints it). |
 | `kx rollback` | Redeploys the newest earlier version that went live with a different image. |
-| `kx apps list`, `kx apps get <app>` | Lists your apps, or shows one. |
+| `kx apps list`, `kx apps get <app>` | Lists your apps, or shows one, with each app's live version. |
+| `kx env`, `kx env set`, `kx env unset` | Lists the names of the app's environment variables, or sets or removes some, then deploys the app. |
+| `kx scale <replicas>` | Sets how many replicas the app runs, then deploys it. |
 
 In a folder that isn't linked, `kx status`, `kx logs` and `kx open` use your organization's
 only app, and say so; with several apps, add `--app`.
@@ -306,7 +309,67 @@ kx rollback --to v13 --yes
 
 kx apps list
 kx apps get shop-api
+
+kx env                           # the names of the app's environment variables
+kx env set LOG_LEVEL=debug FEATURE_X=on
+kx env set STRIPE_KEY --stdin    # asks for the value without showing it (or reads standard input)
+kx env set STRIPE_KEY            # the value of $STRIPE_KEY, kept off the command line
+kx env set --from-file .env.production
+kx env unset OLD_FLAG
+kx scale 3
+kx scale 1 --no-deploy           # save it; the next deploy applies it
 ```
+
+**Changing settings.** `kx env set`, `kx env unset` and `kx scale` change the app's settings
+and then deploy the app as configured (its current image with the new settings), waiting
+until it's live as `kx deploy` does, with the same lines and exit codes; `--no-deploy` only
+saves the change, for the next deploy. `kx env set` keeps every variable you don't name.
+
+- **Values.** For a secret use `kx env set NAME --stdin`: kx asks for the value without
+  showing it, or reads it from standard input, so it stays out of your shell history. A `NAME`
+  without `=VALUE` takes the value from kx's own environment (a CI secret). `--from-file` reads
+  `NAME=VALUE` lines from a file such as `.env`, the way the common dotenv tools do: blank
+  lines and `#` comments are skipped, `export` in front is allowed, an unquoted value ends at
+  ` #`, values can be in single or double quotes, and `${...}` is not expanded. Names use
+  letters, digits and `_`, and don't start with a digit. An empty value needs `--allow-empty`
+  (`kx env unset` removes a variable).
+- **kx never prints a value**, not in its output, errors or `--json`: an error about an
+  argument names its position (argument 2), never its text, in case it is a secret typed
+  without `NAME=`. Kubernetix hides values from tokens, so `kx env` lists names only. In GitHub
+  Actions kx masks every value it sets (each line of 4 characters or more) before printing
+  anything, so the app's log lines it shows after a failed deploy can't show them either.
+- **If the deploy doesn't go live**, kx says what became of the change, on a line before the
+  fix: still saved for the next deploy (the deploy was refused, for example today's deploys
+  ran out), or undone, because Kubernetix puts the app back to the version still serving when
+  a deploy fails ("Kubernetix put shop-api back to v14, so this change was undone."). kx
+  checks the app to confirm that; when it can't (a new value for a variable the app already
+  had: kx never sees values), it says the change is most likely undone. With `--json` the
+  result and the error both say `"saved"` (the change is on the app) and `"deployed"` (kx saw
+  it go live; `--no-wait` gives false), and an error after a failed deploy adds `"restored"`
+  (the change was undone). Each is `true`, `false`, or `null` when kx doesn't know, with the
+  reason in `"saved_unknown"` or `"restored_unknown"`; a save request that got no answer kx
+  could use gives `"saved": null` too, and the line says how to check.
+- **Nothing to change.** `kx env unset` of names the app doesn't have, or `kx scale` to the
+  count the app already runs, changes nothing and doesn't deploy. `kx scale` on an app that
+  autoscales is refused, since the count has no effect while autoscaling is on;
+  `--no-deploy` saves it for when autoscaling is off.
+- **Permissions.** These commands need a token with **Configure** (and Deploy, unless
+  `--no-deploy`): if your login's token doesn't have it, log in again with Configure ticked;
+  in CI, create an API token with Configure (Settings → API tokens), since a deploy token
+  can't have it.
+
+During a rollout `kx status` says what the replicas are doing: "v4 ready (1 of 1); v3 stopping"
+right after a version goes live, and "v5 starting; v4 serving (2 of 3 ready)" while a new one
+starts. When a deploy fails after it started replacing the live version, Kubernetix puts that
+version back and may record the put-back as a new version: kx says "Version 14 is serving
+again, recorded as v17.", and `kx status` shows "v17 (v14 put back after v16 failed)"
+(`--json`: `"live_rollback"`).
+
+After a failed deploy kx shows the failed version's own last log lines: those of its replicas
+when the log stream names them, else the deployment's log Kubernetix kept, never the
+still-serving version's, and without health probes' and metrics scrapers' requests
+(`kube-probe`, `vm_promscrape`). A version that printed nothing says "No output from v15's
+container."
 
 ### Your account
 
@@ -379,6 +442,12 @@ standard output as:
 {"error":{"code":"not_logged_in","message":"You're not logged in to Kubernetix.","fix":"Run: kx login"}}
 ```
 
+The errors of `kx env set`, `kx env unset` and `kx scale` also say what became of the change:
+`"saved"` and `"deployed"`, and, after the change was saved, `"change"` (the line kx prints
+about it), `"restored"`, `"restored_to"` (once the undo is confirmed), `"deployment_id"` and
+`"version"` when they apply. `"saved"` and `"restored"` are `null` when kx doesn't know, with
+the reason in `"saved_unknown"` or `"restored_unknown"`.
+
 ## When something goes wrong
 
 kx prints what happened, then what to do, for example:
@@ -399,6 +468,20 @@ The messages you are most likely to meet:
 | This token stopped working because the person who created it is no longer a member of acme-corp. | Ask an admin of acme-corp for a new token: Settings → API tokens | 3 |
 | This token can only deploy shop-api, and you asked to deploy web. | Log in with a token that can deploy web: kx login | 3 |
 | This folder deploys to acme-labs, but this computer is only logged in to acme-corp. | Run: kx login --org acme-labs | 3 |
+| The token this computer uses for acme-corp doesn't have the Configure permission, which kx env needs. | Log in again and keep Configure ticked: kx login --org acme-corp | 3 |
+| The token in the KX_TOKEN secret doesn't have the Configure permission, which kx scale needs. | Create an API token with Configure (Settings → API tokens) and replace the KX_TOKEN secret. | 3 |
+| The token this computer uses for acme-corp doesn't have the Deploy permission, which kx env needs. | Add --no-deploy to save the change without deploying, or log in again with Deploy ticked: kx login --org acme-corp | 3 |
+| Argument 2 isn't NAME=VALUE: names use letters, digits and _, and don't start with a digit. | Run: kx env set LOG_LEVEL=debug | 2 |
+| shop-api autoscales between 2 and 6 replicas, so a replica count has no effect while autoscaling is on. | To save the count for when autoscaling is off: kx scale 3 --no-deploy | 2 |
+| Kubernetix didn't accept the change: 'BIG_CERT' has a 40000-byte value; the limit is 32768. | BIG_CERT is already on shop-api: remove it first (kx env unset BIG_CERT), then run the command again. | 2 |
+| 'registry.kubernetix.ai/acme-corp/web:1.2' wasn't found on registry.kubernetix.ai. | Check the repository name and tag; tags are case-sensitive. | 4 |
+| This image has no linux/amd64 build. | Publish a multi-arch or amd64 image. | 2 |
+| Database "main" is "updating", not "running"; deploying now would start your app without its database credentials. | Wait until the database is running (the dashboard's Databases page shows it), then run the command again. | 2 |
+| v12 also has a different size and secret bindings, which this token can't change. | Roll back in the dashboard, or deploy a new version. | 3 |
+| This token only works for web, not shop-api. | Log in with a token that can reach shop-api: kx login --org acme-corp | 3 |
+| Kubernetix couldn't check the image just now. | Wait a minute, then try again. | 1 |
+| shop-api v15 didn't go live: it ran out of memory. Version 14 is still serving. | Give the app more memory (a larger size, in the dashboard) or make it use less, then run kx deploy again. | 8 |
+| shop-api v15 didn't go live: its container kept crashing on start. Version 14 is still serving. | Find the error in the log lines above (or kx logs --deployment v15), fix it or the start command, then run kx deploy again. | 8 |
 | This token can't upload images. | Create a token with Push images on the app's Deploy tab, or deploy an image that's already pushed: kx deploy --image &lt;image&gt; | 3 |
 | The token in the KX_TOKEN secret doesn't have the Read permission, which kx deploy needs. | Create a deploy token on the app's Deploy tab (it has Deploy, Read and Push images) and replace the KX_TOKEN secret. | 3 |
 | registry.kubernetix.ai/acme-corp/shop-api:1.4.0 already holds another image, so kx left the tag alone and deployed nothing. | Tag the commit with a new version, or, if you know that image, deploy it: kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:&lt;digest&gt; | 7 |
@@ -426,13 +509,13 @@ above.
 |---|---|
 | 0 | Success (including a pull or merge request run that kx skips on purpose) |
 | 1 | Something unexpected (network, server) |
-| 2 | Usage: a flag, argument, `.kx.json` or missing Dockerfile |
+| 2 | Usage: a flag, argument, `.kx.json` or missing Dockerfile; also an image Kubernetix refuses before deploying it (`image_refused`) |
 | 3 | Login, token or permission |
-| 4 | Not found |
+| 4 | Not found; also an image Kubernetix doesn't find before deploying it (`image_not_found`) |
 | 5 | A plan limit or rate limit, or new deploys paused for billing (payment overdue or subscription ended); also a version your plan has no room for, once Kubernetix reports it as such (until then, 8) |
 | 6 | The Docker build failed |
 | 7 | The image upload failed, or the version tag already holds another image |
-| 8 | The deploy failed |
+| 8 | The deploy failed: a deployment was created and didn't go live. `--json`'s code names the class when Kubernetix gives one (`crash_loop`, `oom_killed`, `image_pull_failed`, `container_config_error`, `container_create_error`, `image_not_found`, `image_not_allowed`, `image_access_denied`, `image_credential_rejected`, `image_platform_unsupported`, `invalid_image_name`), else `deploy_failed` |
 | 9 | kx stopped waiting; the deploy continues |
 | 10 | Docker isn't installed or isn't running |
 
@@ -443,7 +526,10 @@ or create it in the Kubernetix dashboard. In CI, `--app` (the Action's `app:` in
 an app that already exists. To let the first CI run create the app instead, run
 `kx link <name>` once, commit the `.kx.json` it writes, and leave out `--app` (`app:`). That
 run needs a token that can deploy every app (Settings → API tokens): a deploy token made on
-an app's Deploy tab only reaches that app.
+an app's Deploy tab only reaches that app. If you later delete the app, the next CI run
+creates it again (kx says so when it does). To stop that, remove `.kx.json` (or the
+workflow), or, once the app exists, run `kx link <name>` again and commit the `.kx.json` it
+writes, which then includes the app's ID.
 
 Create a deploy token on the app's Deploy tab in the dashboard, save it as a secret named
 `KX_TOKEN`, and run `kx deploy`. On GitHub, the `Kubernetix-AI/deploy@v1` Action does this

@@ -2,8 +2,11 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -48,19 +51,26 @@ func newAppsCmd(a *App) *cobra.Command {
 }
 
 type appOut struct {
-	Name     string `json:"name"`
-	ID       string `json:"id"`
-	Status   string `json:"status"`
-	Version  int    `json:"version"`
-	URL      string `json:"url"`
-	Port     int    `json:"port"`
-	Replicas int    `json:"replicas"`
-	Image    string `json:"image,omitempty"`
-	Created  string `json:"created_at,omitempty"`
+	Name    string `json:"name"`
+	ID      string `json:"id"`
+	Status  string `json:"status"`
+	Version int    `json:"version"`
+	// VersionUnknown: kx couldn't find out the live version (version 0).
+	VersionUnknown bool   `json:"version_unknown,omitempty"`
+	URL            string `json:"url"`
+	Port           int    `json:"port"`
+	Replicas       int    `json:"replicas"`
+	Image          string `json:"image,omitempty"`
+	Created        string `json:"created_at,omitempty"`
 }
 
-func toAppOut(app api.App) appOut {
-	out := appOut{Name: app.Name, ID: app.ID, Status: app.Status, Version: app.LatestReleaseVersion, URL: app.URL, Port: app.Port, Replicas: app.Replicas, Image: app.ImageURL}
+// toAppOut shows app with version, its live version (0 for none,
+// unknownVersion when kx couldn't find out).
+func toAppOut(app api.App, version int) appOut {
+	out := appOut{Name: app.Name, ID: app.ID, Status: app.Status, Version: version, URL: app.URL, Port: app.Port, Replicas: app.Replicas, Image: app.ImageURL}
+	if version == unknownVersion {
+		out.Version, out.VersionUnknown = 0, true
+	}
 	if !app.CreatedAt.IsZero() {
 		out.Created = app.CreatedAt.UTC().Format(time.RFC3339)
 	}
@@ -91,10 +101,11 @@ func runAppsList(ctx context.Context, a *App, cmd *cobra.Command) error {
 		return err
 	}
 
+	versions := liveVersions(ctx, a, c, apps)
 	if a.jsonOut {
 		out := make([]appOut, 0, len(apps))
 		for _, app := range apps {
-			out = append(out, toAppOut(app))
+			out = append(out, toAppOut(app, versions[app.ID]))
 		}
 		return s.P.PrintJSON(struct {
 			Apps []appOut `json:"apps"`
@@ -106,7 +117,7 @@ func runAppsList(ctx context.Context, a *App, cmd *cobra.Command) error {
 	}
 	rows := make([][]string, 0, len(apps))
 	for _, app := range apps {
-		rows = append(rows, []string{app.Name, app.Status, versionText(app.LatestReleaseVersion), app.URL})
+		rows = append(rows, []string{app.Name, app.Status, versionText(versions[app.ID]), app.URL})
 	}
 	s.P.Table([]string{"NAME", "STATUS", "VERSION", "URL"}, rows)
 	return nil
@@ -121,14 +132,19 @@ func runAppsGet(ctx context.Context, a *App, cmd *cobra.Command, name string) er
 	if err != nil {
 		return err
 	}
+	c, err := s.Client(ctx)
+	if err != nil {
+		return err
+	}
+	version := liveVersions(ctx, a, c, []api.App{*app})[app.ID]
 	if a.jsonOut {
-		return s.P.PrintJSON(toAppOut(*app))
+		return s.P.PrintJSON(toAppOut(*app, version))
 	}
 	rows := [][]string{
 		{"Name", app.Name},
 		{"ID", app.ID},
 		{"Status", app.Status},
-		{"Version", versionText(app.LatestReleaseVersion)},
+		{"Version", versionText(version)},
 		{"URL", dashIfEmpty(app.URL)},
 		{"Port", strconv.Itoa(app.Port)},
 		{"Replicas", strconv.Itoa(app.Replicas)},
@@ -143,8 +159,71 @@ func runAppsGet(ctx context.Context, a *App, cmd *cobra.Command, name string) er
 	return nil
 }
 
+// unknownVersion stands for a live version kx couldn't find out.
+const unknownVersion = -1
+
+// liveLookups is how many live versions kx looks up at once: a token may
+// send a burst of about 10 requests.
+const liveLookups = 4
+
+// liveVersions finds each app's live version, the newest deployment that
+// went live (Kubernetix's own release counter only counts some deploys),
+// liveLookups apps at a time. A lookup answered 429 is sent again after
+// the wait the answer asks for (or 1 s, 2 s, 4 s); one that fails gives
+// unknownVersion. An app with nothing live is left out (0).
+func liveVersions(ctx context.Context, a *App, c *api.Client, apps []api.App) map[string]int {
+	out := make(map[string]int, len(apps))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, liveLookups)
+	for _, app := range apps {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			v := unknownVersion
+			if deps, err := listDeploymentsWaitingOutLimits(ctx, a, c, id); err == nil {
+				v = 0
+				if live := liveDeployment(deps); live != nil {
+					v = live.Version
+				}
+			}
+			if v != 0 {
+				mu.Lock()
+				out[id] = v
+				mu.Unlock()
+			}
+		}(app.ID)
+	}
+	wg.Wait()
+	return out
+}
+
+// listDeploymentsWaitingOutLimits lists an app's newest deployments,
+// asking again up to 3 times when Kubernetix answers 429.
+func listDeploymentsWaitingOutLimits(ctx context.Context, a *App, c *api.Client, appID string) ([]api.Deployment, error) {
+	for attempt := 0; ; attempt++ {
+		deps, err := c.ListDeployments(ctx, appID, 20)
+		var apiErr *api.Error
+		if err == nil || attempt == 3 || !errors.As(err, &apiErr) || apiErr.Status != http.StatusTooManyRequests {
+			return deps, err
+		}
+		wait := time.Second << attempt
+		if apiErr.RetryAfter > 0 {
+			wait = min(apiErr.RetryAfter, 10*time.Second)
+		}
+		if err := a.Sleep(ctx, wait); err != nil {
+			return nil, err
+		}
+	}
+}
+
 func versionText(v int) string {
-	if v <= 0 {
+	switch {
+	case v == unknownVersion:
+		return "?"
+	case v <= 0:
 		return "-"
 	}
 	return fmt.Sprintf("v%d", v)

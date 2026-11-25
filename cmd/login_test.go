@@ -296,8 +296,9 @@ func TestWhoami_ListsOrgs(t *testing.T) {
 	h.saveUser(u)
 	h.expect(h.run("whoami"), 0)
 	golden(t, "whoami", h.out.String())
-	if len(h.api.got()) != 0 {
-		t.Fatal("whoami called the server for saved logins")
+	// It checks each login that hasn't ended with Kubernetix, once.
+	if got := len(h.api.got()); got != 2 {
+		t.Fatalf("whoami made %d requests, want one per login that hasn't ended", got)
 	}
 }
 
@@ -358,7 +359,7 @@ func TestWhoami_JSONSameShape(t *testing.T) {
 		sort.Strings(names)
 		return got.Orgs, strings.Join(names, ",")
 	}
-	const want = "default,ended,expires_at,org,source,token_prefix,user"
+	const want = "default,ended,expires_at,org,source,status,token_prefix,user"
 
 	h := newHarness(t)
 	h.loginAs("acme-corp", tokCorp, &dec11)

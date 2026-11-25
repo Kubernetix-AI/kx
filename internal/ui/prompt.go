@@ -25,6 +25,22 @@ func (p *Printer) ReadLine(ctx context.Context) (string, error) {
 	return p.readCtx(ctx, p.readLine)
 }
 
+// ReadAll reads all of stdin, up to limit bytes, with one final line
+// break dropped (for kx env set --stdin, whose value may span lines).
+func (p *Printer) ReadAll(ctx context.Context, limit int64) (string, error) {
+	return p.readCtx(ctx, func() (string, error) {
+		b, err := io.ReadAll(io.LimitReader(p.reader(), limit+1))
+		if err != nil {
+			return "", err
+		}
+		if int64(len(b)) > limit {
+			return "", errors.New("standard input is too long")
+		}
+		s := strings.TrimSuffix(string(b), "\n")
+		return strings.TrimSuffix(s, "\r"), nil
+	})
+}
+
 func (p *Printer) readLine() (string, error) {
 	line, err := p.reader().ReadString('\n')
 	if err != nil && (err != io.EOF || line == "") {

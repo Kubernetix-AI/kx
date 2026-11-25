@@ -13,8 +13,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,9 +86,19 @@ type fakeAPI struct {
 	gets        map[string]int
 	failReason  string
 	failCode    string // the error_code a failed deployment carries
+	failMessage string // its error_message: the worker's own text
+	onFailed    func() // runs when a new deployment first reports failed
 
-	requests   []string
-	userAgents []string
+	// Configure side: the env var values the fake keeps (by app ID; tokens
+	// only ever see the names), and the bodies of PATCH env and PUT app.
+	envValues  map[string]map[string]string
+	envPatches []map[string]any
+	appPuts    []map[string]any
+
+	requests    []string
+	userAgents  []string
+	inFlight    atomic.Int32
+	maxInFlight atomic.Int32
 
 	now time.Time // the server's clock, for token expiry
 	// override, when it returns ok, answers a request (by bearer token)
@@ -147,6 +160,12 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 }
 
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Requests kx has in flight at once, counted before the lock (which
+	// makes the fake answer one at a time).
+	if n := f.inFlight.Add(1); n > f.maxInFlight.Load() {
+		f.maxInFlight.Store(n)
+	}
+	defer f.inFlight.Add(-1)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests = append(f.requests, r.Method+" "+r.URL.RequestURI())
@@ -185,7 +204,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "GET" && len(parts) == 2 && parts[0] == "apps":
 		for _, a := range f.apps {
 			if a.ID == parts[1] {
-				writeJSON(w, 200, a)
+				writeJSON(w, 200, f.tokenView(a))
 				return
 			}
 		}
@@ -211,6 +230,10 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, 404, map[string]string{"error": "deployment_not_found", "message": "Deployment not found"})
+	case r.Method == "PATCH" && len(parts) == 3 && parts[0] == "apps" && parts[2] == "env":
+		f.patchEnv(w, r, who, parts[1])
+	case r.Method == "PUT" && len(parts) == 2 && parts[0] == "apps":
+		f.putApp(w, r, who, parts[1])
 	case r.Method == "POST" && path == "/apps":
 		f.createApp(w, r, appToken, who)
 	case r.Method == "POST" && len(parts) == 3 && parts[0] == "apps" && parts[2] == "deployments":
@@ -550,7 +573,139 @@ func (f *fakeAPI) createDeployment(w http.ResponseWriter, r *http.Request, appID
 		return
 	}
 	img, _ := body["image_url"].(string)
+	if img == "" { // an empty body deploys the app as configured
+		for _, a := range f.apps {
+			if a.ID == appID {
+				img = a.ImageURL
+			}
+		}
+	}
 	writeJSON(w, 201, f.addDeployment(appID, "new-"+key, img))
+}
+
+// tokenView is an app as a token sees it: env var names with every value
+// hidden.
+func (f *fakeAPI) tokenView(a api.App) api.App {
+	if vals := f.envValues[a.ID]; len(vals) > 0 {
+		a.EnvVars, a.EnvVarsHidden = map[string]string{}, true
+		for k := range vals {
+			a.EnvVars[k] = ""
+		}
+	}
+	return a
+}
+
+// configureFail answers like the platform when the token can't configure.
+func configureFail(w http.ResponseWriter, who api.WhoAmI) bool {
+	if who.Token != nil && !who.Token.Can(api.PermConfigure) {
+		writeJSON(w, 403, map[string]any{"error": "token_not_allowed", "message": "This API token doesn't have the configure permission.",
+			"token_prefix": who.Token.Prefix, "token_name": who.Token.Name})
+		return true
+	}
+	return false
+}
+
+func (f *fakeAPI) patchEnv(w http.ResponseWriter, r *http.Request, who api.WhoAmI, appID string) {
+	if configureFail(w, who) {
+		return
+	}
+	var body struct {
+		Set   map[string]string `json:"set"`
+		Unset []string          `json:"unset"`
+	}
+	raw, _ := io.ReadAll(r.Body)
+	var asMap map[string]any
+	_ = json.Unmarshal(raw, &asMap)
+	f.envPatches = append(f.envPatches, asMap)
+	_ = json.Unmarshal(raw, &body)
+	if len(body.Set) == 0 && len(body.Unset) == 0 {
+		writeJSON(w, 400, map[string]string{"error": "validation_error", "message": "Send env vars to change."})
+		return
+	}
+	for i := range f.apps {
+		if f.apps[i].ID != appID {
+			continue
+		}
+		if f.envValues == nil {
+			f.envValues = map[string]map[string]string{}
+		}
+		if f.envValues[appID] == nil {
+			f.envValues[appID] = map[string]string{}
+		}
+		// Like the platform: the env the app would hold after the change
+		// must follow the rules, or nothing changes.
+		merged := map[string]string{}
+		for k, v := range f.envValues[appID] {
+			merged[k] = v
+		}
+		for k, v := range body.Set {
+			merged[k] = v
+		}
+		for _, k := range body.Unset {
+			delete(merged, k)
+		}
+		if fe := platformEnvRules(merged); fe != nil {
+			writeJSON(w, 400, fe)
+			return
+		}
+		for k, v := range body.Set {
+			f.envValues[appID][k] = v
+		}
+		for _, k := range body.Unset {
+			delete(f.envValues[appID], k)
+		}
+		writeJSON(w, 200, f.tokenView(f.apps[i]))
+		return
+	}
+	writeJSON(w, 404, map[string]string{"error": "app_not_found", "message": "App not found"})
+}
+
+// platformEnvRules is the platform's check of an app's env vars: names it
+// allows, each value at most 32768 bytes, names and values at most 262144
+// bytes in all. It answers in the platform's field-error shape, naming
+// variables, never values.
+func platformEnvRules(env map[string]string) map[string]string {
+	names := make([]string, 0, len(env))
+	for k := range env {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	total := 0
+	for _, k := range names {
+		switch {
+		case !regexp.MustCompile(`^[-._a-zA-Z][-._a-zA-Z0-9]*$`).MatchString(k):
+			return map[string]string{"error": "invalid_env_var", "message": fmt.Sprintf("'%s' is not a valid environment variable name.", k), "field": "env_vars." + k, "hint": "Names must start with a letter."}
+		case len(env[k]) > 32768:
+			return map[string]string{"error": "invalid_env_var", "message": fmt.Sprintf("'%s' has a %d-byte value; the limit is 32768.", k, len(env[k])), "field": "env_vars." + k, "hint": "Store large values as a secret and bind it instead."}
+		}
+		total += len(k) + len(env[k])
+	}
+	if total > 262144 {
+		return map[string]string{"error": "invalid_env_var", "message": fmt.Sprintf("Environment variables total %d bytes; the limit is 262144.", total), "field": "env_vars", "hint": "Store large values as secrets and bind them instead."}
+	}
+	return nil
+}
+
+func (f *fakeAPI) putApp(w http.ResponseWriter, r *http.Request, who api.WhoAmI, appID string) {
+	if configureFail(w, who) {
+		return
+	}
+	var body map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	f.appPuts = append(f.appPuts, body)
+	n, _ := body["replicas"].(float64)
+	if n < 1 {
+		writeJSON(w, 400, map[string]string{"error": "invalid_replicas", "message": "replicas must be at least 1"})
+		return
+	}
+	for i := range f.apps {
+		if f.apps[i].ID == appID {
+			f.apps[i].Replicas = int(n)
+			writeJSON(w, 200, f.tokenView(f.apps[i]))
+			return
+		}
+	}
+	writeJSON(w, 404, map[string]string{"error": "app_not_found", "message": "App not found"})
 }
 
 func (f *fakeAPI) rollback(w http.ResponseWriter, r *http.Request, id string) {
@@ -580,6 +735,11 @@ func (f *fakeAPI) addDeployment(appID, id, image string) api.Deployment {
 		v = ds[0].Version + 1
 	}
 	d := api.Deployment{ID: id, AppID: appID, Version: v, Status: "pending", ImageURL: image, CreatedAt: f.now}
+	for _, a := range f.apps {
+		if a.ID == appID { // a deployment runs with the app's settings
+			d.Replicas, d.Autoscaling = a.Replicas, a.Autoscaling
+		}
+	}
 	f.deployments[appID] = append([]api.Deployment{d}, f.deployments[appID]...)
 	return d
 }
@@ -596,9 +756,13 @@ func (f *fakeAPI) findDeployment(id string) *api.Deployment {
 			if strings.HasPrefix(id, "new-") {
 				n := min(f.gets[id], len(f.statuses)-1)
 				f.gets[id]++
+				was := d.Status
 				d.Status = f.statuses[n]
 				if d.Status == "failed" {
-					d.CustomerError, d.ErrorCode = f.failReason, f.failCode
+					d.CustomerError, d.ErrorCode, d.ErrorMessage = f.failReason, f.failCode, f.failMessage
+					if was != "failed" && f.onFailed != nil {
+						f.onFailed()
+					}
 				}
 			}
 			return d

@@ -205,6 +205,29 @@ func (p *Printer) Info(format string, args ...any) {
 	p.writeErr(fmt.Sprintf(format, cleanArgs(args)...) + "\n")
 }
 
+// minMask is the shortest piece of a value AddMask hides: GitHub hides a
+// masked string everywhere in the rest of the job's log, so masking "1" or
+// "on" would hide every such word.
+const minMask = 4
+
+// AddMask asks GitHub Actions to hide value in the rest of the job's log:
+// one ::add-mask:: line per line of value (the log is matched line by
+// line), written as is (no cleaning or redaction, which would mask a
+// different string) with % escaped the way GitHub's toolkit does it.
+// Lines shorter than minMask are skipped.
+func (p *Printer) AddMask(value string) {
+	lines := strings.FieldsFunc(value, func(r rune) bool { return r == '\n' || r == '\r' })
+	var b strings.Builder
+	for _, line := range lines {
+		if len(line) >= minMask {
+			b.WriteString("::add-mask::" + strings.ReplaceAll(line, "%", "%25") + "\n")
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, _ = io.WriteString(p.Err, b.String())
+}
+
 // Note prints an indented detail line on stderr.
 func (p *Printer) Note(format string, args ...any) {
 	p.writeErr("  " + fmt.Sprintf(format, cleanArgs(args)...) + "\n")
@@ -280,17 +303,43 @@ type ErrorBody struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	Fix     string `json:"fix"`
+	// The rest comes with the errors of kx env and kx scale: what became
+	// of the change (Change, a sentence); whether it is on the app (Saved),
+	// live (Deployed) and, after a failed deploy, undone (Restored), each
+	// true, false or null when kx doesn't know, with the reason in
+	// SavedUnknown or RestoredUnknown; the version Kubernetix put the app
+	// back to; and the deploy kx started.
+	Change          string          `json:"change,omitempty"`
+	Saved           json.RawMessage `json:"saved,omitempty"`
+	SavedUnknown    string          `json:"saved_unknown,omitempty"`
+	Deployed        json.RawMessage `json:"deployed,omitempty"`
+	Restored        json.RawMessage `json:"restored,omitempty"`
+	RestoredUnknown string          `json:"restored_unknown,omitempty"`
+	RestoredTo      int             `json:"restored_to,omitempty"`
+	DeploymentID    string          `json:"deployment_id,omitempty"`
+	Version         int             `json:"version,omitempty"`
 }
 
 // Fail prints a problem: two lines on stderr, or with --json
 // {"error":{"code","message","fix"}} on stdout.
 func (p *Printer) Fail(code, what, fix string) {
-	what, fix = CleanField(what), CleanField(fix)
+	p.FailBody(ErrorBody{Code: code, Message: what, Fix: fix})
+}
+
+// FailBody prints a problem: what went wrong, the Change line when there
+// is one, then the fix on stderr; or with --json {"error":b} on stdout.
+func (p *Printer) FailBody(b ErrorBody) {
+	b.Message, b.Fix, b.Change = CleanField(b.Message), CleanField(b.Fix), CleanField(b.Change)
+	b.SavedUnknown, b.RestoredUnknown = CleanField(b.SavedUnknown), CleanField(b.RestoredUnknown)
 	if p.JSON {
-		_ = p.PrintJSONLine(ErrorJSON{ErrorBody{Code: code, Message: what, Fix: fix}})
+		_ = p.PrintJSONLine(ErrorJSON{b})
 		return
 	}
-	p.writeErr(p.paint(bold, what) + "\n" + fix + "\n")
+	text := p.paint(bold, b.Message) + "\n"
+	if b.Change != "" {
+		text += b.Change + "\n"
+	}
+	p.writeErr(text + b.Fix + "\n")
 }
 
 // Table prints rows under headers on stdout, aligned in columns. With no

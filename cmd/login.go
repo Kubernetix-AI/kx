@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -574,6 +576,72 @@ type whoamiOrg struct {
 	Ended       bool       `json:"ended"`
 	Default     bool       `json:"default"` // the org kx uses when none is named
 	Source      string     `json:"source"`
+	// Status is what Kubernetix says about the token now: active, ended,
+	// revoked, not_accepted, or unchecked when it couldn't be asked.
+	Status string `json:"status"`
+}
+
+// What Kubernetix says about a saved login.
+const (
+	loginActive      = "active"
+	loginEnded       = "ended"
+	loginRevoked     = "revoked"
+	loginNotAccepted = "not_accepted"
+	loginUnchecked   = "unchecked"
+)
+
+// checkLogins asks Kubernetix about each saved login that hasn't ended
+// (a few at a time, briefly), so kx whoami shows one that was revoked or
+// ended on the server as such, not only after the next command fails.
+func (a *App) checkLogins(ctx context.Context, s *Session, orgs []string) map[string]string {
+	out := make(map[string]string, len(orgs))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, 4)
+	for _, org := range orgs {
+		l := s.Cfg.User.Orgs[org]
+		if l.ExpiresAt != nil && !a.Now().Before(*l.ExpiresAt) {
+			mu.Lock()
+			out[org] = loginEnded
+			mu.Unlock()
+			continue
+		}
+		wg.Add(1)
+		go func(org, tok string) {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			status := loginNotAccepted
+			if api.CheckToken(tok) == nil {
+				cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				_, err := a.newClient(s.Cfg.APIURL, tok, s.CI).WhoAmI(cctx)
+				cancel()
+				status = loginStatus(err)
+			}
+			mu.Lock()
+			out[org] = status
+			mu.Unlock()
+		}(org, l.Token)
+	}
+	wg.Wait()
+	return out
+}
+
+func loginStatus(err error) string {
+	var apiErr *api.Error
+	switch {
+	case err == nil:
+		return loginActive
+	case !errors.As(err, &apiErr):
+		return loginUnchecked
+	case apiErr.Code == "token_revoked":
+		return loginRevoked
+	case apiErr.Code == "token_expired":
+		return loginEnded
+	case apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden:
+		return loginNotAccepted
+	}
+	return loginUnchecked
 }
 
 type whoamiOut struct {
@@ -592,7 +660,7 @@ func runWhoami(ctx context.Context, a *App, cmd *cobra.Command) error {
 			return err
 		}
 		if a.jsonOut {
-			e := whoamiOrg{Org: who.Org.ID, User: who.User.Email, Default: true, Source: "env"}
+			e := whoamiOrg{Org: who.Org.ID, User: who.User.Email, Default: true, Source: "env", Status: loginActive}
 			if t := who.Token; t != nil {
 				e.TokenPrefix, e.ExpiresAt = t.Prefix, t.ExpiresAt
 				e.Ended = t.ExpiresAt != nil && !a.Now().Before(*t.ExpiresAt)
@@ -619,29 +687,55 @@ func runWhoami(ctx context.Context, a *App, cmd *cobra.Command) error {
 		return kxerr.ErrNotLoggedIn
 	}
 	now := a.Now()
+	orgs := s.Cfg.User.OrgNames()
+	statuses := a.checkLogins(ctx, s, orgs)
 	var rows [][]string
 	var out []whoamiOrg
-	for _, org := range s.Cfg.User.OrgNames() {
+	broken := ""
+	for _, org := range orgs {
 		l := s.Cfg.User.Orgs[org]
+		status := statuses[org]
 		ends := "never"
-		ended := l.ExpiresAt != nil && !now.Before(*l.ExpiresAt)
+		ended := status == loginEnded
+		localEnded := l.ExpiresAt != nil && !now.Before(*l.ExpiresAt)
 		if l.ExpiresAt != nil {
 			ends = ui.Until(*l.ExpiresAt, now)
-			if ended {
-				ends = "ended " + ends
+		}
+		var notes []string
+		switch status {
+		case loginEnded:
+			ends = "ended"
+			if localEnded {
+				ends += " " + ui.Until(*l.ExpiresAt, now)
 			}
+		case loginRevoked:
+			ends = "revoked"
+		case loginNotAccepted:
+			ends = "not accepted"
 		}
 		def := org == s.Cfg.User.DefaultOrg
 		if def {
-			ends += " (default)"
+			notes = append(notes, "default")
+		}
+		if status == loginUnchecked {
+			notes = append(notes, "not checked")
+		}
+		if len(notes) > 0 {
+			ends += " (" + strings.Join(notes, ", ") + ")"
+		}
+		if broken == "" && (status == loginRevoked || status == loginNotAccepted || (status == loginEnded && !localEnded)) {
+			broken = org
 		}
 		rows = append(rows, []string{org, l.User, ends})
-		out = append(out, whoamiOrg{Org: org, User: l.User, TokenPrefix: api.TokenPrefix(l.Token), ExpiresAt: l.ExpiresAt, Ended: ended, Default: def, Source: "login"})
+		out = append(out, whoamiOrg{Org: org, User: l.User, TokenPrefix: api.TokenPrefix(l.Token), ExpiresAt: l.ExpiresAt, Ended: ended, Default: def, Source: "login", Status: status})
 	}
 	if a.jsonOut {
 		return p.PrintJSON(whoamiOut{out})
 	}
 	p.Table([]string{"ORG", "USER", "LOGIN ENDS"}, rows)
+	if broken != "" {
+		p.Info("A login that stopped working needs a new one: kx login --org %s", broken)
+	}
 	return nil
 }
 

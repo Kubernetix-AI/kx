@@ -7,6 +7,8 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -18,6 +20,7 @@ import (
 	"github.com/kubernetix-ai/kx/internal/browser"
 	"github.com/kubernetix-ai/kx/internal/deploy"
 	"github.com/kubernetix-ai/kx/internal/docker"
+	"github.com/kubernetix-ai/kx/internal/kxerr"
 	imageregistry "github.com/kubernetix-ai/kx/internal/registry"
 	"github.com/kubernetix-ai/kx/internal/ui"
 )
@@ -97,8 +100,37 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		a.jsonOut = hasJSONFlag(args)
 	}
 	prob := api.Explain(err)
-	a.printer().Fail(prob.Code, prob.What, prob.Fix)
+	body := ui.ErrorBody{Code: prob.Code, Message: prob.What, Fix: prob.Fix}
+	if ch := (*kxerr.Change)(nil); errors.As(err, &ch) {
+		saved := ch.Saved
+		if saved == kxerr.NotApplicable {
+			saved = kxerr.No
+		}
+		body.Change = ch.Note
+		body.Saved, body.SavedUnknown = stateJSON(saved), ch.SavedUnknown
+		body.Deployed = stateJSON(kxerr.No) // an error means the change didn't go live
+		body.Restored, body.RestoredUnknown = stateJSON(ch.Restored), ch.RestoredUnknown
+		body.RestoredTo, body.DeploymentID, body.Version = ch.RestoredTo, ch.DeploymentID, ch.Version
+		if ch.Fix != "" {
+			body.Fix = ch.Fix
+		}
+	}
+	a.printer().FailBody(body)
 	return prob.Exit
+}
+
+// stateJSON is s in --json: true, false, null when kx doesn't know, or
+// nothing when it doesn't apply.
+func stateJSON(s kxerr.State) json.RawMessage {
+	switch s {
+	case kxerr.Yes:
+		return json.RawMessage("true")
+	case kxerr.No:
+		return json.RawMessage("false")
+	case kxerr.Unknown:
+		return json.RawMessage("null")
+	}
+	return nil
 }
 
 func (a *App) defaults() {

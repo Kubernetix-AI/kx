@@ -54,8 +54,11 @@ type fakeAPI struct {
 	cred       api.RegistryCredential
 	mints      int
 	logs       map[string]api.DeploymentLogs
-	createFail []int    // statuses POST deployments answers before succeeding
-	createErr  []string // [status, code, limit_name, reason (optional)] answered by POST deployments
+	logsStatus int // GET /deployments/{id}/logs answers this when set
+	// runtimeStatus is what GET /apps/{id}/logs/runtime answers when set.
+	runtimeStatus int
+	createFail    []int    // statuses POST deployments answers before succeeding
+	createErr     []string // [status, code, limit_name, reason (optional)] answered by POST deployments
 	// createErrExtra adds fields to createErr's body.
 	createErrExtra map[string]any
 	getFail        int // GET /deployments/{id} answers this many 503s first
@@ -74,7 +77,10 @@ type fakeAPI struct {
 	// rolledBackReason is the text a rolled_back status carries (the
 	// platform's generic message while it decides what comes next).
 	rolledBackReason string
-	failCode         string // the error_code a failed deployment carries
+	// onFailed runs when a new deployment first reports failed.
+	onFailed    func(f *fakeAPI)
+	failCode    string // the error_code a failed deployment carries
+	failMessage string // the error_message (the worker's own text) it carries
 
 	// created is the server's clock for new deployments' created_at;
 	// health is the health check they carry; retries scripts retry_count
@@ -220,6 +226,10 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, 200, d)
 	case r.Method == "GET" && len(parts) == 3 && parts[0] == "deployments" && parts[2] == "logs":
+		if f.logsStatus != 0 {
+			writeJSON(w, f.logsStatus, map[string]string{"error": "service_unavailable"})
+			return
+		}
 		writeJSON(w, 200, f.logs[parts[1]])
 	case r.Method == "GET" && len(parts) == 3 && parts[0] == "apps" && parts[2] == "replicas":
 		n := f.replicaGets
@@ -233,6 +243,10 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 200, []api.Replica{})
 		}
 	case r.Method == "GET" && len(parts) == 4 && parts[0] == "apps" && parts[3] == "runtime":
+		if f.runtimeStatus != 0 {
+			writeJSON(w, f.runtimeStatus, map[string]string{"error": "service_unavailable"})
+			return
+		}
 		body := f.runtimeLogs
 		if body == "" {
 			body = `{"status":"success","data":{"resultType":"streams","result":[]}}`
@@ -290,10 +304,15 @@ func (f *fakeAPI) find(id string) *api.Deployment {
 				if n >= len(f.statuses) {
 					n = len(f.statuses) - 1
 				}
+				was := d.Status
 				d.Status = f.statuses[n]
 				switch d.Status {
 				case "failed":
-					d.CustomerError, d.ErrorCode = f.failReason, f.failCode
+					d.CustomerError, d.ErrorCode, d.ErrorMessage = f.failReason, f.failCode, f.failMessage
+					if was != "failed" && f.onFailed != nil {
+						f.onFailed(f)
+						d = f.find(id) // the list may have moved
+					}
 				case "rolled_back":
 					d.CustomerError = f.rolledBackReason
 				}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/kubernetix-ai/kx/internal/api"
@@ -185,52 +186,114 @@ func (r *runner) signalNotLive(ctx context.Context, app *api.App, d *api.Deploym
 	r.p.Info("Until v%d goes live or fails, a new deploy of %s waits for it.", d.Version, app.Name)
 }
 
-// showLogs prints the last log lines of the stuck replicas, when kx saw
-// any, else of the deployment. Lines from a log stream that doesn't name
-// replicas could be any version's, so they are headed as the app's recent
-// lines, never as the new version's.
+// showLogs prints the last log lines of version d: from its own replicas
+// (the stuck ones kx saw, else any that isn't one of the replicas that
+// were running before the deploy), when the log stream names replicas;
+// else the deployment's log Kubernetix kept. Health probes' and metrics
+// scrapers' requests are left out. Lines kx can't tell are d's are never
+// shown. When kx could read d's logs and none are left, it says so.
 func (r *runner) showLogs(ctx context.Context, app *api.App, d *api.Deployment) {
-	var lines []string
-	named := true
-	if r.stuck != nil {
-		lines, named = r.replicaLogs(ctx, app, d, r.stuck.pods)
-	}
+	lines, read := r.ownReplicaLogs(ctx, app, d)
 	if len(lines) == 0 {
-		lines, named = r.deploymentLogs(ctx, d), true
+		var ok bool
+		lines, ok = r.deploymentLogs(ctx, d)
+		read = read || ok
 	}
 	switch {
-	case len(lines) == 0:
-		return
-	case named:
+	case len(lines) == 1:
+		r.p.Info("The last log line of v%d:", d.Version)
+	case len(lines) > 1:
 		r.p.Info("The last %d log lines of v%d:", len(lines), d.Version)
+	case read:
+		r.p.Info("No output from v%d's container.", d.Version)
+		return
 	default:
-		r.p.Info("Recent log lines from %s (kx can't tell which version printed them):", app.Name)
+		return
 	}
 	r.showUntrusted(lines, func(l string) { r.p.Note("%s", l) })
 }
 
-// replicaLogs returns the last log lines the stuck replicas printed since
-// the deployment started, and whether the log stream names replicas. When
-// it doesn't, every line since then counts, whichever version printed it.
-func (r *runner) replicaLogs(ctx context.Context, app *api.App, d *api.Deployment, pods []string) (lines []string, named bool) {
+// ownReplicaLogs returns the last log lines d's own replicas printed since
+// d started, and whether kx could tell which replicas those are (the log
+// stream names replicas, and kx knows d's or the earlier ones).
+func (r *runner) ownReplicaLogs(ctx context.Context, app *api.App, d *api.Deployment) (lines []string, read bool) {
 	logs, err := r.c.RuntimeLogs(ctx, app.ID, api.LogQuery{Limit: 500, Start: d.CreatedAt})
 	if err != nil {
 		return nil, false
 	}
-	stuck := map[string]bool{}
-	for _, p := range pods {
-		stuck[p] = true
-	}
 	for _, l := range logs {
-		named = named || l.Pod != ""
+		if l.Pod == "" {
+			return nil, false // a stream that doesn't name replicas
+		}
+	}
+	own := r.ownReplicas(ctx, app, d)
+	if own == nil {
+		return nil, false
 	}
 	var text []string
 	for _, l := range logs {
-		if !named || stuck[l.Pod] {
+		if own(l.Pod) {
 			text = append(text, l.Line)
 		}
 	}
-	return lastLines(joinLines(text), shownLogLines), named
+	return lastLines(joinLines(withoutNoise(text)), shownLogLines), true
+}
+
+// ownReplicas tells d's replicas by their pod template, the hash in a
+// replica's name (<deployment>-<hash>-<suffix>): the template of the stuck
+// replicas kx saw, else any template but the serving version's (that of
+// replicas that are ready, or started before d). nil when kx can't tell.
+func (r *runner) ownReplicas(ctx context.Context, app *api.App, d *api.Deployment) func(pod string) bool {
+	if r.stuck != nil && len(r.stuck.pods) > 0 {
+		own := map[string]bool{}
+		for _, p := range r.stuck.pods {
+			own[podTemplate(p)] = true
+		}
+		return func(pod string) bool { return own[podTemplate(pod)] }
+	}
+	reps, err := r.c.Replicas(ctx, app.ID)
+	if err != nil {
+		return nil
+	}
+	serving := map[string]bool{}
+	for _, rep := range reps {
+		started, err := time.Parse(time.RFC3339, rep.StartedAt)
+		if rep.Ready || err != nil || started.Before(d.CreatedAt) {
+			serving[podTemplate(rep.Name)] = true
+		}
+	}
+	return func(pod string) bool { return !serving[podTemplate(pod)] }
+}
+
+// podTemplate is a replica's name without its own suffix: the deployment
+// and the pod template's hash, which every replica of a version shares.
+func podTemplate(pod string) string {
+	if i := strings.LastIndex(pod, "-"); i > 0 {
+		return pod[:i]
+	}
+	return pod
+}
+
+// noise marks the requests of health probes and metrics scrapers, which an
+// app's access log is full of and which never say why it failed.
+var noise = []string{"kube-probe/", "vm_promscrape"}
+
+// withoutNoise drops lines that record a probe's or scraper's request.
+func withoutNoise(lines []string) []string {
+	out := lines[:0:0]
+	for _, l := range lines {
+		keep := true
+		for _, n := range noise {
+			if strings.Contains(strings.ToLower(l), strings.ToLower(n)) {
+				keep = false
+				break
+			}
+		}
+		if keep {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // shortDuration writes 18m, 1h or 90s.

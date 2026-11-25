@@ -259,6 +259,13 @@ func (d *deployRun) repository(org string) (string, error) {
 			}
 		}
 	}
+	if repo == "" && config.HasTagsSegment(d.appName) {
+		// The repository is the app's name (an app called "tags").
+		return "", &kxerr.Usage{
+			What: `kx names the image's repository after the app, and a repository can't be called "tags": Kubernetix's image routes would read it as a tag.`,
+			Fix:  fmt.Sprintf("Give the image another repository: kx deploy --repository %s-app (or %q in .kx.json)", d.appName, "repository"),
+		}
+	}
 	rest, nested := strings.CutPrefix(repo, org+"/")
 	if org == "" || !nested {
 		return repo, nil
@@ -420,6 +427,13 @@ func (d *deployRun) run(ctx context.Context) (*deploy.Result, error) {
 		opts.OnNotLive = func(what, fix string) { gh.Warning(what + "\n" + fix) }
 	}
 
+	if s.CI.IsCI && d.linkedToNewApp() {
+		// Every CI run finds the app by name, so one after the app was
+		// deleted creates it again.
+		opts.OnCreated = func(app *api.App) {
+			s.P.Note("Created %s because .kx.json names it; commit the app_id kx link writes if you don't want CI to create it again.", app.Name)
+		}
+	}
 	res, err := deploy.Run(ctx, c, opts, *s.P)
 	if res != nil && res.CreatedApp {
 		d.rememberAppID(res)

@@ -165,6 +165,29 @@ func (c *Client) CreateDeployment(ctx context.Context, appID string, req CreateD
 	return &out, err
 }
 
+// PatchAppEnv sets the variables in set and removes the ones in unset,
+// keeping every other variable of the app; the next deploy applies the
+// change. It returns the app, whose variable values are hidden from tokens.
+// Sending the same change twice changes nothing, so it is retried like a
+// PUT.
+func (c *Client) PatchAppEnv(ctx context.Context, appID string, set map[string]string, unset []string) (*App, error) {
+	body := struct {
+		Set   map[string]string `json:"set,omitempty"`
+		Unset []string          `json:"unset,omitempty"`
+	}{set, unset}
+	var out App
+	return &out, c.do(ctx, http.MethodPatch, "/apps/"+url.PathEscape(appID)+"/env", nil, body, "", &out)
+}
+
+// SetReplicas sets how many replicas the app runs from its next deploy on.
+func (c *Client) SetReplicas(ctx context.Context, appID string, replicas int) (*App, error) {
+	body := struct {
+		Replicas int `json:"replicas"`
+	}{replicas}
+	var out App
+	return &out, c.do(ctx, http.MethodPut, "/apps/"+url.PathEscape(appID), nil, body, "", &out)
+}
+
 // DeploymentLogs returns a deployment's build and rollout logs.
 func (c *Client) DeploymentLogs(ctx context.Context, deploymentID string) (*DeploymentLogs, error) {
 	var out DeploymentLogs
@@ -302,7 +325,9 @@ func (c *Client) send(ctx context.Context, method, path string, query url.Values
 	if len(query) > 0 {
 		target += "?" + query.Encode()
 	}
-	idempotent := method == http.MethodGet || method == http.MethodPut || method == http.MethodDelete || idempotencyKey != ""
+	// kx's one PATCH (an app's env vars) changes nothing when sent twice.
+	idempotent := method == http.MethodGet || method == http.MethodPut || method == http.MethodPatch ||
+		method == http.MethodDelete || idempotencyKey != ""
 
 	for attempt := 0; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(payload))

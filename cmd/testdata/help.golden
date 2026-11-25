@@ -19,6 +19,8 @@ Get started:
 
 More commands:
   apps        List and inspect apps
+  env         See and change the app's environment variables
+  scale       Set how many replicas the app runs, then deploy it
   link        Choose the app this folder deploys to
   login       Connect this computer to Kubernetix
   logout      Revoke this computer's token and forget it

@@ -378,6 +378,23 @@ func TestDeploy_LinkedNewAppIsCreated(t *testing.T) {
 	}
 }
 
+// A committed .kx.json without an app_id makes every CI run look the app
+// up by name, so a run after the app was deleted creates it again: kx
+// says why it created the app.
+func TestDeploy_CICreatesTheAppKxJSONNames(t *testing.T) {
+	h := newHarness(t)
+	h.inFolder("billing-worker")
+	h.link("billing-worker", "", "acme-corp")
+	h.dockerfile("FROM scratch\nEXPOSE 9000\n")
+	h.env["KX_TOKEN"], h.env["CI"] = tokCorp, "true"
+	h.expect(h.run("deploy"), 0)
+	want := "✓ Created   app billing-worker\n" +
+		"  Created billing-worker because .kx.json names it; commit the app_id kx link writes if you don't want CI to create it again.\n"
+	if len(h.api.newApps) != 1 || !strings.Contains(h.err.String(), want) {
+		t.Fatalf("POST /apps = %v, stderr:\n%s", h.api.newApps, h.err.String())
+	}
+}
+
 func TestDeploy_AppTokenCannotCreateApps(t *testing.T) {
 	h := newHarness(t)
 	h.env["KX_TOKEN"] = tokDeploy
@@ -1527,4 +1544,32 @@ func TestDeploy_AppFlag_KxJSONNotWritable_Warns(t *testing.T) {
 	if !strings.HasPrefix(h.err.String(), "! kx couldn't save shop-api in .kx.json: permission denied.\n✓ Checked ") || len(h.api.deployPosts) != 1 {
 		t.Fatalf("stderr:\n%s", h.err.String())
 	}
+}
+
+// Kubernetix names why a version failed: in error_code, or today at the
+// start of its own message. kx words each class and picks the exit code,
+// and never prints that message.
+func TestDeploy_FailureClasses(t *testing.T) {
+	setup := func(t *testing.T) *harness {
+		h := newHarness(t)
+		h.loginAs("acme-corp", tokCorp, &dec11)
+		h.link("shop-api", appShopID, "acme-corp")
+		h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+		h.api.statuses = []string{"pending", "deploying", "failed"}
+		return h
+	}
+	h := setup(t)
+	h.api.failReason = "Your pod ran out of memory. Increase resources.limits.memory or check your app for memory leaks."
+	h.api.failMessage = "deployment failed: oom_killed: OOMKilled: pod=app-shop-8e1a container=app logs: Killed"
+	h.expect(h.run("deploy", "--json"), 8)
+	if e := errJSON(t, h); e["code"] != "oom_killed" || e["message"] != "shop-api v16 didn't go live: it ran out of memory. Version 14 is still serving." {
+		t.Fatalf("error = %v", e)
+	}
+	if strings.Contains(h.out.String()+h.err.String(), "pod=app-shop") {
+		t.Fatal("kx printed the platform's own message")
+	}
+
+	h = setup(t)
+	h.api.failReason, h.api.failCode = "Your plan's memory is full. The new version was not started; the previous one still runs.", "quota_blocked"
+	h.expect(h.run("deploy"), 5)
 }

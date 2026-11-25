@@ -30,6 +30,103 @@
 - `kx --help` shows the commands most people need under "Get started:" and the rest under
   "More commands:". `kx` on its own shows two steps: install, then `kx deploy`.
 
+### Environment variables and replicas
+
+- `kx env` (or `kx env list`) lists the names of the app's environment variables; Kubernetix
+  hides the values from tokens, and kx says so. `--json` gives `"names"` and
+  `"values_hidden": true`.
+- `kx env set NAME=VALUE...` and `kx env unset NAME...` change the app's environment
+  variables, keeping the others, and `kx scale <replicas>` sets how many replicas it runs. Each
+  then deploys the app as configured and waits like `kx deploy` (the same lines, URL and exit
+  codes); `--no-deploy` only saves the change. Every check kx can make (the token's
+  permissions, a multi-region app, an earlier deploy still running, today's deploys) comes
+  before anything is saved.
+- When the deploy after a saved change doesn't go live, kx says what became of the change: still
+  saved for the next deploy (refused, or kx can't tell whether the deploy started), or undone
+  ("Kubernetix put shop-api back to v14, so this change was undone."; kx checks the app when
+  it can, and says "most likely undone" for a new value of an existing variable, since it never
+  sees values). `--json` results and errors carry `"saved"` and `"deployed"` (live; false with
+  `--no-wait`), and errors `"change"`, `"restored"`, `"restored_to"`, `"deployment_id"` and
+  `"version"`. What kx doesn't know is `null` with the reason (`"saved_unknown"`,
+  `"restored_unknown"`), never a guess: an undo it couldn't confirm, or a save request that got
+  no answer kx could use (the line then says how to check).
+- `kx env set NAME --stdin` reads a value from standard input, or asks for it without showing
+  it, and is the way to set a secret. `kx env set NAME` takes the value from kx's own
+  environment, so a CI secret stays off the command line. `--from-file .env` reads `NAME=VALUE`
+  lines like the common dotenv tools (a UTF-8 BOM dropped, `export` allowed, an unquoted value
+  ending at ` #`, no `${...}` expansion). Names use letters, digits and `_`; an empty value
+  needs `--allow-empty`, and a value made only of `=` is refused as a secret typed without a
+  name.
+- kx never prints a value: not in its output, errors (they name the argument's position or
+  the line of the file, never its text) or `--json`. In GitHub Actions it masks each value it
+  sets before printing anything.
+- These commands need the Configure permission, and Deploy unless `--no-deploy`. Without them
+  kx says so before changing anything, with a fix for where the token came from (log in again
+  with Configure ticked, or in CI an API token with Configure; for Deploy, also `--no-deploy`);
+  the platform's own refusal gets the same fix.
+- Changes that change nothing don't deploy: `kx env unset` of names the app doesn't have, `kx
+  scale` to the count the app already runs. `kx scale` on an app that autoscales is refused
+  unless `--no-deploy`, which saves the count for when autoscaling is off.
+
+### Fixes from the first real runs
+
+- `kx status` during a rollout says what the replicas are doing instead of "1 of 2 ready":
+  "v4 ready (1 of 1); v3 stopping" right after a version goes live, "v5 starting; v4 serving
+  (2 of 3 ready)" while a new one starts, comparing with the count the live version runs (not
+  one saved for the next deploy). `--json` adds `"desired"`, and `"stopping"`,
+  `"stopping_version"` or `"starting_version"` when they apply.
+- `kx status --json` always has `"latest"`, the newest version, also when it is the live one.
+- `kx apps list` and `kx apps get` show each app's live version (the VERSION column was
+  empty for most apps); `--json`'s `"version"` is that version. kx looks up 4 apps at a time
+  and waits out rate limits; a version it couldn't find out shows `?` (`"version_unknown"`).
+- `kx whoami` asks Kubernetix about each saved login that hasn't ended, so a login revoked or
+  ended in the dashboard shows as "revoked" or "ended" at once, with how to log in again;
+  `--json` adds `"status"`. A login kx couldn't check says "not checked".
+- When a CI run creates the app because a committed `.kx.json` names it (it has no `app_id`),
+  kx says so, and that committing the `app_id` `kx link` writes stops CI from creating it again
+  (for example after the app was deleted in the dashboard).
+
+### Kubernetix's new checks
+
+- Kubernetix checks an image before it deploys it or creates an app with it. kx shows its
+  refusal with the platform's sentence and hint: `image_not_found` (exit 4), and `image_refused`
+  for an image that may not be used, needs a registry credential, has no linux/amd64 build or
+  isn't a valid name (exit 2).
+- A deploy refused while a database the app uses isn't running says to wait for it
+  (`database_not_ready`); one refused because a variable of the app collides with one a database
+  injects names the variable to remove (`env_prefix_conflict`). Other refusals use the platform's
+  hint as the fix when it sends one.
+- When Kubernetix fails a version at once because its pods can't run (out of memory, an image it
+  can't pull, a container it can't configure or create, a crash loop), kx keeps the platform's
+  cause and advice instead of its own guess from the replicas.
+- A failed version's class (`error_code`, or until Kubernetix sends it, the class at the start of
+  its own message) picks kx's words and fix, and is `--json`'s code. A deployment that was
+  created and then failed exits 8 whatever its class (`quota_blocked`, a plan limit, exits 5);
+  an image Kubernetix refuses before any deployment exists exits 4 (`image_not_found`) or 2
+  (`image_refused`). kx never prints the platform's own message.
+- After a failed deploy kx shows the failed version's own log lines, never the still-serving
+  version's, without health probes' and metrics scrapers' requests; a version that printed
+  nothing says "No output from v15's container."
+- After a failed deploy, Kubernetix may record putting the serving version back as a new version
+  (an automatic rollback). kx names the version that serves again ("Version 14 is serving
+  again, recorded as v17."; kx env and kx scale say the change was put back to v14), and
+  `kx status` shows the record ("v17 (v14 put back after v16 failed)", `"live_rollback"` in
+  `--json`).
+- `kx env set` explains Kubernetix's refusal of a variable the app already holds
+  (`invalid_env_var`: remove it first with `kx env unset`), and refuses a value over 32768 bytes
+  before sending anything.
+- `kx rollback` with a token shows why Kubernetix refused a version that differs in settings the
+  token can't change, instead of "This token isn't allowed to do that." A token made for another
+  app gets the fix for a token that can reach this one, wherever the refusal comes.
+- `kx env unset` removes a name the app holds even when kx's own name rule wouldn't take it (set
+  before, or in the dashboard); fix lines quote variable names for the shell (`'MY VAR'`).
+- A saved variable that collides with one a database injects makes Kubernetix refuse every deploy
+  of the app; kx says so ("it stops shop-api's deploys (CI's included) until you remove it")
+  instead of "the next deploy applies it".
+- An image check that came out neither way (`image_check_error`) exits 1 and says to try again.
+- Log lines after a failure belong to the failed version by their pod template (the hash in the
+  replica's name), so a serving replica recreated during the deploy isn't counted.
+
 ### Version tags and repositories
 
 - `kx deploy` always builds the folder as it is and tags it with the commit checked out there
@@ -56,7 +153,8 @@
 - `kx deploy --repository <name>`, or `"repository"` in `.kx.json`, pushes to
   `registry.kubernetix.ai/<org>/<name>` instead of the repository named after the app. `kx link`
   keeps a `.kx.json`'s `"repository"`. A name with a part called `tags` is refused (exit 2):
-  Kubernetix's image routes would read it as a tag.
+  Kubernetix's image routes would read it as a tag. So is an app called `tags` deploying to the
+  repository named after it, before anything is built.
 
 ### Logging in
 

@@ -69,7 +69,7 @@ func TestHelp_FirstScreen_Golden(t *testing.T) {
 	}
 	want := map[string][]string{
 		"Get started":   {"deploy", "status", "logs", "rollback", "open"},
-		"More commands": {"apps", "link", "login", "logout", "token", "whoami", "version"},
+		"More commands": {"apps", "env", "scale", "link", "login", "logout", "token", "whoami", "version"},
 	}
 	if fmt.Sprint(groups) != fmt.Sprint(want) {
 		t.Fatalf("groups = %v\nwant     %v", groups, want)
@@ -495,7 +495,7 @@ func TestStatus_JustDeployed_NoReplicasYet_SaysStarting(t *testing.T) {
 		t.Fatalf("stdout:\n%s", h.out.String())
 	}
 	h.expect(h.run("status", "--json"), 0)
-	if !strings.Contains(h.out.String(), "\"replicas\": {\n    \"ready\": 0,\n    \"total\": 0,\n    \"starting\": true\n  }") {
+	if !strings.Contains(h.out.String(), "\"replicas\": {\n    \"ready\": 0,\n    \"total\": 0,\n    \"starting\": true,\n    \"desired\": 2\n  }") {
 		t.Fatalf("json:\n%s", h.out.String())
 	}
 

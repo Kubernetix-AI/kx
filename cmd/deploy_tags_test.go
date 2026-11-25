@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kubernetix-ai/kx/internal/api"
 	"github.com/kubernetix-ai/kx/internal/config"
 	imageregistry "github.com/kubernetix-ai/kx/internal/registry"
 )
@@ -344,4 +345,27 @@ func TestDeploy_RepositoryWithATagsSegment(t *testing.T) {
 	if !strings.HasSuffix(h.err.String(), what+"Change \"repository\" in .kx.json to a name without that segment.\n") {
 		t.Fatalf(".kx.json: stderr:\n%s", h.err.String())
 	}
+}
+
+// Without --repository or .kx.json the repository is the app's name, which
+// can be "tags" too.
+func TestDeploy_AppNamedTags(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.api.apps = append(h.api.apps, api.App{ID: "app-tags", Name: "tags", Status: "ready", Port: 8080, Replicas: 1})
+	h.api.deployments["app-tags"] = nil
+	h.link("tags", "app-tags", "acme-corp")
+	h.dockerfile("FROM scratch\n")
+	h.expect(h.run("deploy"), 2)
+	want := "kx names the image's repository after the app, and a repository can't be called \"tags\": Kubernetix's image routes would read it as a tag.\n" +
+		"Give the image another repository: kx deploy --repository tags-app (or \"repository\" in .kx.json)\n"
+	if !strings.HasSuffix(h.err.String(), want) {
+		t.Fatalf("stderr:\n%s\nwant it to end with\n%s", h.err.String(), want)
+	}
+	if got := strings.Join(h.docker.got(), "\n"); strings.Contains(got, "build") || strings.Contains(got, "push") {
+		t.Fatalf("docker ran for a refused repository:\n%s", got)
+	}
+	h.expect(h.run("deploy", "--repository", "tags-app"), 0)
+	// A deploy of an image kx doesn't push needs no repository.
+	h.expect(h.run("deploy", "--image", "registry.example.test/acme-corp/web@sha256:"+strings.Repeat("ab", 32)), 0)
 }

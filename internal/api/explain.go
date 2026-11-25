@@ -51,7 +51,10 @@ var allCodes = []string{
 	"docker_missing", "docker_stopped", "docker_windows_containers", "docker_permission", "no_dockerfile",
 	"build_failed", "push_failed", "deploy_failed", "quota_blocked", "wait_timeout", "previous_deploy_running",
 	"nothing_live", "no_rollback_target", "already_live", "tag_exists", "tag_taken", "tag_check_failed", "no_digest", "rollback_unconfirmed", "docker_context_unknown",
-	"multi_region_app", "not_linked", "usage", "login_in_ci", "insecure_api_url",
+	"multi_region_app", "not_linked", "usage", "invalid_env_var",
+	"image_not_found", "image_refused", "database_not_ready", "env_prefix_conflict",
+	"crash_loop", "oom_killed", "image_pull_failed", "container_config_error", "container_create_error", "image_check_error",
+	"image_not_allowed", "image_access_denied", "image_credential_rejected", "image_platform_unsupported", "invalid_image_name", "login_in_ci", "insecure_api_url",
 	"bad_project_file", "bad_settings_file", "network", "server_error", "timeout", "interrupted", "unexpected",
 }
 
@@ -230,7 +233,11 @@ func Explain(err error) Problem {
 	case errors.Is(err, kxerr.ErrLoginInCI):
 		return Problem{"login_in_ci", "kx login saves a token on this computer, so it doesn't run in CI.", "Save a deploy token as the KX_TOKEN secret instead.", ExitUsage}
 	case errors.As(err, &usage):
-		return Problem{"usage", usage.What, usage.Fix, ExitUsage}
+		code := "usage"
+		if usage.Code != "" {
+			code = usage.Code
+		}
+		return Problem{code, usage.What, usage.Fix, ExitUsage}
 	case errors.As(err, &insecure):
 		return explainInsecure(insecure)
 	case errors.As(err, &badCfg):
@@ -319,8 +326,21 @@ func explainAPI(e *Error) Problem {
 		if e.Path == "/registry/credentials" {
 			return cannotPush()
 		}
+		if m := onlyAppRe.FindStringSubmatch(e.Message); m != nil {
+			return tokenOnlyApp(m[1], e.Ctx.App, src, org)
+		}
+		if strings.HasSuffix(e.Path, "/rollback") && strings.Contains(e.Message, "this token can't change") {
+			return rollbackRefused(e.Message)
+		}
 		if m := missingPermissionRe.FindStringSubmatch(e.Message); m != nil {
 			what := " doesn't have the " + permissionName(m[1]) + " permission."
+			if m[1] == PermConfigure {
+				who := "This token"
+				if src == kxerr.SourceEnv {
+					who = "The token in the KX_TOKEN secret"
+				}
+				return Problem{"token_not_allowed", who + what, configureFix(src, org), ExitAuth}
+			}
 			if src == kxerr.SourceEnv {
 				return Problem{"token_not_allowed", "The token in the KX_TOKEN secret" + what, "Create a token with the access you need on the app's Deploy tab and replace the KX_TOKEN secret.", ExitAuth}
 			}
@@ -365,7 +385,27 @@ func explainAPI(e *Error) Problem {
 	case "invalid_deployment_status":
 		return Problem{"invalid_deployment_status", "That version never went live, so kx can't roll back to it.", "Pick a version that went live: kx status", ExitUsage}
 	case "validation_error", "invalid_request", "invalid_name":
-		return Problem{"validation_error", "Kubernetix didn't accept the request: " + sentence(clean(e.Message, maxMessageLen)), checkValuesFix, ExitUsage}
+		return Problem{"validation_error", "Kubernetix didn't accept the request: " + sentence(clean(e.Message, maxMessageLen)), hintOr(e, checkValuesFix), ExitUsage}
+
+	// Kubernetix checks an image (that it exists, may be used, runs on
+	// linux/amd64) before it deploys it or creates an app with it.
+	case "image_check_error":
+		// The check came out neither way (a registry hiccup): try again.
+		return Problem{"image_check_error", "Kubernetix couldn't check the image just now.", retryLater, ExitUnexpected}
+	case "image_not_found":
+		return Problem{"image_not_found", platformSentence(e, "Kubernetix didn't find that image."), hintOr(e, "Check the image name and tag, then run the command again."), ExitNotFound}
+	case "image_not_allowed", "image_access_denied", "image_credential_rejected", "image_platform_unsupported",
+		"image_reference_invalid", "image_reference_too_long", "invalid_image_name", "ambiguous_image_tag":
+		return Problem{"image_refused", platformSentence(e, "Kubernetix can't use that image."), hintOr(e, "Use another image, then run the command again."), ExitUsage}
+	case "database_not_ready":
+		return Problem{"database_not_ready", platformSentence(e, "A database the app uses isn't running yet."),
+			"Wait until the database is running (the dashboard's Databases page shows it), then run the command again.", ExitUsage}
+	case "env_prefix_conflict":
+		fix := "Remove that variable from the app, or rebind the database with another prefix in the dashboard."
+		if name, ok := strings.CutPrefix(e.Field, "env_vars."); ok && name != "" {
+			fix = fmt.Sprintf("Remove %s from the app (kx env unset %s), or rebind the database with another prefix in the dashboard.", ShellQuote(name), ShellQuote(name))
+		}
+		return Problem{"env_prefix_conflict", platformSentence(e, "A variable of the app collides with one a database injects."), fix, ExitUsage}
 
 	case "tier_limit_exceeded":
 		if e.LimitName == "max_deployments_per_day" && e.Reason == "too_many_tries" {
@@ -406,7 +446,7 @@ func explainAPI(e *Error) Problem {
 		if msg == "" {
 			msg = "it was not valid"
 		}
-		return Problem{"request_rejected", "Kubernetix didn't accept the request: " + sentence(msg), checkValuesFix, ExitUsage}
+		return Problem{"request_rejected", "Kubernetix didn't accept the request: " + sentence(msg), hintOr(e, checkValuesFix), ExitUsage}
 	}
 	return Problem{"server_error", "Something went wrong on Kubernetix's side.", "Try again in a minute; if it keeps happening, open an issue at " + issuesURL, ExitUnexpected}
 }
@@ -494,6 +534,76 @@ func explainInsecure(e *kxerr.InsecureURL) Problem {
 	return Problem{"insecure_api_url", what, fix, ExitUsage}
 }
 
+// onlyAppRe finds the app in the platform's refusal of a token made for
+// another app ("This API token only works for the app web.").
+var onlyAppRe = regexp.MustCompile(`only works for (?:the app ([a-z0-9][a-z0-9-]*)|one app)\.`)
+
+// tokenOnlyApp explains a token made for tokenApp ("" when the platform
+// didn't name it) used on app: the fix is a token for app.
+func tokenOnlyApp(tokenApp, app string, src kxerr.TokenSource, org string) Problem {
+	what := "This token only works for " + orgOr(tokenApp, "another app")
+	if app != "" {
+		what += ", not " + app
+	}
+	target := orgOr(app, "the app")
+	switch src {
+	case kxerr.SourceEnv:
+		where := "the app's"
+		if app != "" {
+			where = app + "'s"
+		}
+		return Problem{"token_app_mismatch", what + ".", "Create a deploy token on " + where + " Deploy tab and replace the KX_TOKEN secret.", ExitAuth}
+	case kxerr.SourceLogin:
+		return Problem{"token_app_mismatch", what + ".", "Log in with a token that can reach " + target + ": " + strings.TrimPrefix(loginFix(org), "Run: "), ExitAuth}
+	}
+	return Problem{"token_app_mismatch", what + ".", "Use a token that can reach " + target + ": kx login", ExitAuth}
+}
+
+// rollbackRefused explains a rollback an API token may not make: the
+// version differs from what runs in settings the token can't change. The
+// platform's message says which, then what to do instead.
+func rollbackRefused(msg string) Problem {
+	what, fix := splitSentence(clean(msg, maxMessageLen))
+	if fix == "" {
+		fix = "Roll back in the dashboard, or deploy a new version."
+	}
+	return Problem{"token_not_allowed", what, fix, ExitAuth}
+}
+
+// plainWordRe is a word the shell takes as is.
+var plainWordRe = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+
+// ShellQuote quotes s for a POSIX shell when it holds anything but
+// letters, digits and _: MY VAR becomes 'MY VAR'.
+func ShellQuote(s string) string {
+	if plainWordRe.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// hintOr is the platform's hint for a refused field, or fallback.
+func hintOr(e *Error, fallback string) string {
+	if h := clean(e.Hint, maxMessageLen); h != "" {
+		return sentence(strings.ReplaceAll(h, "e.g. ", "for example "))
+	}
+	return fallback
+}
+
+// platformSentence is the platform's message as one sentence (a second
+// one joins with a semicolon), or fallback when there is none.
+func platformSentence(e *Error, fallback string) string {
+	msg := clean(e.Message, maxMessageLen)
+	if msg == "" {
+		return fallback
+	}
+	first, rest := splitSentence(sentence(msg))
+	if rest == "" {
+		return first
+	}
+	return strings.TrimSuffix(first, ".") + "; " + lowerFirst(rest)
+}
+
 func loginEnded(org string) Problem {
 	if org == "" {
 		return Problem{"login_ended", "Your login to Kubernetix has ended.", "Run: kx login", ExitAuth}
@@ -542,7 +652,20 @@ func tokenLacks(e *kxerr.TokenLacks) Problem {
 		}
 		fix = "Log in with a token that can deploy: " + strings.TrimPrefix(loginFix(e.Org), "Run: ")
 	}
-	return Problem{"token_not_allowed", fmt.Sprintf("%s doesn't have the %s %s, which kx deploy needs.", who, joinAnd(names), noun), fix, ExitAuth}
+	for _, p := range e.Permissions {
+		if p == PermConfigure {
+			fix = configureFix(e.Source, e.Org)
+		}
+	}
+	if len(e.Permissions) == 1 && e.Permissions[0] == PermDeploy && e.Command != "" && e.Command != "kx deploy" {
+		// kx env and kx scale can save the change without deploying.
+		fix = "Add --no-deploy to save the change without deploying, or " + deployFix(e.Source, e.Org)
+	}
+	command := e.Command
+	if command == "" {
+		command = "kx deploy"
+	}
+	return Problem{"token_not_allowed", fmt.Sprintf("%s doesn't have the %s %s, which %s needs.", who, joinAnd(names), noun, command), fix, ExitAuth}
 }
 
 // billingBlocked explains a deploy (or new app) that Kubernetix refused
@@ -675,23 +798,122 @@ func deployFailed(e *kxerr.DeployFailed) Problem {
 	if e.Code == "quota_blocked" {
 		return noRoom(e)
 	}
+	if c, ok := failureClasses[e.Code]; ok {
+		fix := strings.ReplaceAll(c.fix, "{v}", fmt.Sprintf("v%d", e.Version))
+		return Problem{c.code, fmt.Sprintf("%s v%d didn't go live: %s.", e.App, e.Version, c.what) + servingSentence(e), fix, c.exit}
+	}
 	reason := e.Reason
 	if reason == "" {
 		reason = "your container is crashing on start"
 	}
 	fix := fmt.Sprintf("See why: kx logs --deployment v%d", e.Version)
-	if ns := e.NotStarting; ns != nil && (e.Code == "" || e.Code == "not_ready" || e.Reason == "") {
+	switch ns := e.NotStarting; {
+	case platformNamedCause(reason):
+		// The platform's message names the cause, then what to do.
+		first, rest := splitSentence(clean(reason, maxMessageLen))
+		reason = lowerFirst(first)
+		if rest != "" {
+			fix = rest
+		}
+	case ns != nil && (e.Code == "" || e.Code == "not_ready" || e.Reason == ""):
 		// What kx saw is more specific than the platform's message for a
 		// version that never got ready, unless the platform named a
 		// specific cause: then its message says what went wrong. not_ready
 		// only says the version never got ready.
 		reason, fix = cause(ns, past), failedFix(ns)
 	}
-	what := fmt.Sprintf("%s v%d didn't go live: %s", e.App, e.Version, sentence(clean(reason, maxMessageLen)))
-	if e.ServingVersion > 0 {
-		what += fmt.Sprintf(" Version %d is still serving.", e.ServingVersion)
-	}
+	what := fmt.Sprintf("%s v%d didn't go live: %s", e.App, e.Version, sentence(clean(reason, maxMessageLen))) + servingSentence(e)
 	return Problem{"deploy_failed", what, fix, ExitDeploy}
+}
+
+// servingSentence says which version serves after a failed deploy: still,
+// or again when Kubernetix put it back as a new version.
+func servingSentence(e *kxerr.DeployFailed) string {
+	switch {
+	case e.ServingVersion > 0 && e.RestoredAs > 0:
+		return fmt.Sprintf(" Version %d is serving again, recorded as v%d.", e.ServingVersion, e.RestoredAs)
+	case e.ServingVersion > 0:
+		return fmt.Sprintf(" Version %d is still serving.", e.ServingVersion)
+	}
+	return ""
+}
+
+// failureClass is how kx words a version that failed for a known class:
+// the cause, the fix ({v} stands for the version) and the exit code.
+type failureClass struct {
+	code, what, fix string
+	exit            int
+}
+
+// failureClasses word the classes Kubernetix gives a version that can't
+// run. They beat what kx guessed from the replicas. A deployment that
+// was created and then failed always exits 8, its class in the code; an
+// image Kubernetix refuses before any deployment exists is explainAPI's
+// (exit 4 or 2).
+var failureClasses = map[string]failureClass{
+	"crash_loop": {"crash_loop", "its container kept crashing on start",
+		"Find the error in the log lines above (or kx logs --deployment {v}), fix it or the start command, then run kx deploy again.", ExitDeploy},
+	"oom_killed": {"oom_killed", "it ran out of memory",
+		"Give the app more memory (a larger size, in the dashboard) or make it use less, then run kx deploy again.", ExitDeploy},
+	"image_pull_failed": {"image_pull_failed", "Kubernetix couldn't pull its image",
+		"Check the image name and that Kubernetix may pull it (Registries, in the dashboard), then run kx deploy again.", ExitDeploy},
+	"container_config_error": {"container_config_error", "its container couldn't be configured",
+		"Check its environment variables (kx env), secrets and volumes, then run kx deploy again.", ExitDeploy},
+	"container_create_error": {"container_create_error", "its container couldn't be created",
+		"Check its start command, arguments and mounted paths, then run kx deploy again.", ExitDeploy},
+	"image_not_found": {"image_not_found", "its image isn't in the registry",
+		"Check the image name and tag, then run kx deploy again.", ExitDeploy},
+	"image_not_allowed": {"image_not_allowed", "its image is in another organization's private repository",
+		"Use your own registry, a public image, or a registry you added a credential for in the dashboard.", ExitDeploy},
+	"image_access_denied": {"image_access_denied", "its image is private, and Kubernetix has no credential for that registry",
+		"Add a credential for the registry (Registries, in the dashboard), or fix the image name.", ExitDeploy},
+	"image_credential_rejected": {"image_credential_rejected", "the registry rejected the credential for its image",
+		"Rotate the credential (Registries, in the dashboard), then run kx deploy again.", ExitDeploy},
+	"image_platform_unsupported": {"image_platform_unsupported", "its image has no linux/amd64 build",
+		"Build it for linux/amd64 (kx deploy does) or publish a multi-arch image, then deploy again.", ExitDeploy},
+	"invalid_image_name": {"invalid_image_name", "its image name isn't valid",
+		"Use registry/repository:tag, then run kx deploy again.", ExitDeploy},
+}
+
+// platformCauses open the messages Kubernetix gives when it fails a
+// version at once because its pods can't run (out of memory, an image it
+// can't pull, a container it can't configure or create, a crash loop).
+// Kubernetix doesn't send a code for these yet, so kx knows them by their
+// first words; an unknown message falls back to what kx saw.
+var platformCauses = []string{
+	"Your pod ran out of memory",
+	"Couldn't pull the container image",
+	"The image reference is not a valid name",
+	"The container could not be configured",
+	"The container could not be created",
+	"Your container is crashing on start",
+}
+
+// splitSentence splits s after its first sentence.
+func splitSentence(s string) (first, rest string) {
+	if i := strings.Index(s, ". "); i >= 0 {
+		return s[:i+1], strings.TrimSpace(s[i+2:])
+	}
+	return s, ""
+}
+
+// lowerFirst lowercases s's first letter, for a sentence that follows a
+// colon.
+func lowerFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToLower(s[:1]) + s[1:]
+}
+
+// platformNamedCause reports whether reason is one of platformCauses.
+func platformNamedCause(reason string) bool {
+	for _, c := range platformCauses {
+		if strings.HasPrefix(strings.TrimSpace(reason), c) {
+			return true
+		}
+	}
+	return false
 }
 
 // noRoom explains a version the plan had no room for (error_code
@@ -704,10 +926,7 @@ func noRoom(e *kxerr.DeployFailed) Problem {
 	if msg := clean(e.Reason, maxMessageLen); msg != "" {
 		what += sentence(msg)
 	} else {
-		what += "your plan has no room left for it."
-		if e.ServingVersion > 0 {
-			what += fmt.Sprintf(" Version %d is still serving.", e.ServingVersion)
-		}
+		what += "your plan has no room left for it." + servingSentence(e)
 	}
 	return Problem{"quota_blocked", what, "Free up room in your plan or upgrade at " + plansURL + ", then try again.", ExitLimit}
 }
@@ -856,6 +1075,28 @@ func loginFix(org string) string {
 		return "Run: kx login"
 	}
 	return "Run: kx login --org " + org
+}
+
+// configureFix says how to get a token that can configure: a deploy
+// token's form never offers Configure, so CI needs an API token; kx login
+// makes one with Configure ticked.
+func configureFix(src kxerr.TokenSource, org string) string {
+	if src == kxerr.SourceEnv {
+		return "Create an API token with Configure (Settings → API tokens) and replace the KX_TOKEN secret."
+	}
+	return "Log in again and keep Configure ticked: " + strings.TrimPrefix(loginFix(org), "Run: ")
+}
+
+// deployFix, after "or ", says how to get a token that can deploy and
+// configure.
+func deployFix(src kxerr.TokenSource, org string) string {
+	switch src {
+	case kxerr.SourceEnv:
+		return "create an API token with Deploy and Configure (Settings → API tokens) and replace the KX_TOKEN secret."
+	case kxerr.SourceLogin:
+		return "log in again with Deploy ticked: " + strings.TrimPrefix(loginFix(org), "Run: ")
+	}
+	return "log in with a token that can deploy: kx login"
 }
 
 func askAdmin(org, what string) string {
