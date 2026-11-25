@@ -385,8 +385,8 @@ func TestRun_SaysWhenKubernetixTriesAgain(t *testing.T) {
 
 // Log lines come from the stuck replica when the log stream names pods.
 // When it doesn't, kx can't tell the new version's lines from an earlier
-// one's, so it calls them recent lines from the app, whether or not an
-// earlier version is seen running. Without any, the deployment's own log.
+// one's, so it shows none of them: the deployment's own log, or that the
+// version printed nothing.
 func TestRun_SignalLogLinesFallBack(t *testing.T) {
 	setup := func(t *testing.T, reps ...api.Replica) *env {
 		e := newEnv(t)
@@ -396,7 +396,6 @@ func TestRun_SignalLogLinesFallBack(t *testing.T) {
 		e.api.replicas = func(int) []api.Replica { return reps }
 		return e
 	}
-	const unnamed = "Recent log lines from shop-api (kx can't tell which version printed them):\n  panic: missing DATABASE_URL\n"
 
 	// Named: only the stuck replica's lines, as the new version's.
 	e := setup(t, oldReplica, newReplica("Running", false))
@@ -404,7 +403,7 @@ func TestRun_SignalLogLinesFallBack(t *testing.T) {
 	o := e.options()
 	w := e.watchWarnings(&o)
 	_, err := e.run(o)
-	if out := e.errOut.String(); !strings.Contains(out, "The last 1 log lines of v15:\n  panic: missing DATABASE_URL\n") || strings.Contains(out, "GET / 200") || strings.Contains(out, "Recent log lines") {
+	if out := e.errOut.String(); !strings.Contains(out, "The last log line of v15:\n  panic: missing DATABASE_URL\n") || strings.Contains(out, "GET / 200") {
 		t.Fatalf("named streams:\n%s", out)
 	}
 	if len(w.whats) != 1 || w.whats[0] != "shop-api v15 isn't live yet: for 90 seconds its container has kept stopping right after it started." {
@@ -419,7 +418,7 @@ func TestRun_SignalLogLinesFallBack(t *testing.T) {
 		e = setup(t, reps...)
 		e.api.runtimeLogs = streams(map[string][]string{"": {"panic: missing DATABASE_URL"}})
 		_, _ = e.run(e.options())
-		if out := e.errOut.String(); !strings.Contains(out, unnamed) || strings.Contains(out, "log lines of v15") {
+		if out := e.errOut.String(); strings.Contains(out, "panic: missing DATABASE_URL") || !strings.Contains(out, "No output from v15's container.\n") {
 			t.Fatalf("unnamed streams, %d replicas:\n%s", len(reps), out)
 		}
 	}
@@ -428,7 +427,7 @@ func TestRun_SignalLogLinesFallBack(t *testing.T) {
 	e = setup(t, newReplica("Running", false))
 	e.api.logs["key-"+testKey] = api.DeploymentLogs{DeploymentLogs: "boot failed: port 8080 in use\n"}
 	_, _ = e.run(e.options())
-	if !strings.Contains(e.errOut.String(), "The last 1 log lines of v15:\n  boot failed: port 8080 in use\n") {
+	if !strings.Contains(e.errOut.String(), "The last log line of v15:\n  boot failed: port 8080 in use\n") {
 		t.Fatalf("stderr:\n%s", e.errOut.String())
 	}
 }
@@ -452,5 +451,64 @@ func TestNotLiveYet_NoRecordedHealthCheck_NamesNoPath(t *testing.T) {
 	}
 	if p := api.Explain(err); p.What != "shop-api v15 didn't go live: its container kept crashing or didn't answer health checks at port 8080. Version 14 is still serving." {
 		t.Fatalf("problem = %+v", p)
+	}
+}
+
+// After a version fails, kx shows that version's own log lines: never the
+// still-serving version's, and never the health probes' and metrics
+// scrapers' requests. A version that printed nothing says so.
+func TestRun_FailureShowsTheFailedVersionsOwnLogs(t *testing.T) {
+	const (
+		probe  = `10.8.0.1 - - [12/Nov/2026:09:00:41 +0000] "GET /healthz HTTP/1.1" 200 2 "-" "kube-probe/1.31"`
+		scrape = `10.8.0.7 - - [12/Nov/2026:09:00:42 +0000] "GET /metrics HTTP/1.1" 404 153 "-" "vm_promscrape"`
+	)
+	failFast := func(t *testing.T) *env {
+		e := newEnv(t)
+		e.api.statuses = []string{"pending", "deploying", "failed"} // fails before kx sees a stuck replica
+		e.api.failReason = "Your container is crashing on start. Check the deployment logs for the error message and verify your start command."
+		e.api.replicas = func(int) []api.Replica { return []api.Replica{oldReplica} } // the failed pods are gone
+		return e
+	}
+
+	// Named streams: the pods that aren't the serving version's are the
+	// failed version's.
+	e := failFast(t)
+	e.api.runtimeLogs = streams(map[string][]string{
+		"app-shop-7d9f-old": {probe, `10.8.0.3 - - "GET / HTTP/1.1" 200 612`, scrape},
+		"app-shop-8e1a-new": {"starting", probe, "panic: missing DATABASE_URL"},
+	})
+	_, _ = e.run(e.options())
+	out := e.errOut.String()
+	if !strings.Contains(out, "The last 2 log lines of v15:\n  starting\n  panic: missing DATABASE_URL\n") ||
+		strings.Contains(out, "kube-probe") || strings.Contains(out, "vm_promscrape") || strings.Contains(out, `"GET / HTTP/1.1"`) {
+		t.Fatalf("stderr:\n%s", out)
+	}
+
+	// Unnamed streams: the deployment's own log, without the noise.
+	e = failFast(t)
+	e.api.runtimeLogs = streams(map[string][]string{"": {`10.8.0.3 - - "GET / HTTP/1.1" 200 612`}})
+	e.api.logs["key-"+testKey] = api.DeploymentLogs{DeploymentLogs: probe + "\nnginx: [emerg] mkdir() \"/var/cache/nginx\" failed (13: Permission denied)\n" + scrape + "\n"}
+	_, _ = e.run(e.options())
+	out = e.errOut.String()
+	if !strings.Contains(out, "The last log line of v15:\n  nginx: [emerg] mkdir() \"/var/cache/nginx\" failed (13: Permission denied)\n") ||
+		strings.Contains(out, "kube-probe") || strings.Contains(out, "GET / HTTP") {
+		t.Fatalf("stderr:\n%s", out)
+	}
+
+	// Only noise, or nothing: the version printed nothing kx can show.
+	e = failFast(t)
+	e.api.logs["key-"+testKey] = api.DeploymentLogs{DeploymentLogs: probe + "\n" + scrape + "\n"}
+	_, _ = e.run(e.options())
+	if out := e.errOut.String(); !strings.Contains(out, "No output from v15's container.\n") || strings.Contains(out, "kube-probe") {
+		t.Fatalf("stderr:\n%s", out)
+	}
+
+	// Logs kx can't read: it says nothing about them.
+	e = failFast(t)
+	e.api.logsStatus = 503
+	e.api.runtimeStatus = 503
+	_, _ = e.run(e.options())
+	if out := e.errOut.String(); strings.Contains(out, "No output") || strings.Contains(out, "log line") {
+		t.Fatalf("stderr:\n%s", out)
 	}
 }

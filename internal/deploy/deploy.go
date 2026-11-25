@@ -862,13 +862,15 @@ func (r *runner) failed(ctx context.Context, app *api.App, d *api.Deployment) *k
 	return &kxerr.DeployFailed{App: app.Name, Version: d.Version, ServingVersion: serving, RestoredAs: restoredAs, Reason: reason, Code: d.ErrorCode, NotStarting: r.likely}
 }
 
-// deploymentLogs returns the last 20 lines of d's build and rollout logs.
-func (r *runner) deploymentLogs(ctx context.Context, d *api.Deployment) []string {
+// deploymentLogs returns the last 20 lines of d's build and rollout logs,
+// without probe and scraper noise, and whether kx could read them.
+func (r *runner) deploymentLogs(ctx context.Context, d *api.Deployment) ([]string, bool) {
 	logs, err := r.c.DeploymentLogs(ctx, d.ID)
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	return lastLines(logs.BuildLogs+"\n"+logs.DeploymentLogs, shownLogLines)
+	all := lastLines(logs.BuildLogs+"\n"+logs.DeploymentLogs, 1<<20)
+	return lastLines(joinLines(withoutNoise(all)), shownLogLines), true
 }
 
 // serving returns the version still serving after d failed, 0 if none.
