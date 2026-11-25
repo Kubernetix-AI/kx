@@ -82,6 +82,24 @@ func TestConfigure_RefusedAfterSave(t *testing.T) {
 	h.noSecrets(secretValue)
 }
 
+// The deploy after a change deploys the app's own image: when the registry
+// doesn't have it any more, the way out is a new image.
+func TestConfigure_AppImageGone(t *testing.T) {
+	h := configured(t)
+	h.api.override = func(r *http.Request, _ string) (int, string, bool) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/deployments") {
+			return 400, `{"error":"image_not_found","message":"'registry.kubernetix.ai/acme-corp/shop-api@sha256:00' wasn't found on registry.kubernetix.ai.","field":"image_url","hint":"Check the repository name and tag; tags are case-sensitive."}`, true
+		}
+		return 0, "", false
+	}
+	h.expect(h.run("env", "set", "A=1"), 4)
+	want := "The change is saved on shop-api but not deployed; the next deploy applies it.\n" +
+		"Deploy a new image of the app, which applies the change too: kx deploy\n"
+	if !strings.HasSuffix(h.err.String(), want) {
+		t.Fatalf("stderr:\n%s\nwant it to end with\n%s", h.err.String(), want)
+	}
+}
+
 func TestConfigure_DeployOutcomeUnknown(t *testing.T) {
 	h := configured(t)
 	h.api.failPosts = 99 // the deploy POST never gets an answer kx can use

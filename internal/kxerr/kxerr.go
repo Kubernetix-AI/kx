@@ -147,6 +147,8 @@ type Change struct {
 	DeploymentID    string
 	Version         int
 	Note            string
+	// Fix, when set, replaces the fix line of Err's explanation.
+	Fix string
 }
 
 func (e *Change) Error() string { return e.Err.Error() }

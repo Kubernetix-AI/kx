@@ -50,6 +50,25 @@ func explainCases() []explainCase {
 		{"login lacks deploy and push", &kxerr.TokenLacks{Permissions: []string{"deploy", "registry:push"}, Source: kxerr.SourceLogin, Org: "acme-corp"}, Problem{"token_not_allowed", "The token this computer uses for acme-corp doesn't have the Deploy and Push images permissions, which kx deploy needs.", "Log in with a token that can deploy: kx login --org acme-corp", 3}},
 		{"server names the missing permission", withPath(&Error{Status: 403, Code: "token_not_allowed", Message: "This API token doesn't have the read permission.", Ctx: envCtx}, "GET", "/apps/a1"), Problem{"token_not_allowed", "The token in the KX_TOKEN secret doesn't have the Read permission.", "Create a token with the access you need on the app's Deploy tab and replace the KX_TOKEN secret.", 3}},
 		{"server names the configure permission", withPath(&Error{Status: 403, Code: "token_not_allowed", Message: "This API token doesn't have the configure permission.", Ctx: envCtx}, "PATCH", "/apps/a1"), Problem{"token_not_allowed", "The token in the KX_TOKEN secret doesn't have the Configure permission.", "Create an API token with Configure (Settings → API tokens) and replace the KX_TOKEN secret.", 3}},
+		// Kubernetix checks an image before it deploys it.
+		{"image not found", withPath(&Error{Status: 400, Code: "image_not_found", Message: "'registry.kubernetix.ai/acme-corp/web:1.2' wasn't found on registry.kubernetix.ai.",
+			Hint: "Check the repository name and tag; tags are case-sensitive.", Ctx: loginCtx}, "POST", "/apps/a1/deployments"),
+			Problem{"image_not_found", "'registry.kubernetix.ai/acme-corp/web:1.2' wasn't found on registry.kubernetix.ai.", "Check the repository name and tag; tags are case-sensitive.", 4}},
+		{"image not allowed", withPath(&Error{Status: 400, Code: "image_not_allowed", Message: "Images from other organizations' private repositories can't be used.",
+			Hint: "Use your own registry, add a Bring-Your-Own-Registry credential, or use a public image.", Ctx: loginCtx}, "POST", "/apps/a1/deployments"),
+			Problem{"image_refused", "Images from other organizations' private repositories can't be used.", "Use your own registry, add a Bring-Your-Own-Registry credential, or use a public image.", 2}},
+		{"image refused, no hint", withPath(&Error{Status: 400, Code: "image_platform_unsupported", Message: "This image has no linux/amd64 build.", Ctx: loginCtx}, "POST", "/apps"),
+			Problem{"image_refused", "This image has no linux/amd64 build.", "Use another image, then run the command again.", 2}},
+		{"bound database not running", withPath(&Error{Status: 409, Code: "database_not_ready", Message: `Database "main" is "updating", not "running". Deploying now would start your app without its database credentials.`,
+			Hint: "Wait for the database to finish provisioning (Databases shows its status), then deploy again.", Ctx: loginCtx}, "POST", "/apps/a1/deployments"),
+			Problem{"database_not_ready", `Database "main" is "updating", not "running"; deploying now would start your app without its database credentials.`, "Wait until the database is running (the dashboard's Databases page shows it), then run the command again.", 2}},
+		{"env var collides with a database's", withPath(&Error{Status: 400, Code: "env_prefix_conflict", Field: "env_vars.DATABASE_URL",
+			Message: `env_vars["DATABASE_URL"] collides with the variable injected by database "main" (env_prefix "DATABASE").`, Ctx: loginCtx}, "POST", "/apps/a1/deployments"),
+			Problem{"env_prefix_conflict", `env_vars["DATABASE_URL"] collides with the variable injected by database "main" (env_prefix "DATABASE").`, "Remove DATABASE_URL from the app (kx env unset DATABASE_URL), or rebind the database with another prefix in the dashboard.", 2}},
+		// A refusal kx has no words of its own for: the platform's hint is
+		// the fix.
+		{"unknown refusal with a hint", withPath(&Error{Status: 400, Code: "invalid_port", Message: "port must be between 1 and 65535; got 0.", Hint: "Use the port your container listens on, e.g. 8080.", Ctx: loginCtx}, "POST", "/apps"),
+			Problem{"request_rejected", "Kubernetix didn't accept the request: port must be between 1 and 65535; got 0.", "Use the port your container listens on, for example 8080.", 2}},
 		// A token may only roll back to a version that differs in what it
 		// could change itself; the platform's sentence says what else differs.
 		{"token can't roll back to that version", withPath(&Error{Status: 403, Code: "token_not_allowed",

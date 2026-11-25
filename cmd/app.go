@@ -111,6 +111,9 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		body.Deployed = stateJSON(kxerr.No) // an error means the change didn't go live
 		body.Restored, body.RestoredUnknown = stateJSON(ch.Restored), ch.RestoredUnknown
 		body.RestoredTo, body.DeploymentID, body.Version = ch.RestoredTo, ch.DeploymentID, ch.Version
+		if ch.Fix != "" {
+			body.Fix = ch.Fix
+		}
 	}
 	a.printer().FailBody(body)
 	return prob.Exit

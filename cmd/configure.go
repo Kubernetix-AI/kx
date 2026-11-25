@@ -260,6 +260,10 @@ func afterSave(ctx context.Context, a *App, c *api.Client, app *api.App, change 
 		ch.Note = fmt.Sprintf("The change is saved on %s; kx can't tell whether its deploy started (see kx status). If none did, the next deploy applies it.", app.Name)
 	default:
 		ch.Note = fmt.Sprintf("The change is saved on %s but not deployed; the next deploy applies it.", app.Name)
+		if apiErr := (*api.Error)(nil); errors.As(err, &apiErr) && apiErr.Code == "image_not_found" {
+			// The deploy names no image: the app's own image is gone.
+			ch.Fix = "Deploy a new image of the app, which applies the change too: kx deploy"
+		}
 	}
 	return ch
 }

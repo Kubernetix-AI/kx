@@ -51,7 +51,8 @@ var allCodes = []string{
 	"docker_missing", "docker_stopped", "docker_windows_containers", "docker_permission", "no_dockerfile",
 	"build_failed", "push_failed", "deploy_failed", "quota_blocked", "wait_timeout", "previous_deploy_running",
 	"nothing_live", "no_rollback_target", "already_live", "tag_exists", "tag_taken", "tag_check_failed", "no_digest", "rollback_unconfirmed", "docker_context_unknown",
-	"multi_region_app", "not_linked", "usage", "invalid_env_var", "login_in_ci", "insecure_api_url",
+	"multi_region_app", "not_linked", "usage", "invalid_env_var",
+	"image_not_found", "image_refused", "database_not_ready", "env_prefix_conflict", "login_in_ci", "insecure_api_url",
 	"bad_project_file", "bad_settings_file", "network", "server_error", "timeout", "interrupted", "unexpected",
 }
 
@@ -379,7 +380,24 @@ func explainAPI(e *Error) Problem {
 	case "invalid_deployment_status":
 		return Problem{"invalid_deployment_status", "That version never went live, so kx can't roll back to it.", "Pick a version that went live: kx status", ExitUsage}
 	case "validation_error", "invalid_request", "invalid_name":
-		return Problem{"validation_error", "Kubernetix didn't accept the request: " + sentence(clean(e.Message, maxMessageLen)), checkValuesFix, ExitUsage}
+		return Problem{"validation_error", "Kubernetix didn't accept the request: " + sentence(clean(e.Message, maxMessageLen)), hintOr(e, checkValuesFix), ExitUsage}
+
+	// Kubernetix checks an image (that it exists, may be used, runs on
+	// linux/amd64) before it deploys it or creates an app with it.
+	case "image_not_found":
+		return Problem{"image_not_found", platformSentence(e, "Kubernetix didn't find that image."), hintOr(e, "Check the image name and tag, then run the command again."), ExitNotFound}
+	case "image_not_allowed", "image_access_denied", "image_credential_rejected", "image_platform_unsupported",
+		"image_reference_invalid", "image_reference_too_long", "invalid_image_name", "ambiguous_image_tag":
+		return Problem{"image_refused", platformSentence(e, "Kubernetix can't use that image."), hintOr(e, "Use another image, then run the command again."), ExitUsage}
+	case "database_not_ready":
+		return Problem{"database_not_ready", platformSentence(e, "A database the app uses isn't running yet."),
+			"Wait until the database is running (the dashboard's Databases page shows it), then run the command again.", ExitUsage}
+	case "env_prefix_conflict":
+		fix := "Remove that variable from the app, or rebind the database with another prefix in the dashboard."
+		if name, ok := strings.CutPrefix(e.Field, "env_vars."); ok && name != "" {
+			fix = fmt.Sprintf("Remove %s from the app (kx env unset %s), or rebind the database with another prefix in the dashboard.", name, name)
+		}
+		return Problem{"env_prefix_conflict", platformSentence(e, "A variable of the app collides with one a database injects."), fix, ExitUsage}
 
 	case "tier_limit_exceeded":
 		if e.LimitName == "max_deployments_per_day" && e.Reason == "too_many_tries" {
@@ -420,7 +438,7 @@ func explainAPI(e *Error) Problem {
 		if msg == "" {
 			msg = "it was not valid"
 		}
-		return Problem{"request_rejected", "Kubernetix didn't accept the request: " + sentence(msg), checkValuesFix, ExitUsage}
+		return Problem{"request_rejected", "Kubernetix didn't accept the request: " + sentence(msg), hintOr(e, checkValuesFix), ExitUsage}
 	}
 	return Problem{"server_error", "Something went wrong on Kubernetix's side.", "Try again in a minute; if it keeps happening, open an issue at " + issuesURL, ExitUnexpected}
 }
@@ -520,6 +538,28 @@ func rollbackRefused(msg string) Problem {
 		fix = "Roll back in the dashboard, or deploy a new version."
 	}
 	return Problem{"token_not_allowed", what, fix, ExitAuth}
+}
+
+// hintOr is the platform's hint for a refused field, or fallback.
+func hintOr(e *Error, fallback string) string {
+	if h := clean(e.Hint, maxMessageLen); h != "" {
+		return sentence(strings.ReplaceAll(h, "e.g. ", "for example "))
+	}
+	return fallback
+}
+
+// platformSentence is the platform's message as one sentence (a second
+// one joins with a semicolon), or fallback when there is none.
+func platformSentence(e *Error, fallback string) string {
+	msg := clean(e.Message, maxMessageLen)
+	if msg == "" {
+		return fallback
+	}
+	first, rest := splitSentence(sentence(msg))
+	if rest == "" {
+		return first
+	}
+	return strings.TrimSuffix(first, ".") + "; " + lowerFirst(rest)
 }
 
 func loginEnded(org string) Problem {
