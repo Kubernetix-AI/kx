@@ -84,7 +84,11 @@ before tagging `v1.1.0` (a release candidate can go out before):
 3. **A real run** on a test organization, with a token from `kx login`:
    - `kx env set`, `kx env unset` and `kx scale`, with and without `--no-deploy`;
    - a value that makes the app crash on start: kx must say "Kubernetix put <app> back to vN,
-     so this change was undone.", and `kx env` must no longer list a name it added;
+     so this change was undone.", naming the version that serves again (not the version
+     Kubernetix records the put-back as), and `kx env` must no longer list a name it added;
+     `kx status` then shows the record as "vM (vN put back after vK failed)";
+   - a variable the app already holds that breaks a rule (over 32768 bytes, set in the
+     dashboard): `kx env set` names it, saves nothing, and `kx env unset NAME` clears the way;
    - a token without Configure: kx stops before changing anything, with the fix for a login.
 
 ## Release checklist

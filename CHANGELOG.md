@@ -86,6 +86,30 @@
   kx says so, and that committing the `app_id` `kx link` writes stops CI from creating it again
   (for example after the app was deleted in the dashboard).
 
+### Kubernetix's new checks
+
+- Kubernetix checks an image before it deploys it or creates an app with it. kx shows its
+  refusal with the platform's sentence and hint: `image_not_found` (exit 4), and `image_refused`
+  for an image that may not be used, needs a registry credential, has no linux/amd64 build or
+  isn't a valid name (exit 2).
+- A deploy refused while a database the app uses isn't running says to wait for it
+  (`database_not_ready`); one refused because a variable of the app collides with one a database
+  injects names the variable to remove (`env_prefix_conflict`). Other refusals use the platform's
+  hint as the fix when it sends one.
+- When Kubernetix fails a version at once because its pods can't run (out of memory, an image it
+  can't pull, a container it can't configure or create, a crash loop), kx keeps the platform's
+  cause and advice instead of its own guess from the replicas.
+- After a failed deploy, Kubernetix may record putting the serving version back as a new version
+  (an automatic rollback). kx names the version that serves again ("Version 14 is serving
+  again, recorded as v17."; kx env and kx scale say the change was put back to v14), and
+  `kx status` shows the record ("v17 (v14 put back after v16 failed)", `"live_rollback"` in
+  `--json`).
+- `kx env set` explains Kubernetix's refusal of a variable the app already holds
+  (`invalid_env_var`: remove it first with `kx env unset`), and refuses a value over 32768 bytes
+  before sending anything.
+- `kx rollback` with a token shows why Kubernetix refused a version that differs in settings the
+  token can't change, instead of "This token isn't allowed to do that."
+
 ### Version tags and repositories
 
 - `kx deploy` always builds the folder as it is and tags it with the commit checked out there

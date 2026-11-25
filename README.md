@@ -360,7 +360,10 @@ saves the change, for the next deploy. `kx env set` keeps every variable you don
 
 During a rollout `kx status` says what the replicas are doing: "v4 ready (1 of 1); v3 stopping"
 right after a version goes live, and "v5 starting; v4 serving (2 of 3 ready)" while a new one
-starts.
+starts. When a deploy fails after it started replacing the live version, Kubernetix puts that
+version back and may record the put-back as a new version: kx says "Version 14 is serving
+again, recorded as v17.", and `kx status` shows "v17 (v14 put back after v16 failed)"
+(`--json`: `"live_rollback"`).
 
 ### Your account
 
@@ -464,6 +467,12 @@ The messages you are most likely to meet:
 | The token this computer uses for acme-corp doesn't have the Deploy permission, which kx env needs. | Add --no-deploy to save the change without deploying, or log in again with Deploy ticked: kx login --org acme-corp | 3 |
 | Argument 2 isn't NAME=VALUE: names use letters, digits and _, and don't start with a digit. | Run: kx env set LOG_LEVEL=debug | 2 |
 | shop-api autoscales between 2 and 6 replicas, so a replica count has no effect while autoscaling is on. | To save the count for when autoscaling is off: kx scale 3 --no-deploy | 2 |
+| Kubernetix didn't accept the change: 'BIG_CERT' has a 40000-byte value; the limit is 32768. | BIG_CERT is already on shop-api: remove it first (kx env unset BIG_CERT), then run the command again. | 2 |
+| 'registry.kubernetix.ai/acme-corp/web:1.2' wasn't found on registry.kubernetix.ai. | Check the repository name and tag; tags are case-sensitive. | 4 |
+| This image has no linux/amd64 build. | Publish a multi-arch or amd64 image. | 2 |
+| Database "main" is "updating", not "running"; deploying now would start your app without its database credentials. | Wait until the database is running (the dashboard's Databases page shows it), then run the command again. | 2 |
+| v12 also has a different size and secret bindings, which this token can't change. | Roll back in the dashboard, or deploy a new version. | 3 |
+| shop-api v15 didn't go live: your pod ran out of memory. Version 14 is still serving. | Increase resources.limits.memory or check your app for memory leaks. | 8 |
 | This token can't upload images. | Create a token with Push images on the app's Deploy tab, or deploy an image that's already pushed: kx deploy --image &lt;image&gt; | 3 |
 | The token in the KX_TOKEN secret doesn't have the Read permission, which kx deploy needs. | Create a deploy token on the app's Deploy tab (it has Deploy, Read and Push images) and replace the KX_TOKEN secret. | 3 |
 | registry.kubernetix.ai/acme-corp/shop-api:1.4.0 already holds another image, so kx left the tag alone and deployed nothing. | Tag the commit with a new version, or, if you know that image, deploy it: kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:&lt;digest&gt; | 7 |
