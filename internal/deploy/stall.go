@@ -239,28 +239,39 @@ func (r *runner) ownReplicaLogs(ctx context.Context, app *api.App, d *api.Deploy
 	return lastLines(joinLines(withoutNoise(text)), shownLogLines), true
 }
 
-// ownReplicas tells d's replicas: the stuck ones kx saw, else any but the
-// replicas that started before d did (the serving version's). nil when kx
-// can't tell.
+// ownReplicas tells d's replicas by their pod template, the hash in a
+// replica's name (<deployment>-<hash>-<suffix>): the template of the stuck
+// replicas kx saw, else any template but the serving version's (that of
+// replicas that are ready, or started before d). nil when kx can't tell.
 func (r *runner) ownReplicas(ctx context.Context, app *api.App, d *api.Deployment) func(pod string) bool {
 	if r.stuck != nil && len(r.stuck.pods) > 0 {
-		stuck := map[string]bool{}
+		own := map[string]bool{}
 		for _, p := range r.stuck.pods {
-			stuck[p] = true
+			own[podTemplate(p)] = true
 		}
-		return func(pod string) bool { return stuck[pod] }
+		return func(pod string) bool { return own[podTemplate(pod)] }
 	}
 	reps, err := r.c.Replicas(ctx, app.ID)
 	if err != nil {
 		return nil
 	}
-	older := map[string]bool{}
+	serving := map[string]bool{}
 	for _, rep := range reps {
-		if started, err := time.Parse(time.RFC3339, rep.StartedAt); err != nil || started.Before(d.CreatedAt) {
-			older[rep.Name] = true
+		started, err := time.Parse(time.RFC3339, rep.StartedAt)
+		if rep.Ready || err != nil || started.Before(d.CreatedAt) {
+			serving[podTemplate(rep.Name)] = true
 		}
 	}
-	return func(pod string) bool { return !older[pod] }
+	return func(pod string) bool { return !serving[podTemplate(pod)] }
+}
+
+// podTemplate is a replica's name without its own suffix: the deployment
+// and the pod template's hash, which every replica of a version shares.
+func podTemplate(pod string) string {
+	if i := strings.LastIndex(pod, "-"); i > 0 {
+		return pod[:i]
+	}
+	return pod
 }
 
 // noise marks the requests of health probes and metrics scrapers, which an

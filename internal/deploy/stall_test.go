@@ -512,3 +512,24 @@ func TestRun_FailureShowsTheFailedVersionsOwnLogs(t *testing.T) {
 		t.Fatalf("stderr:\n%s", out)
 	}
 }
+
+// Replicas belong to a version by their pod template (the hash in their
+// names, <deployment>-<hash>-<suffix>), not by when they started: a
+// serving replica recreated during the deploy is still the serving
+// version's, and every replica of the failed version's template is its.
+func TestRun_FailureLogsByPodTemplate(t *testing.T) {
+	e := newEnv(t)
+	e.api.statuses = []string{"pending", "deploying", "failed"}
+	recreated := api.Replica{Name: "app-shop-7d9f-re3k", Status: "Running", Ready: true, StartedAt: newStarted} // serving template, started later
+	e.api.replicas = func(int) []api.Replica { return []api.Replica{oldReplica, recreated} }
+	e.api.runtimeLogs = streams(map[string][]string{
+		"app-shop-7d9f-re3k": {"serving: GET /cart 200"},
+		"app-shop-8e1a-new":  {"panic: missing DATABASE_URL"},
+		"app-shop-8e1a-2nd":  {"panic: missing DATABASE_URL (second replica)"},
+	})
+	_, _ = e.run(e.options())
+	out := e.errOut.String()
+	if strings.Contains(out, "serving: GET /cart") || !strings.Contains(out, "panic: missing DATABASE_URL\n") || !strings.Contains(out, "(second replica)") {
+		t.Fatalf("stderr:\n%s", out)
+	}
+}
