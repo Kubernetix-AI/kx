@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -55,6 +57,9 @@ type appChange struct {
 	unknowable string
 	// checkWith is the command that shows whether the change is on the app.
 	checkWith func(app *api.App) string
+	// sets names the variables the change sets (kx env set), so kx can tell
+	// when one of them is what makes Kubernetix refuse the deploy.
+	sets []string
 	// out fills in what the change was, for --json.
 	out func(o *configureJSON)
 }
@@ -260,9 +265,23 @@ func afterSave(ctx context.Context, a *App, c *api.Client, app *api.App, change 
 		ch.Note = fmt.Sprintf("The change is saved on %s; kx can't tell whether its deploy started (see kx status). If none did, the next deploy applies it.", app.Name)
 	default:
 		ch.Note = fmt.Sprintf("The change is saved on %s but not deployed; the next deploy applies it.", app.Name)
-		if apiErr := (*api.Error)(nil); errors.As(err, &apiErr) && apiErr.Code == "image_not_found" {
+		apiErr := (*api.Error)(nil)
+		if !errors.As(err, &apiErr) {
+			break
+		}
+		name, named := strings.CutPrefix(apiErr.Field, "env_vars.")
+		switch {
+		case apiErr.Code == "image_not_found":
 			// The deploy names no image: the app's own image is gone.
 			ch.Fix = "Deploy a new image of the app, which applies the change too: kx deploy"
+		case named && slices.Contains(change.sets, name):
+			// A variable this change saved is what Kubernetix refuses: it
+			// refuses every deploy of the app until the variable is gone.
+			ch.Note = fmt.Sprintf("The change is saved on %s, and it stops %s's deploys (CI's included) until you remove it: kx env unset %s",
+				app.Name, app.Name, api.ShellQuote(name))
+			if apiErr.Code == "env_prefix_conflict" {
+				ch.Fix = "To keep the variable instead, rebind the database with another prefix in the dashboard."
+			}
 		}
 	}
 	return ch

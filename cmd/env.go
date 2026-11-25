@@ -168,6 +168,7 @@ func runEnvSet(ctx context.Context, a *App, cmd *cobra.Command, f configureFlags
 		},
 		unknowable: "kx sees the names of variables, not their values, so it can't check that Kubernetix put %[1]s back to %[2]s.",
 		checkWith:  envCheck,
+		sets:       names,
 		out:        func(o *configureJSON) { o.Set = names },
 	})
 }

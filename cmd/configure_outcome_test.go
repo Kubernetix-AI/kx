@@ -100,6 +100,37 @@ func TestConfigure_AppImageGone(t *testing.T) {
 	}
 }
 
+// A saved variable that collides with one a bound database injects makes
+// Kubernetix refuse every deploy of the app until it's removed: kx says
+// so, not that the next deploy applies it.
+func TestConfigure_SavedVariableBlocksDeploys(t *testing.T) {
+	h := configured(t)
+	h.api.override = func(r *http.Request, _ string) (int, string, bool) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/deployments") {
+			return 409, `{"error":"env_prefix_conflict","message":"env_vars[\"DATABASE_URL\"] collides with the variable injected by database \"main\" (env_prefix \"DATABASE\").","field":"env_vars.DATABASE_URL","hint":"Rename your variable, or rebind the database with a different env_prefix."}`, true
+		}
+		return 0, "", false
+	}
+	h.expect(h.run("env", "set", "DATABASE_URL="+secretValue), 2)
+	want := "The change is saved on shop-api, and it stops shop-api's deploys (CI's included) until you remove it: kx env unset DATABASE_URL\n" +
+		"To keep the variable instead, rebind the database with another prefix in the dashboard.\n"
+	if !strings.HasSuffix(h.err.String(), want) {
+		t.Fatalf("stderr:\n%s\nwant it to end with\n%s", h.err.String(), want)
+	}
+	h.noSecrets(secretValue)
+	h.expect(h.run("env", "set", "DATABASE_URL="+secretValue, "--json"), 2)
+	if e := errJSON(t, h); e["saved"] != true || e["code"] != "env_prefix_conflict" || !strings.Contains(e["change"].(string), "stops shop-api's deploys") {
+		t.Fatalf("error = %v", e)
+	}
+
+	// The same refusal for a variable this change didn't set keeps the
+	// usual line: the change itself isn't what blocks the deploy.
+	h.expect(h.run("env", "set", "OTHER=1"), 2)
+	if !strings.Contains(h.err.String(), "The change is saved on shop-api but not deployed; the next deploy applies it.\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+}
+
 func TestConfigure_DeployOutcomeUnknown(t *testing.T) {
 	h := configured(t)
 	h.api.failPosts = 99 // the deploy POST never gets an answer kx can use
