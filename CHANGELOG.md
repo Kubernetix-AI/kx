@@ -99,6 +99,14 @@
 - When Kubernetix fails a version at once because its pods can't run (out of memory, an image it
   can't pull, a container it can't configure or create, a crash loop), kx keeps the platform's
   cause and advice instead of its own guess from the replicas.
+- A failed version's class (`error_code`, or until Kubernetix sends it, the class at the start of
+  its own message) picks kx's words, fix and exit code: `crash_loop`, `oom_killed`,
+  `image_pull_failed`, `container_config_error` and `container_create_error` exit 8 under their
+  own code; `image_not_found` exits 4; the other image refusals exit 2 (`image_refused`);
+  `quota_blocked` exits 5. kx never prints the platform's own message.
+- After a failed deploy kx shows the failed version's own log lines, never the still-serving
+  version's, without health probes' and metrics scrapers' requests; a version that printed
+  nothing says "No output from v15's container."
 - After a failed deploy, Kubernetix may record putting the serving version back as a new version
   (an automatic rollback). kx names the version that serves again ("Version 14 is serving
   again, recorded as v17."; kx env and kx scale say the change was put back to v14), and

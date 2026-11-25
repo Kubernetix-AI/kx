@@ -365,6 +365,12 @@ version back and may record the put-back as a new version: kx says "Version 14 i
 again, recorded as v17.", and `kx status` shows "v17 (v14 put back after v16 failed)"
 (`--json`: `"live_rollback"`).
 
+After a failed deploy kx shows the failed version's own last log lines: those of its replicas
+when the log stream names them, else the deployment's log Kubernetix kept, never the
+still-serving version's, and without health probes' and metrics scrapers' requests
+(`kube-probe`, `vm_promscrape`). A version that printed nothing says "No output from v15's
+container."
+
 ### Your account
 
 | Command | What it does |
@@ -472,7 +478,8 @@ The messages you are most likely to meet:
 | This image has no linux/amd64 build. | Publish a multi-arch or amd64 image. | 2 |
 | Database "main" is "updating", not "running"; deploying now would start your app without its database credentials. | Wait until the database is running (the dashboard's Databases page shows it), then run the command again. | 2 |
 | v12 also has a different size and secret bindings, which this token can't change. | Roll back in the dashboard, or deploy a new version. | 3 |
-| shop-api v15 didn't go live: your pod ran out of memory. Version 14 is still serving. | Increase resources.limits.memory or check your app for memory leaks. | 8 |
+| shop-api v15 didn't go live: it ran out of memory. Version 14 is still serving. | Give the app more memory (a larger size, in the dashboard) or make it use less, then run kx deploy again. | 8 |
+| shop-api v15 didn't go live: its container kept crashing on start. Version 14 is still serving. | Find the error in the log lines above (or kx logs --deployment v15), fix it or the start command, then run kx deploy again. | 8 |
 | This token can't upload images. | Create a token with Push images on the app's Deploy tab, or deploy an image that's already pushed: kx deploy --image &lt;image&gt; | 3 |
 | The token in the KX_TOKEN secret doesn't have the Read permission, which kx deploy needs. | Create a deploy token on the app's Deploy tab (it has Deploy, Read and Push images) and replace the KX_TOKEN secret. | 3 |
 | registry.kubernetix.ai/acme-corp/shop-api:1.4.0 already holds another image, so kx left the tag alone and deployed nothing. | Tag the commit with a new version, or, if you know that image, deploy it: kx deploy --image registry.kubernetix.ai/acme-corp/shop-api@sha256:&lt;digest&gt; | 7 |
@@ -500,13 +507,13 @@ above.
 |---|---|
 | 0 | Success (including a pull or merge request run that kx skips on purpose) |
 | 1 | Something unexpected (network, server) |
-| 2 | Usage: a flag, argument, `.kx.json` or missing Dockerfile |
+| 2 | Usage: a flag, argument, `.kx.json` or missing Dockerfile; also an image Kubernetix won't use (`image_refused`) |
 | 3 | Login, token or permission |
-| 4 | Not found |
+| 4 | Not found, an image included (`image_not_found`) |
 | 5 | A plan limit or rate limit, or new deploys paused for billing (payment overdue or subscription ended); also a version your plan has no room for, once Kubernetix reports it as such (until then, 8) |
 | 6 | The Docker build failed |
 | 7 | The image upload failed, or the version tag already holds another image |
-| 8 | The deploy failed |
+| 8 | The deploy failed; `--json`'s code names the class when Kubernetix gives one (`crash_loop`, `oom_killed`, `image_pull_failed`, `container_config_error`, `container_create_error`), else `deploy_failed` |
 | 9 | kx stopped waiting; the deploy continues |
 | 10 | Docker isn't installed or isn't running |
 
