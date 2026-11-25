@@ -53,7 +53,8 @@ var allCodes = []string{
 	"nothing_live", "no_rollback_target", "already_live", "tag_exists", "tag_taken", "tag_check_failed", "no_digest", "rollback_unconfirmed", "docker_context_unknown",
 	"multi_region_app", "not_linked", "usage", "invalid_env_var",
 	"image_not_found", "image_refused", "database_not_ready", "env_prefix_conflict",
-	"crash_loop", "oom_killed", "image_pull_failed", "container_config_error", "container_create_error", "login_in_ci", "insecure_api_url",
+	"crash_loop", "oom_killed", "image_pull_failed", "container_config_error", "container_create_error",
+	"image_not_allowed", "image_access_denied", "image_credential_rejected", "image_platform_unsupported", "invalid_image_name", "login_in_ci", "insecure_api_url",
 	"bad_project_file", "bad_settings_file", "network", "server_error", "timeout", "interrupted", "unexpected",
 }
 
@@ -817,7 +818,10 @@ type failureClass struct {
 }
 
 // failureClasses word the classes Kubernetix gives a version that can't
-// run. They beat what kx guessed from the replicas.
+// run. They beat what kx guessed from the replicas. A deployment that
+// was created and then failed always exits 8, its class in the code; an
+// image Kubernetix refuses before any deployment exists is explainAPI's
+// (exit 4 or 2).
 var failureClasses = map[string]failureClass{
 	"crash_loop": {"crash_loop", "its container kept crashing on start",
 		"Find the error in the log lines above (or kx logs --deployment {v}), fix it or the start command, then run kx deploy again.", ExitDeploy},
@@ -830,17 +834,17 @@ var failureClasses = map[string]failureClass{
 	"container_create_error": {"container_create_error", "its container couldn't be created",
 		"Check its start command, arguments and mounted paths, then run kx deploy again.", ExitDeploy},
 	"image_not_found": {"image_not_found", "its image isn't in the registry",
-		"Check the image name and tag, then run kx deploy again.", ExitNotFound},
-	"image_not_allowed": {"image_refused", "its image is in another organization's private repository",
-		"Use your own registry, a public image, or a registry you added a credential for in the dashboard.", ExitUsage},
-	"image_access_denied": {"image_refused", "its image is private, and Kubernetix has no credential for that registry",
-		"Add a credential for the registry (Registries, in the dashboard), or fix the image name.", ExitUsage},
-	"image_credential_rejected": {"image_refused", "the registry rejected the credential for its image",
-		"Rotate the credential (Registries, in the dashboard), then run kx deploy again.", ExitUsage},
-	"image_platform_unsupported": {"image_refused", "its image has no linux/amd64 build",
-		"Build it for linux/amd64 (kx deploy does) or publish a multi-arch image, then deploy again.", ExitUsage},
-	"invalid_image_name": {"image_refused", "its image name isn't valid",
-		"Use registry/repository:tag, then run kx deploy again.", ExitUsage},
+		"Check the image name and tag, then run kx deploy again.", ExitDeploy},
+	"image_not_allowed": {"image_not_allowed", "its image is in another organization's private repository",
+		"Use your own registry, a public image, or a registry you added a credential for in the dashboard.", ExitDeploy},
+	"image_access_denied": {"image_access_denied", "its image is private, and Kubernetix has no credential for that registry",
+		"Add a credential for the registry (Registries, in the dashboard), or fix the image name.", ExitDeploy},
+	"image_credential_rejected": {"image_credential_rejected", "the registry rejected the credential for its image",
+		"Rotate the credential (Registries, in the dashboard), then run kx deploy again.", ExitDeploy},
+	"image_platform_unsupported": {"image_platform_unsupported", "its image has no linux/amd64 build",
+		"Build it for linux/amd64 (kx deploy does) or publish a multi-arch image, then deploy again.", ExitDeploy},
+	"invalid_image_name": {"invalid_image_name", "its image name isn't valid",
+		"Use registry/repository:tag, then run kx deploy again.", ExitDeploy},
 }
 
 // platformCauses open the messages Kubernetix gives when it fails a

@@ -100,10 +100,10 @@
   can't pull, a container it can't configure or create, a crash loop), kx keeps the platform's
   cause and advice instead of its own guess from the replicas.
 - A failed version's class (`error_code`, or until Kubernetix sends it, the class at the start of
-  its own message) picks kx's words, fix and exit code: `crash_loop`, `oom_killed`,
-  `image_pull_failed`, `container_config_error` and `container_create_error` exit 8 under their
-  own code; `image_not_found` exits 4; the other image refusals exit 2 (`image_refused`);
-  `quota_blocked` exits 5. kx never prints the platform's own message.
+  its own message) picks kx's words and fix, and is `--json`'s code. A deployment that was
+  created and then failed exits 8 whatever its class (`quota_blocked`, a plan limit, exits 5);
+  an image Kubernetix refuses before any deployment exists exits 4 (`image_not_found`) or 2
+  (`image_refused`). kx never prints the platform's own message.
 - After a failed deploy kx shows the failed version's own log lines, never the still-serving
   version's, without health probes' and metrics scrapers' requests; a version that printed
   nothing says "No output from v15's container."

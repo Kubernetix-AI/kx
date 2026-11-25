@@ -80,11 +80,17 @@ func explainCases() []explainCase {
 		{"failed: container create", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "container_create_error"},
 			Problem{"container_create_error", "shop-api v15 didn't go live: its container couldn't be created.", "Check its start command, arguments and mounted paths, then run kx deploy again.", 8}},
 		{"failed: image not found", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Code: "image_not_found"},
-			Problem{"image_not_found", "shop-api v15 didn't go live: its image isn't in the registry. Version 14 is still serving.", "Check the image name and tag, then run kx deploy again.", 4}},
+			Problem{"image_not_found", "shop-api v15 didn't go live: its image isn't in the registry. Version 14 is still serving.", "Check the image name and tag, then run kx deploy again.", 8}},
 		{"failed: image not allowed", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "image_not_allowed"},
-			Problem{"image_refused", "shop-api v15 didn't go live: its image is in another organization's private repository.", "Use your own registry, a public image, or a registry you added a credential for in the dashboard.", 2}},
+			Problem{"image_not_allowed", "shop-api v15 didn't go live: its image is in another organization's private repository.", "Use your own registry, a public image, or a registry you added a credential for in the dashboard.", 8}},
+		{"failed: image access denied", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "image_access_denied"},
+			Problem{"image_access_denied", "shop-api v15 didn't go live: its image is private, and Kubernetix has no credential for that registry.", "Add a credential for the registry (Registries, in the dashboard), or fix the image name.", 8}},
+		{"failed: credential rejected", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "image_credential_rejected"},
+			Problem{"image_credential_rejected", "shop-api v15 didn't go live: the registry rejected the credential for its image.", "Rotate the credential (Registries, in the dashboard), then run kx deploy again.", 8}},
+		{"failed: invalid image name", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "invalid_image_name"},
+			Problem{"invalid_image_name", "shop-api v15 didn't go live: its image name isn't valid.", "Use registry/repository:tag, then run kx deploy again.", 8}},
 		{"failed: image platform", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "image_platform_unsupported"},
-			Problem{"image_refused", "shop-api v15 didn't go live: its image has no linux/amd64 build.", "Build it for linux/amd64 (kx deploy does) or publish a multi-arch image, then deploy again.", 2}},
+			Problem{"image_platform_unsupported", "shop-api v15 didn't go live: its image has no linux/amd64 build.", "Build it for linux/amd64 (kx deploy does) or publish a multi-arch image, then deploy again.", 8}},
 		{"env var collides, a name to quote", withPath(&Error{Status: 409, Code: "env_prefix_conflict", Field: "env_vars.MY-DB_URL",
 			Message: `env_vars["MY-DB_URL"] collides with the variable injected by database "main" (env_prefix "MY-DB").`, Ctx: loginCtx}, "POST", "/apps/a1/deployments"),
 			Problem{"env_prefix_conflict", `env_vars["MY-DB_URL"] collides with the variable injected by database "main" (env_prefix "MY-DB").`, "Remove 'MY-DB_URL' from the app (kx env unset 'MY-DB_URL'), or rebind the database with another prefix in the dashboard.", 2}},
@@ -320,7 +326,8 @@ func checkShape(t *testing.T, p Problem) {
 	maxSentences := 1
 	switch p.Code {
 	case "deploy_failed", "crash_loop", "oom_killed", "image_pull_failed", "container_config_error", "container_create_error",
-		"image_not_found", "image_refused":
+		"image_not_found", "image_refused", "image_not_allowed", "image_access_denied", "image_credential_rejected",
+		"image_platform_unsupported", "invalid_image_name":
 		// The cause, then which version still serves.
 		maxSentences = 2
 	case "billing_unpaid", "subscription_ended":

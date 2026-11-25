@@ -507,13 +507,13 @@ above.
 |---|---|
 | 0 | Success (including a pull or merge request run that kx skips on purpose) |
 | 1 | Something unexpected (network, server) |
-| 2 | Usage: a flag, argument, `.kx.json` or missing Dockerfile; also an image Kubernetix won't use (`image_refused`) |
+| 2 | Usage: a flag, argument, `.kx.json` or missing Dockerfile; also an image Kubernetix refuses before deploying it (`image_refused`) |
 | 3 | Login, token or permission |
-| 4 | Not found, an image included (`image_not_found`) |
+| 4 | Not found; also an image Kubernetix doesn't find before deploying it (`image_not_found`) |
 | 5 | A plan limit or rate limit, or new deploys paused for billing (payment overdue or subscription ended); also a version your plan has no room for, once Kubernetix reports it as such (until then, 8) |
 | 6 | The Docker build failed |
 | 7 | The image upload failed, or the version tag already holds another image |
-| 8 | The deploy failed; `--json`'s code names the class when Kubernetix gives one (`crash_loop`, `oom_killed`, `image_pull_failed`, `container_config_error`, `container_create_error`), else `deploy_failed` |
+| 8 | The deploy failed: a deployment was created and didn't go live. `--json`'s code names the class when Kubernetix gives one (`crash_loop`, `oom_killed`, `image_pull_failed`, `container_config_error`, `container_create_error`, `image_not_found`, `image_not_allowed`, `image_access_denied`, `image_credential_rejected`, `image_platform_unsupported`, `invalid_image_name`), else `deploy_failed` |
 | 9 | kx stopped waiting; the deploy continues |
 | 10 | Docker isn't installed or isn't running |
 
