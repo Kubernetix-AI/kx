@@ -106,6 +106,9 @@ type Deployment struct {
 	// RetryCount is how many times Kubernetix has started this deployment
 	// again after an attempt that didn't go live.
 	RetryCount int `json:"retry_count,omitempty"`
+	// Rollback is set on a deployment that rolled back to an earlier one;
+	// Automatic when Kubernetix made it after a failed deploy.
+	Rollback *DeploymentRollback `json:"rollback,omitempty"`
 	// Replicas and Autoscaling are what the deployment runs with, copied
 	// from the app when it was made (0 and nil from an older API).
 	Replicas    int          `json:"replicas,omitempty"`
@@ -118,6 +121,17 @@ type Deployment struct {
 	// Replayed is set by CreateDeployment when Kubernetix handed back a
 	// deployment made earlier with the same idempotency key.
 	Replayed bool `json:"-"`
+}
+
+// DeploymentRollback says what a rollback deployment restored: the
+// deployment (and version) whose configuration it runs, and for one
+// Kubernetix made itself (Automatic), the deployment that had failed.
+type DeploymentRollback struct {
+	Automatic          bool   `json:"automatic"`
+	TargetDeploymentID string `json:"target_deployment_id,omitempty"`
+	TargetVersion      int    `json:"target_version,omitempty"`
+	FailedDeploymentID string `json:"failed_deployment_id,omitempty"`
+	FailedVersion      int    `json:"failed_version,omitempty"`
 }
 
 // HealthCheck is how Kubernetix checks an app's containers: liveness

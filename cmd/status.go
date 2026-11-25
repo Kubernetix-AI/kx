@@ -32,13 +32,23 @@ func newStatusCmd(a *App) *cobra.Command {
 }
 
 type statusOut struct {
-	App          string       `json:"app"`
-	AppID        string       `json:"app_id"`
-	LiveVersion  int          `json:"live_version"`
-	URL          string       `json:"url"`
-	Latest       *latestOut   `json:"latest,omitempty"`
-	Replicas     *replicasOut `json:"replicas,omitempty"`
-	DeploysToday *deploysOut  `json:"deploys_today,omitempty"`
+	App         string `json:"app"`
+	AppID       string `json:"app_id"`
+	LiveVersion int    `json:"live_version"`
+	// LiveRollback is set when the live version is a rollback: Kubernetix
+	// put an earlier version back (automatic, after a failed deploy) or
+	// someone rolled back.
+	LiveRollback *liveRollbackOut `json:"live_rollback,omitempty"`
+	URL          string           `json:"url"`
+	Latest       *latestOut       `json:"latest,omitempty"`
+	Replicas     *replicasOut     `json:"replicas,omitempty"`
+	DeploysToday *deploysOut      `json:"deploys_today,omitempty"`
+}
+
+type liveRollbackOut struct {
+	Automatic     bool `json:"automatic"`
+	TargetVersion int  `json:"target_version,omitempty"`
+	FailedVersion int  `json:"failed_version,omitempty"`
 }
 
 type latestOut struct {
@@ -97,6 +107,9 @@ func runStatus(ctx context.Context, a *App, cmd *cobra.Command, appFlag string) 
 	live := liveDeployment(deps)
 	if live != nil {
 		out.LiveVersion = live.Version
+		if rb := live.Rollback; rb != nil {
+			out.LiveRollback = &liveRollbackOut{Automatic: rb.Automatic, TargetVersion: rb.TargetVersion, FailedVersion: rb.FailedVersion}
+		}
 	}
 	if len(deps) > 0 {
 		out.Latest = &latestOut{Version: deps[0].Version, Status: deps[0].Status}
@@ -124,7 +137,7 @@ func runStatus(ctx context.Context, a *App, cmd *cobra.Command, appFlag string) 
 	}
 	rows := [][]string{{"App", app.Name}}
 	if live != nil {
-		rows = append(rows, []string{"Live", fmt.Sprintf("v%d", live.Version)})
+		rows = append(rows, []string{"Live", fmt.Sprintf("v%d", live.Version) + rollbackNote(live.Rollback)})
 	} else {
 		rows = append(rows, []string{"Live", "nothing yet"})
 	}
@@ -210,6 +223,21 @@ func rollout(r *replicasOut, app *api.App, deps []api.Deployment, live *api.Depl
 	case !newest.Done():
 		r.StartingVersion = newest.Version
 	}
+}
+
+// rollbackNote says what a live rollback put back: " (v14 put back after
+// v16 failed)" for one Kubernetix made after a failed deploy, " (rollback
+// to v14)" for one someone asked for.
+func rollbackNote(rb *api.DeploymentRollback) string {
+	switch {
+	case rb == nil || rb.TargetVersion <= 0:
+		return ""
+	case rb.Automatic && rb.FailedVersion > 0:
+		return fmt.Sprintf(" (v%d put back after v%d failed)", rb.TargetVersion, rb.FailedVersion)
+	case rb.Automatic:
+		return fmt.Sprintf(" (v%d put back automatically)", rb.TargetVersion)
+	}
+	return fmt.Sprintf(" (rollback to v%d)", rb.TargetVersion)
 }
 
 // liveDeployment is the newest deployment that went live. Deployments are

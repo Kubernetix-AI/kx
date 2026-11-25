@@ -255,9 +255,13 @@ type DeployFailed struct {
 	App            string
 	Version        int
 	ServingVersion int
-	Reason         string
-	Code           string
-	NotStarting    *NotStarting
+	// RestoredAs is the version Kubernetix recorded when it put
+	// ServingVersion back after this deploy failed (an automatic
+	// rollback), 0 when it recorded none.
+	RestoredAs  int
+	Reason      string
+	Code        string
+	NotStarting *NotStarting
 }
 
 // NotStarting describes what kx saw of a version whose containers ran but

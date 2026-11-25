@@ -858,7 +858,8 @@ func (r *runner) failed(ctx context.Context, app *api.App, d *api.Deployment) *k
 	if reason == "" && d.Status == api.StatusRolledBack {
 		reason = "Kubernetix rolled it back"
 	}
-	return &kxerr.DeployFailed{App: app.Name, Version: d.Version, ServingVersion: r.serving(ctx, app, d), Reason: reason, Code: d.ErrorCode, NotStarting: r.likely}
+	serving, restoredAs := r.serving(ctx, app, d)
+	return &kxerr.DeployFailed{App: app.Name, Version: d.Version, ServingVersion: serving, RestoredAs: restoredAs, Reason: reason, Code: d.ErrorCode, NotStarting: r.likely}
 }
 
 // deploymentLogs returns the last 20 lines of d's build and rollout logs.
@@ -871,17 +872,23 @@ func (r *runner) deploymentLogs(ctx context.Context, d *api.Deployment) []string
 }
 
 // serving returns the version still serving after d failed, 0 if none.
-func (r *runner) serving(ctx context.Context, app *api.App, d *api.Deployment) int {
+func (r *runner) serving(ctx context.Context, app *api.App, d *api.Deployment) (version, restoredAs int) {
 	deps, err := r.c.ListDeployments(ctx, app.ID, 20)
 	if err != nil {
-		return 0
+		return 0, 0
 	}
 	for _, other := range deps {
-		if other.Status == api.StatusReady && other.ID != d.ID {
-			return other.Version
+		if other.Status != api.StatusReady || other.ID == d.ID {
+			continue
 		}
+		// Kubernetix may record putting the earlier version back as a new
+		// version: name the version it put back.
+		if rb := other.Rollback; rb != nil && rb.Automatic && rb.FailedDeploymentID == d.ID && rb.TargetVersion > 0 {
+			return rb.TargetVersion, other.Version
+		}
+		return other.Version, 0
 	}
-	return 0
+	return 0, 0
 }
 
 func joinLines(lines []string) string { return strings.Join(lines, "\n") }

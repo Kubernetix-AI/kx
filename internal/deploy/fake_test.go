@@ -74,7 +74,9 @@ type fakeAPI struct {
 	// rolledBackReason is the text a rolled_back status carries (the
 	// platform's generic message while it decides what comes next).
 	rolledBackReason string
-	failCode         string // the error_code a failed deployment carries
+	// onFailed runs when a new deployment first reports failed.
+	onFailed func(f *fakeAPI)
+	failCode string // the error_code a failed deployment carries
 
 	// created is the server's clock for new deployments' created_at;
 	// health is the health check they carry; retries scripts retry_count
@@ -290,10 +292,15 @@ func (f *fakeAPI) find(id string) *api.Deployment {
 				if n >= len(f.statuses) {
 					n = len(f.statuses) - 1
 				}
+				was := d.Status
 				d.Status = f.statuses[n]
 				switch d.Status {
 				case "failed":
 					d.CustomerError, d.ErrorCode = f.failReason, f.failCode
+					if was != "failed" && f.onFailed != nil {
+						f.onFailed(f)
+						d = f.find(id) // the list may have moved
+					}
 				case "rolled_back":
 					d.CustomerError = f.rolledBackReason
 				}

@@ -1190,3 +1190,34 @@ func TestRun_NoExpose_TypedPortBelow1024_AsksBeforeDeploying(t *testing.T) {
 		t.Fatalf("port = %v", port)
 	}
 }
+
+// After a failed deploy whose traffic it restored, Kubernetix records the
+// restore as a new ready version (an automatic rollback). kx names the
+// version that serves again, not the record.
+func TestRun_FailureRestoredAsAnAutomaticRollback(t *testing.T) {
+	e := newEnv(t)
+	e.api.statuses = []string{"pending", "deploying", "failed"}
+	e.api.failReason = "your container is crashing on start"
+	e.api.onFailed = func(f *fakeAPI) {
+		f.deployments[testAppID] = append([]api.Deployment{{ID: "auto-rb", AppID: testAppID, Version: 16, Status: "ready",
+			Rollback: &api.DeploymentRollback{Automatic: true, TargetVersion: 14, TargetDeploymentID: "dep-14", FailedVersion: 15, FailedDeploymentID: "key-" + testKey}}},
+			f.deployments[testAppID]...)
+	}
+	_, err := e.run(e.options())
+	var df *kxerr.DeployFailed
+	if !errors.As(err, &df) || df.ServingVersion != 14 || df.RestoredAs != 16 {
+		t.Fatalf("Run() = %#v", err)
+	}
+
+	// An automatic rollback after another deploy is just the version that
+	// serves.
+	e = newEnv(t)
+	e.api.statuses = []string{"pending", "deploying", "failed"}
+	e.api.deployments[testAppID] = append([]api.Deployment{{ID: "auto-rb-old", AppID: testAppID, Version: 14, Status: "ready",
+		Rollback: &api.DeploymentRollback{Automatic: true, TargetVersion: 12, FailedVersion: 13, FailedDeploymentID: "dep-13"}}},
+		e.api.deployments[testAppID]...)
+	_, err = e.run(e.options())
+	if !errors.As(err, &df) || df.ServingVersion != 14 || df.RestoredAs != 0 {
+		t.Fatalf("Run() = %#v", err)
+	}
+}

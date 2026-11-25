@@ -707,11 +707,20 @@ func deployFailed(e *kxerr.DeployFailed) Problem {
 		// only says the version never got ready.
 		reason, fix = cause(ns, past), failedFix(ns)
 	}
-	what := fmt.Sprintf("%s v%d didn't go live: %s", e.App, e.Version, sentence(clean(reason, maxMessageLen)))
-	if e.ServingVersion > 0 {
-		what += fmt.Sprintf(" Version %d is still serving.", e.ServingVersion)
-	}
+	what := fmt.Sprintf("%s v%d didn't go live: %s", e.App, e.Version, sentence(clean(reason, maxMessageLen))) + servingSentence(e)
 	return Problem{"deploy_failed", what, fix, ExitDeploy}
+}
+
+// servingSentence says which version serves after a failed deploy: still,
+// or again when Kubernetix put it back as a new version.
+func servingSentence(e *kxerr.DeployFailed) string {
+	switch {
+	case e.ServingVersion > 0 && e.RestoredAs > 0:
+		return fmt.Sprintf(" Version %d is serving again, recorded as v%d.", e.ServingVersion, e.RestoredAs)
+	case e.ServingVersion > 0:
+		return fmt.Sprintf(" Version %d is still serving.", e.ServingVersion)
+	}
+	return ""
 }
 
 // noRoom explains a version the plan had no room for (error_code
@@ -724,10 +733,7 @@ func noRoom(e *kxerr.DeployFailed) Problem {
 	if msg := clean(e.Reason, maxMessageLen); msg != "" {
 		what += sentence(msg)
 	} else {
-		what += "your plan has no room left for it."
-		if e.ServingVersion > 0 {
-			what += fmt.Sprintf(" Version %d is still serving.", e.ServingVersion)
-		}
+		what += "your plan has no room left for it." + servingSentence(e)
 	}
 	return Problem{"quota_blocked", what, "Free up room in your plan or upgrade at " + plansURL + ", then try again.", ExitLimit}
 }

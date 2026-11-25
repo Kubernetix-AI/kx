@@ -146,6 +146,10 @@ func explainCases() []explainCase {
 			Problem{"quota_blocked", "shop-api v15 didn't go live: " + quotaRestoredMsg, quotaFix, 5}},
 		{"unknown failure class", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Code: "some_new_class", Reason: "your container is crashing on start"},
 			Problem{"deploy_failed", "shop-api v15 didn't go live: your container is crashing on start. Version 14 is still serving.", "See why: kx logs --deployment v15", 8}},
+		// Kubernetix put the serving version back and recorded that as a
+		// new version (an automatic rollback).
+		{"deploy crashed, restored as a new version", &kxerr.DeployFailed{App: "shop-api", Version: 16, ServingVersion: 14, RestoredAs: 17},
+			Problem{"deploy_failed", "shop-api v16 didn't go live: your container is crashing on start. Version 14 is serving again, recorded as v17.", "See why: kx logs --deployment v16", 8}},
 		{"deploy failed with reason, no earlier version", &kxerr.DeployFailed{App: "shop-api", Version: 1, Reason: "the image could not be pulled."}, Problem{"deploy_failed", "shop-api v1 didn't go live: the image could not be pulled.", "See why: kx logs --deployment v1", 8}},
 		{"never ready, platform failed it", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Reason: "Deployment failed.", NotStarting: &kxerr.NotStarting{After: 2*time.Minute + 10*time.Second, Path: "/", Port: 8080, HealthCheck: true}},
 			Problem{"deploy_failed", "shop-api v15 didn't go live: its container kept crashing or didn't answer health checks on / at port 8080. Version 14 is still serving.", "Make your app start and answer on / at port 8080 (the log lines above may say why it didn't), then run kx deploy again.", 8}},

@@ -117,6 +117,28 @@ func TestStatus_DesiredIsWhatTheLiveVersionRuns(t *testing.T) {
 	}
 }
 
+// An automatic rollback (Kubernetix put a version back after a failed
+// deploy) is live under its own number; kx status says what it is.
+func TestStatus_AutomaticRollback(t *testing.T) {
+	h := newHarness(t)
+	h.loginAs("acme-corp", tokCorp, &dec11)
+	h.link("shop-api", appShopID, "acme-corp")
+	h.api.deployments[appShopID] = []api.Deployment{
+		{ID: "auto-rb", AppID: appShopID, Version: 17, Status: "ready",
+			Rollback: &api.DeploymentRollback{Automatic: true, TargetVersion: 14, TargetDeploymentID: "dep-14", FailedVersion: 16, FailedDeploymentID: "dep-16"}},
+		{ID: "dep-16", AppID: appShopID, Version: 16, Status: "failed"},
+		{ID: "dep-14", AppID: appShopID, Version: 14, Status: "ready"},
+	}
+	h.expect(h.run("status"), 0)
+	if !strings.Contains(h.out.String(), "Live      v17 (v14 put back after v16 failed)\n") {
+		t.Fatalf("status:\n%s", h.out.String())
+	}
+	out := h.statusJSON()
+	if out["live_version"] != float64(17) || fmt.Sprint(out["live_rollback"]) != "map[automatic:true failed_version:16 target_version:14]" {
+		t.Fatalf("json = %v", out)
+	}
+}
+
 func TestApps_VersionIsTheLiveOne(t *testing.T) {
 	// Kubernetix's release counter stays 0 for most apps: the version comes
 	// from the app's deployments.

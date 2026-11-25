@@ -114,6 +114,32 @@ func TestConfigure_FailedAndRestored(t *testing.T) {
 	}
 }
 
+// Kubernetix records the put-back as a new version (an automatic
+// rollback): kx names the version that serves again.
+func TestConfigure_FailedAndRestoredAsANewVersion(t *testing.T) {
+	h := configured(t)
+	failNewDeploys(h)
+	restoreAfterFailure(h, 2, map[string]string{}, 1)
+	onFailed := h.api.onFailed
+	h.api.onFailed = func() {
+		onFailed()
+		for _, d := range h.api.deployments[appShopID] {
+			if strings.HasPrefix(d.ID, "new-") && d.Status == "failed" {
+				h.api.deployments[appShopID] = append([]api.Deployment{{ID: "auto-rb", AppID: appShopID, Version: 17, Status: "ready",
+					Rollback: &api.DeploymentRollback{Automatic: true, TargetVersion: 14, TargetDeploymentID: "dep-14", FailedVersion: d.Version, FailedDeploymentID: d.ID}}},
+					h.api.deployments[appShopID]...)
+				return
+			}
+		}
+	}
+	h.expect(h.run("scale", "3", "--json"), 8)
+	e := errJSON(t, h)
+	if e["restored_to"] != float64(14) || e["change"] != "Kubernetix put shop-api back to v14, so this change was undone." ||
+		!strings.Contains(e["message"].(string), "Version 14 is serving again, recorded as v17.") {
+		t.Fatalf("error = %v", e)
+	}
+}
+
 func TestConfigure_FailedButKept(t *testing.T) {
 	// The app changed again since (or Kubernetix had nothing to go back
 	// to): the change is still there after kx has looked a few times.
