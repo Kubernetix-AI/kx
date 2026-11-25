@@ -700,7 +700,15 @@ func deployFailed(e *kxerr.DeployFailed) Problem {
 		reason = "your container is crashing on start"
 	}
 	fix := fmt.Sprintf("See why: kx logs --deployment v%d", e.Version)
-	if ns := e.NotStarting; ns != nil && (e.Code == "" || e.Code == "not_ready" || e.Reason == "") {
+	switch ns := e.NotStarting; {
+	case platformNamedCause(reason):
+		// The platform's message names the cause, then what to do.
+		first, rest := splitSentence(clean(reason, maxMessageLen))
+		reason = lowerFirst(first)
+		if rest != "" {
+			fix = rest
+		}
+	case ns != nil && (e.Code == "" || e.Code == "not_ready" || e.Reason == ""):
 		// What kx saw is more specific than the platform's message for a
 		// version that never got ready, unless the platform named a
 		// specific cause: then its message says what went wrong. not_ready
@@ -721,6 +729,47 @@ func servingSentence(e *kxerr.DeployFailed) string {
 		return fmt.Sprintf(" Version %d is still serving.", e.ServingVersion)
 	}
 	return ""
+}
+
+// platformCauses open the messages Kubernetix gives when it fails a
+// version at once because its pods can't run (out of memory, an image it
+// can't pull, a container it can't configure or create, a crash loop).
+// Kubernetix doesn't send a code for these yet, so kx knows them by their
+// first words; an unknown message falls back to what kx saw.
+var platformCauses = []string{
+	"Your pod ran out of memory",
+	"Couldn't pull the container image",
+	"The image reference is not a valid name",
+	"The container could not be configured",
+	"The container could not be created",
+	"Your container is crashing on start",
+}
+
+// splitSentence splits s after its first sentence.
+func splitSentence(s string) (first, rest string) {
+	if i := strings.Index(s, ". "); i >= 0 {
+		return s[:i+1], strings.TrimSpace(s[i+2:])
+	}
+	return s, ""
+}
+
+// lowerFirst lowercases s's first letter, for a sentence that follows a
+// colon.
+func lowerFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToLower(s[:1]) + s[1:]
+}
+
+// platformNamedCause reports whether reason is one of platformCauses.
+func platformNamedCause(reason string) bool {
+	for _, c := range platformCauses {
+		if strings.HasPrefix(strings.TrimSpace(reason), c) {
+			return true
+		}
+	}
+	return false
 }
 
 // noRoom explains a version the plan had no room for (error_code

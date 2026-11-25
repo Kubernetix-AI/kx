@@ -153,6 +153,14 @@ func explainCases() []explainCase {
 		{"deploy failed with reason, no earlier version", &kxerr.DeployFailed{App: "shop-api", Version: 1, Reason: "the image could not be pulled."}, Problem{"deploy_failed", "shop-api v1 didn't go live: the image could not be pulled.", "See why: kx logs --deployment v1", 8}},
 		{"never ready, platform failed it", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Reason: "Deployment failed.", NotStarting: &kxerr.NotStarting{After: 2*time.Minute + 10*time.Second, Path: "/", Port: 8080, HealthCheck: true}},
 			Problem{"deploy_failed", "shop-api v15 didn't go live: its container kept crashing or didn't answer health checks on / at port 8080. Version 14 is still serving.", "Make your app start and answer on / at port 8080 (the log lines above may say why it didn't), then run kx deploy again.", 8}},
+		// A cause the platform named for the pods (it fails these at once)
+		// beats what kx guessed from the replicas.
+		{"never ready, platform says out of memory", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14,
+			Reason: "Your pod ran out of memory. Increase resources.limits.memory or check your app for memory leaks.", NotStarting: &kxerr.NotStarting{After: 2 * time.Minute, Path: "/", Port: 8080, HealthCheck: true}},
+			Problem{"deploy_failed", "shop-api v15 didn't go live: your pod ran out of memory. Version 14 is still serving.", "Increase resources.limits.memory or check your app for memory leaks.", 8}},
+		{"never ready, platform says the image can't be pulled", &kxerr.DeployFailed{App: "shop-api", Version: 15,
+			Reason: "Couldn't pull the container image. Check the image URL is correct and the registry credentials are valid.", NotStarting: &kxerr.NotStarting{After: 90 * time.Second}},
+			Problem{"deploy_failed", "shop-api v15 didn't go live: couldn't pull the container image.", "Check the image URL is correct and the registry credentials are valid.", 8}},
 		{"never ready, path not known", &kxerr.DeployFailed{App: "shop-api", Version: 1, NotStarting: &kxerr.NotStarting{After: 5 * time.Minute, Port: 3000, HealthCheck: true}},
 			Problem{"deploy_failed", "shop-api v1 didn't go live: its container kept crashing or didn't answer health checks at port 3000.", "Make your app start and answer health checks at port 3000 (the log lines above may say why it didn't), then run kx deploy again.", 8}},
 		{"never ready, no health check", &kxerr.DeployFailed{App: "shop-api", Version: 1, NotStarting: &kxerr.NotStarting{After: 90 * time.Second}},
