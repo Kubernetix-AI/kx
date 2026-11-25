@@ -52,7 +52,8 @@ var allCodes = []string{
 	"build_failed", "push_failed", "deploy_failed", "quota_blocked", "wait_timeout", "previous_deploy_running",
 	"nothing_live", "no_rollback_target", "already_live", "tag_exists", "tag_taken", "tag_check_failed", "no_digest", "rollback_unconfirmed", "docker_context_unknown",
 	"multi_region_app", "not_linked", "usage", "invalid_env_var",
-	"image_not_found", "image_refused", "database_not_ready", "env_prefix_conflict", "login_in_ci", "insecure_api_url",
+	"image_not_found", "image_refused", "database_not_ready", "env_prefix_conflict",
+	"crash_loop", "oom_killed", "image_pull_failed", "container_config_error", "container_create_error", "login_in_ci", "insecure_api_url",
 	"bad_project_file", "bad_settings_file", "network", "server_error", "timeout", "interrupted", "unexpected",
 }
 
@@ -756,6 +757,10 @@ func deployFailed(e *kxerr.DeployFailed) Problem {
 	if e.Code == "quota_blocked" {
 		return noRoom(e)
 	}
+	if c, ok := failureClasses[e.Code]; ok {
+		fix := strings.ReplaceAll(c.fix, "{v}", fmt.Sprintf("v%d", e.Version))
+		return Problem{c.code, fmt.Sprintf("%s v%d didn't go live: %s.", e.App, e.Version, c.what) + servingSentence(e), fix, c.exit}
+	}
 	reason := e.Reason
 	if reason == "" {
 		reason = "your container is crashing on start"
@@ -790,6 +795,40 @@ func servingSentence(e *kxerr.DeployFailed) string {
 		return fmt.Sprintf(" Version %d is still serving.", e.ServingVersion)
 	}
 	return ""
+}
+
+// failureClass is how kx words a version that failed for a known class:
+// the cause, the fix ({v} stands for the version) and the exit code.
+type failureClass struct {
+	code, what, fix string
+	exit            int
+}
+
+// failureClasses word the classes Kubernetix gives a version that can't
+// run. They beat what kx guessed from the replicas.
+var failureClasses = map[string]failureClass{
+	"crash_loop": {"crash_loop", "its container kept crashing on start",
+		"Find the error in the log lines above (or kx logs --deployment {v}), fix it or the start command, then run kx deploy again.", ExitDeploy},
+	"oom_killed": {"oom_killed", "it ran out of memory",
+		"Give the app more memory (a larger size, in the dashboard) or make it use less, then run kx deploy again.", ExitDeploy},
+	"image_pull_failed": {"image_pull_failed", "Kubernetix couldn't pull its image",
+		"Check the image name and that Kubernetix may pull it (Registries, in the dashboard), then run kx deploy again.", ExitDeploy},
+	"container_config_error": {"container_config_error", "its container couldn't be configured",
+		"Check its environment variables (kx env), secrets and volumes, then run kx deploy again.", ExitDeploy},
+	"container_create_error": {"container_create_error", "its container couldn't be created",
+		"Check its start command, arguments and mounted paths, then run kx deploy again.", ExitDeploy},
+	"image_not_found": {"image_not_found", "its image isn't in the registry",
+		"Check the image name and tag, then run kx deploy again.", ExitNotFound},
+	"image_not_allowed": {"image_refused", "its image is in another organization's private repository",
+		"Use your own registry, a public image, or a registry you added a credential for in the dashboard.", ExitUsage},
+	"image_access_denied": {"image_refused", "its image is private, and Kubernetix has no credential for that registry",
+		"Add a credential for the registry (Registries, in the dashboard), or fix the image name.", ExitUsage},
+	"image_credential_rejected": {"image_refused", "the registry rejected the credential for its image",
+		"Rotate the credential (Registries, in the dashboard), then run kx deploy again.", ExitUsage},
+	"image_platform_unsupported": {"image_refused", "its image has no linux/amd64 build",
+		"Build it for linux/amd64 (kx deploy does) or publish a multi-arch image, then deploy again.", ExitUsage},
+	"invalid_image_name": {"image_refused", "its image name isn't valid",
+		"Use registry/repository:tag, then run kx deploy again.", ExitUsage},
 }
 
 // platformCauses open the messages Kubernetix gives when it fails a

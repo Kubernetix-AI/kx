@@ -1221,3 +1221,31 @@ func TestRun_FailureRestoredAsAnAutomaticRollback(t *testing.T) {
 		t.Fatalf("Run() = %#v", err)
 	}
 }
+
+// The class of a failed version comes from error_code, or until Kubernetix
+// sends it, from the class the worker puts at the start of error_message.
+func TestRun_FailureClass(t *testing.T) {
+	for _, tc := range []struct {
+		code, message, want string
+	}{
+		{"crash_loop", "", "crash_loop"},
+		{"", "deployment failed: oom_killed: OOMKilled: pod=app-shop-8e1a container=app logs: Killed", "oom_killed"},
+		{"", "failed to prepare image: image_not_found: MANIFEST_UNKNOWN", "image_not_found"},
+		{"", "image_platform_unsupported: no linux/amd64 manifest", "image_platform_unsupported"},
+		{"", "deployment failed: something_new: whatever", ""},
+		{"", "readiness timeout after 5m0s", ""},
+		{"quota_blocked", "Your plan's resource quota has no room.", "quota_blocked"},
+	} {
+		e := newEnv(t)
+		e.api.statuses = []string{"pending", "deploying", "failed"}
+		e.api.failCode, e.api.failMessage = tc.code, tc.message
+		_, err := e.run(e.options())
+		var df *kxerr.DeployFailed
+		if !errors.As(err, &df) || df.Code != tc.want {
+			t.Errorf("error_code %q, error_message %q: Code = %q, want %q", tc.code, tc.message, df.Code, tc.want)
+		}
+		if strings.Contains(e.errOut.String(), "pod=app-shop") || strings.Contains(e.errOut.String(), "MANIFEST_UNKNOWN") {
+			t.Errorf("kx printed error_message:\n%s", e.errOut.String())
+		}
+	}
+}

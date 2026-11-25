@@ -261,10 +261,18 @@ func TestRun_NoRoomInThePlanExitsWithTheLimitCode(t *testing.T) {
 		t.Fatalf("problem = %+v", p)
 	}
 
-	// Any other class keeps the deploy-failed code.
+	// A class of a version that can't run is a failed deploy (exit 8),
+	// named by its class; a class kx doesn't know keeps deploy_failed.
 	e = newEnv(t)
 	e.api.statuses = []string{"pending", "failed"}
 	e.api.failReason, e.api.failCode = "your container is crashing on start", "crash_loop"
+	_, err = e.run(e.options())
+	if p := api.Explain(err); p.Code != "crash_loop" || p.Exit != api.ExitDeploy {
+		t.Fatalf("problem = %+v", p)
+	}
+	e = newEnv(t)
+	e.api.statuses = []string{"pending", "failed"}
+	e.api.failReason, e.api.failCode = "your container is crashing on start", "some_new_class"
 	_, err = e.run(e.options())
 	if p := api.Explain(err); p.Code != "deploy_failed" || p.Exit != api.ExitDeploy {
 		t.Fatalf("problem = %+v", p)

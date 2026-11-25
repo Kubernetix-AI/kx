@@ -86,6 +86,7 @@ type fakeAPI struct {
 	gets        map[string]int
 	failReason  string
 	failCode    string // the error_code a failed deployment carries
+	failMessage string // its error_message: the worker's own text
 	onFailed    func() // runs when a new deployment first reports failed
 
 	// Configure side: the env var values the fake keeps (by app ID; tokens
@@ -758,7 +759,7 @@ func (f *fakeAPI) findDeployment(id string) *api.Deployment {
 				was := d.Status
 				d.Status = f.statuses[n]
 				if d.Status == "failed" {
-					d.CustomerError, d.ErrorCode = f.failReason, f.failCode
+					d.CustomerError, d.ErrorCode, d.ErrorMessage = f.failReason, f.failCode, f.failMessage
 					if was != "failed" && f.onFailed != nil {
 						f.onFailed()
 					}

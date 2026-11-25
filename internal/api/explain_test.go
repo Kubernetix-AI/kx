@@ -65,6 +65,26 @@ func explainCases() []explainCase {
 		{"env var collides with a database's", withPath(&Error{Status: 400, Code: "env_prefix_conflict", Field: "env_vars.DATABASE_URL",
 			Message: `env_vars["DATABASE_URL"] collides with the variable injected by database "main" (env_prefix "DATABASE").`, Ctx: loginCtx}, "POST", "/apps/a1/deployments"),
 			Problem{"env_prefix_conflict", `env_vars["DATABASE_URL"] collides with the variable injected by database "main" (env_prefix "DATABASE").`, "Remove DATABASE_URL from the app (kx env unset DATABASE_URL), or rebind the database with another prefix in the dashboard.", 2}},
+		{"validation error with a hint", withPath(&Error{Status: 400, Code: "validation_error", Message: "replicas must be at least 1.", Hint: "Set replicas to 1 or more.", Ctx: loginCtx}, "PUT", "/apps/a1"),
+			Problem{"validation_error", "Kubernetix didn't accept the request: replicas must be at least 1.", "Set replicas to 1 or more.", 2}},
+		// The class of a failed version (error_code, or the class the worker
+		// names in its message) picks the words and the exit code.
+		{"failed: crash loop", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Code: "crash_loop", Reason: "Your container is crashing on start.", NotStarting: &kxerr.NotStarting{After: 2 * time.Minute, Path: "/", Port: 8080, HealthCheck: true}},
+			Problem{"crash_loop", "shop-api v15 didn't go live: its container kept crashing on start. Version 14 is still serving.", "Find the error in the log lines above (or kx logs --deployment v15), fix it or the start command, then run kx deploy again.", 8}},
+		{"failed: out of memory", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Code: "oom_killed"},
+			Problem{"oom_killed", "shop-api v15 didn't go live: it ran out of memory. Version 14 is still serving.", "Give the app more memory (a larger size, in the dashboard) or make it use less, then run kx deploy again.", 8}},
+		{"failed: image pull", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "image_pull_failed"},
+			Problem{"image_pull_failed", "shop-api v15 didn't go live: Kubernetix couldn't pull its image.", "Check the image name and that Kubernetix may pull it (Registries, in the dashboard), then run kx deploy again.", 8}},
+		{"failed: container config", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "container_config_error"},
+			Problem{"container_config_error", "shop-api v15 didn't go live: its container couldn't be configured.", "Check its environment variables (kx env), secrets and volumes, then run kx deploy again.", 8}},
+		{"failed: container create", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "container_create_error"},
+			Problem{"container_create_error", "shop-api v15 didn't go live: its container couldn't be created.", "Check its start command, arguments and mounted paths, then run kx deploy again.", 8}},
+		{"failed: image not found", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Code: "image_not_found"},
+			Problem{"image_not_found", "shop-api v15 didn't go live: its image isn't in the registry. Version 14 is still serving.", "Check the image name and tag, then run kx deploy again.", 4}},
+		{"failed: image not allowed", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "image_not_allowed"},
+			Problem{"image_refused", "shop-api v15 didn't go live: its image is in another organization's private repository.", "Use your own registry, a public image, or a registry you added a credential for in the dashboard.", 2}},
+		{"failed: image platform", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "image_platform_unsupported"},
+			Problem{"image_refused", "shop-api v15 didn't go live: its image has no linux/amd64 build.", "Build it for linux/amd64 (kx deploy does) or publish a multi-arch image, then deploy again.", 2}},
 		// A refusal kx has no words of its own for: the platform's hint is
 		// the fix.
 		{"unknown refusal with a hint", withPath(&Error{Status: 400, Code: "invalid_port", Message: "port must be between 1 and 65535; got 0.", Hint: "Use the port your container listens on, e.g. 8080.", Ctx: loginCtx}, "POST", "/apps"),
@@ -296,7 +316,9 @@ func checkShape(t *testing.T, p Problem) {
 	sentences := strings.Count(strings.TrimSuffix(p.What, "."), ". ") + 1
 	maxSentences := 1
 	switch p.Code {
-	case "deploy_failed":
+	case "deploy_failed", "crash_loop", "oom_killed", "image_pull_failed", "container_config_error", "container_create_error",
+		"image_not_found", "image_refused":
+		// The cause, then which version still serves.
 		maxSentences = 2
 	case "billing_unpaid", "subscription_ended":
 		// Line one is the platform's own customer message, which says

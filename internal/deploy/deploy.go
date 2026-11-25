@@ -859,7 +859,7 @@ func (r *runner) failed(ctx context.Context, app *api.App, d *api.Deployment) *k
 		reason = "Kubernetix rolled it back"
 	}
 	serving, restoredAs := r.serving(ctx, app, d)
-	return &kxerr.DeployFailed{App: app.Name, Version: d.Version, ServingVersion: serving, RestoredAs: restoredAs, Reason: reason, Code: d.ErrorCode, NotStarting: r.likely}
+	return &kxerr.DeployFailed{App: app.Name, Version: d.Version, ServingVersion: serving, RestoredAs: restoredAs, Reason: reason, Code: d.FailureClass(), NotStarting: r.likely}
 }
 
 // deploymentLogs returns the last 20 lines of d's build and rollout logs,

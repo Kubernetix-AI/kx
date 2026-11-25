@@ -1545,3 +1545,31 @@ func TestDeploy_AppFlag_KxJSONNotWritable_Warns(t *testing.T) {
 		t.Fatalf("stderr:\n%s", h.err.String())
 	}
 }
+
+// Kubernetix names why a version failed: in error_code, or today at the
+// start of its own message. kx words each class and picks the exit code,
+// and never prints that message.
+func TestDeploy_FailureClasses(t *testing.T) {
+	setup := func(t *testing.T) *harness {
+		h := newHarness(t)
+		h.loginAs("acme-corp", tokCorp, &dec11)
+		h.link("shop-api", appShopID, "acme-corp")
+		h.dockerfile("FROM scratch\nEXPOSE 8080\n")
+		h.api.statuses = []string{"pending", "deploying", "failed"}
+		return h
+	}
+	h := setup(t)
+	h.api.failReason = "Your pod ran out of memory. Increase resources.limits.memory or check your app for memory leaks."
+	h.api.failMessage = "deployment failed: oom_killed: OOMKilled: pod=app-shop-8e1a container=app logs: Killed"
+	h.expect(h.run("deploy", "--json"), 8)
+	if e := errJSON(t, h); e["code"] != "oom_killed" || e["message"] != "shop-api v16 didn't go live: it ran out of memory. Version 14 is still serving." {
+		t.Fatalf("error = %v", e)
+	}
+	if strings.Contains(h.out.String()+h.err.String(), "pod=app-shop") {
+		t.Fatal("kx printed the platform's own message")
+	}
+
+	h = setup(t)
+	h.api.failReason, h.api.failCode = "Your plan's memory is full. The new version was not started; the previous one still runs.", "quota_blocked"
+	h.expect(h.run("deploy"), 5)
+}
