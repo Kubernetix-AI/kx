@@ -323,6 +323,9 @@ func explainAPI(e *Error) Problem {
 		if e.Path == "/registry/credentials" {
 			return cannotPush()
 		}
+		if strings.HasSuffix(e.Path, "/rollback") && !missingPermissionRe.MatchString(e.Message) {
+			return rollbackRefused(e.Message)
+		}
 		if m := missingPermissionRe.FindStringSubmatch(e.Message); m != nil {
 			what := " doesn't have the " + permissionName(m[1]) + " permission."
 			if m[1] == PermConfigure {
@@ -503,6 +506,20 @@ func explainInsecure(e *kxerr.InsecureURL) Problem {
 		what, fix = "kx only talks to Kubernetix over https, and "+where+" isn't an https address.", fixURL
 	}
 	return Problem{"insecure_api_url", what, fix, ExitUsage}
+}
+
+// rollbackRefused explains a rollback an API token may not make: the
+// version differs from what runs in settings the token can't change. The
+// platform's message says which, then what to do instead.
+func rollbackRefused(msg string) Problem {
+	what, fix := splitSentence(clean(msg, maxMessageLen))
+	if what == "" {
+		what = "This token can't roll back to that version: it differs in settings the token can't change."
+	}
+	if fix == "" {
+		fix = "Roll back in the dashboard, or deploy a new version."
+	}
+	return Problem{"token_not_allowed", what, fix, ExitAuth}
 }
 
 func loginEnded(org string) Problem {
