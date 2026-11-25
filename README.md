@@ -478,6 +478,8 @@ The messages you are most likely to meet:
 | This image has no linux/amd64 build. | Publish a multi-arch or amd64 image. | 2 |
 | Database "main" is "updating", not "running"; deploying now would start your app without its database credentials. | Wait until the database is running (the dashboard's Databases page shows it), then run the command again. | 2 |
 | v12 also has a different size and secret bindings, which this token can't change. | Roll back in the dashboard, or deploy a new version. | 3 |
+| This token only works for web, not shop-api. | Log in with a token that can reach shop-api: kx login --org acme-corp | 3 |
+| Kubernetix couldn't check the image just now. | Wait a minute, then try again. | 1 |
 | shop-api v15 didn't go live: it ran out of memory. Version 14 is still serving. | Give the app more memory (a larger size, in the dashboard) or make it use less, then run kx deploy again. | 8 |
 | shop-api v15 didn't go live: its container kept crashing on start. Version 14 is still serving. | Find the error in the log lines above (or kx logs --deployment v15), fix it or the start command, then run kx deploy again. | 8 |
 | This token can't upload images. | Create a token with Push images on the app's Deploy tab, or deploy an image that's already pushed: kx deploy --image &lt;image&gt; | 3 |

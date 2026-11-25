@@ -53,7 +53,7 @@ var allCodes = []string{
 	"nothing_live", "no_rollback_target", "already_live", "tag_exists", "tag_taken", "tag_check_failed", "no_digest", "rollback_unconfirmed", "docker_context_unknown",
 	"multi_region_app", "not_linked", "usage", "invalid_env_var",
 	"image_not_found", "image_refused", "database_not_ready", "env_prefix_conflict",
-	"crash_loop", "oom_killed", "image_pull_failed", "container_config_error", "container_create_error",
+	"crash_loop", "oom_killed", "image_pull_failed", "container_config_error", "container_create_error", "image_check_error",
 	"image_not_allowed", "image_access_denied", "image_credential_rejected", "image_platform_unsupported", "invalid_image_name", "login_in_ci", "insecure_api_url",
 	"bad_project_file", "bad_settings_file", "network", "server_error", "timeout", "interrupted", "unexpected",
 }
@@ -326,7 +326,10 @@ func explainAPI(e *Error) Problem {
 		if e.Path == "/registry/credentials" {
 			return cannotPush()
 		}
-		if strings.HasSuffix(e.Path, "/rollback") && !missingPermissionRe.MatchString(e.Message) {
+		if m := onlyAppRe.FindStringSubmatch(e.Message); m != nil {
+			return tokenOnlyApp(m[1], e.Ctx.App, src, org)
+		}
+		if strings.HasSuffix(e.Path, "/rollback") && strings.Contains(e.Message, "this token can't change") {
 			return rollbackRefused(e.Message)
 		}
 		if m := missingPermissionRe.FindStringSubmatch(e.Message); m != nil {
@@ -386,6 +389,9 @@ func explainAPI(e *Error) Problem {
 
 	// Kubernetix checks an image (that it exists, may be used, runs on
 	// linux/amd64) before it deploys it or creates an app with it.
+	case "image_check_error":
+		// The check came out neither way (a registry hiccup): try again.
+		return Problem{"image_check_error", "Kubernetix couldn't check the image just now.", retryLater, ExitUnexpected}
 	case "image_not_found":
 		return Problem{"image_not_found", platformSentence(e, "Kubernetix didn't find that image."), hintOr(e, "Check the image name and tag, then run the command again."), ExitNotFound}
 	case "image_not_allowed", "image_access_denied", "image_credential_rejected", "image_platform_unsupported",
@@ -528,14 +534,36 @@ func explainInsecure(e *kxerr.InsecureURL) Problem {
 	return Problem{"insecure_api_url", what, fix, ExitUsage}
 }
 
+// onlyAppRe finds the app in the platform's refusal of a token made for
+// another app ("This API token only works for the app web.").
+var onlyAppRe = regexp.MustCompile(`only works for (?:the app ([a-z0-9][a-z0-9-]*)|one app)\.`)
+
+// tokenOnlyApp explains a token made for tokenApp ("" when the platform
+// didn't name it) used on app: the fix is a token for app.
+func tokenOnlyApp(tokenApp, app string, src kxerr.TokenSource, org string) Problem {
+	what := "This token only works for " + orgOr(tokenApp, "another app")
+	if app != "" {
+		what += ", not " + app
+	}
+	target := orgOr(app, "the app")
+	switch src {
+	case kxerr.SourceEnv:
+		where := "the app's"
+		if app != "" {
+			where = app + "'s"
+		}
+		return Problem{"token_app_mismatch", what + ".", "Create a deploy token on " + where + " Deploy tab and replace the KX_TOKEN secret.", ExitAuth}
+	case kxerr.SourceLogin:
+		return Problem{"token_app_mismatch", what + ".", "Log in with a token that can reach " + target + ": " + strings.TrimPrefix(loginFix(org), "Run: "), ExitAuth}
+	}
+	return Problem{"token_app_mismatch", what + ".", "Use a token that can reach " + target + ": kx login", ExitAuth}
+}
+
 // rollbackRefused explains a rollback an API token may not make: the
 // version differs from what runs in settings the token can't change. The
 // platform's message says which, then what to do instead.
 func rollbackRefused(msg string) Problem {
 	what, fix := splitSentence(clean(msg, maxMessageLen))
-	if what == "" {
-		what = "This token can't roll back to that version: it differs in settings the token can't change."
-	}
 	if fix == "" {
 		fix = "Roll back in the dashboard, or deploy a new version."
 	}

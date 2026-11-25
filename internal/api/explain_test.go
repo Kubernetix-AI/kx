@@ -103,8 +103,20 @@ func explainCases() []explainCase {
 		{"token can't roll back to that version", withPath(&Error{Status: 403, Code: "token_not_allowed",
 			Message: "v12 also has a different size and secret bindings, which this token can't change. Roll back in the dashboard, or deploy a new version.", Ctx: loginCtx}, "POST", "/deployments/dep-12/rollback"),
 			Problem{"token_not_allowed", "v12 also has a different size and secret bindings, which this token can't change.", "Roll back in the dashboard, or deploy a new version.", 3}},
+		// A token made for one app, used on another: the fix is a token for
+		// that app, wherever the refusal comes.
+		{"token only works for another app", withPath(&Error{Status: 403, Code: "token_not_allowed", Message: "This API token only works for the app web.",
+			Ctx: ErrContext{Org: "acme-corp", App: "shop-api", TokenSource: kxerr.SourceLogin}}, "POST", "/deployments/dep-12/rollback"),
+			Problem{"token_app_mismatch", "This token only works for web, not shop-api.", "Log in with a token that can reach shop-api: kx login --org acme-corp", 3}},
+		{"KX_TOKEN only works for one app", withPath(&Error{Status: 403, Code: "token_not_allowed", Message: "This API token only works for one app.",
+			Ctx: ErrContext{App: "shop-api", TokenSource: kxerr.SourceEnv}}, "GET", "/apps/a2"),
+			Problem{"token_app_mismatch", "This token only works for another app, not shop-api.", "Create a deploy token on shop-api's Deploy tab and replace the KX_TOKEN secret.", 3}},
+		// A check that didn't come out either way: try again.
+		{"image check error", withPath(&Error{Status: 400, Code: "image_check_error", Message: "Unexpected image check outcome.", Hint: "Try again; if this persists, contact support.", Ctx: loginCtx}, "POST", "/apps/a1/deployments"),
+			Problem{"image_check_error", "Kubernetix couldn't check the image just now.", "Wait a minute, then try again.", 1}},
+		// Without the platform's sentence kx can't tell why: the general words.
 		{"token can't roll back, no sentence", withPath(&Error{Status: 403, Code: "token_not_allowed", Ctx: loginCtx}, "POST", "/deployments/dep-12/rollback"),
-			Problem{"token_not_allowed", "This token can't roll back to that version: it differs in settings the token can't change.", "Roll back in the dashboard, or deploy a new version.", 3}},
+			Problem{"token_not_allowed", "This token isn't allowed to do that.", "Log in with a token that can: kx login --org acme-corp", 3}},
 		{"login lacks configure", &kxerr.TokenLacks{Permissions: []string{"configure"}, Source: kxerr.SourceLogin, Org: "acme-corp", Command: "kx env"}, Problem{"token_not_allowed", "The token this computer uses for acme-corp doesn't have the Configure permission, which kx env needs.", "Log in again and keep Configure ticked: kx login --org acme-corp", 3}},
 		{"login token lacks configure (API)", withPath(&Error{Status: 403, Code: "token_not_allowed", Message: "This API token doesn't have the configure permission.", Ctx: ErrContext{Org: "acme-corp", TokenSource: kxerr.SourceLogin}}, "PUT", "/apps/a1"), Problem{"token_not_allowed", "This token doesn't have the Configure permission.", "Log in again and keep Configure ticked: kx login --org acme-corp", 3}},
 		{"token create", kxerr.ErrTokenCreateMoved, Problem{"token_create_not_allowed", "kx can't create tokens; only people signed in to the dashboard can.", "Create one in the dashboard: Settings → API tokens (for CI, the app's Deploy tab)", 2}},
