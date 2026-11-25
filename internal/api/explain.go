@@ -51,7 +51,7 @@ var allCodes = []string{
 	"docker_missing", "docker_stopped", "docker_windows_containers", "docker_permission", "no_dockerfile",
 	"build_failed", "push_failed", "deploy_failed", "quota_blocked", "wait_timeout", "previous_deploy_running",
 	"nothing_live", "no_rollback_target", "already_live", "tag_exists", "tag_taken", "tag_check_failed", "no_digest", "rollback_unconfirmed", "docker_context_unknown",
-	"multi_region_app", "not_linked", "usage", "login_in_ci", "insecure_api_url",
+	"multi_region_app", "not_linked", "usage", "invalid_env_var", "login_in_ci", "insecure_api_url",
 	"bad_project_file", "bad_settings_file", "network", "server_error", "timeout", "interrupted", "unexpected",
 }
 
@@ -230,7 +230,11 @@ func Explain(err error) Problem {
 	case errors.Is(err, kxerr.ErrLoginInCI):
 		return Problem{"login_in_ci", "kx login saves a token on this computer, so it doesn't run in CI.", "Save a deploy token as the KX_TOKEN secret instead.", ExitUsage}
 	case errors.As(err, &usage):
-		return Problem{"usage", usage.What, usage.Fix, ExitUsage}
+		code := "usage"
+		if usage.Code != "" {
+			code = usage.Code
+		}
+		return Problem{code, usage.What, usage.Fix, ExitUsage}
 	case errors.As(err, &insecure):
 		return explainInsecure(insecure)
 	case errors.As(err, &badCfg):

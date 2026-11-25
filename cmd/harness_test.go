@@ -13,6 +13,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -629,6 +631,22 @@ func (f *fakeAPI) patchEnv(w http.ResponseWriter, r *http.Request, who api.WhoAm
 		if f.envValues[appID] == nil {
 			f.envValues[appID] = map[string]string{}
 		}
+		// Like the platform: the env the app would hold after the change
+		// must follow the rules, or nothing changes.
+		merged := map[string]string{}
+		for k, v := range f.envValues[appID] {
+			merged[k] = v
+		}
+		for k, v := range body.Set {
+			merged[k] = v
+		}
+		for _, k := range body.Unset {
+			delete(merged, k)
+		}
+		if fe := platformEnvRules(merged); fe != nil {
+			writeJSON(w, 400, fe)
+			return
+		}
 		for k, v := range body.Set {
 			f.envValues[appID][k] = v
 		}
@@ -639,6 +657,32 @@ func (f *fakeAPI) patchEnv(w http.ResponseWriter, r *http.Request, who api.WhoAm
 		return
 	}
 	writeJSON(w, 404, map[string]string{"error": "app_not_found", "message": "App not found"})
+}
+
+// platformEnvRules is the platform's check of an app's env vars: names it
+// allows, each value at most 32768 bytes, names and values at most 262144
+// bytes in all. It answers in the platform's field-error shape, naming
+// variables, never values.
+func platformEnvRules(env map[string]string) map[string]string {
+	names := make([]string, 0, len(env))
+	for k := range env {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	total := 0
+	for _, k := range names {
+		switch {
+		case !regexp.MustCompile(`^[-._a-zA-Z][-._a-zA-Z0-9]*$`).MatchString(k):
+			return map[string]string{"error": "invalid_env_var", "message": fmt.Sprintf("'%s' is not a valid environment variable name.", k), "field": "env_vars." + k, "hint": "Names must start with a letter."}
+		case len(env[k]) > 32768:
+			return map[string]string{"error": "invalid_env_var", "message": fmt.Sprintf("'%s' has a %d-byte value; the limit is 32768.", k, len(env[k])), "field": "env_vars." + k, "hint": "Store large values as a secret and bind it instead."}
+		}
+		total += len(k) + len(env[k])
+	}
+	if total > 262144 {
+		return map[string]string{"error": "invalid_env_var", "message": fmt.Sprintf("Environment variables total %d bytes; the limit is 262144.", total), "field": "env_vars", "hint": "Store large values as secrets and bind them instead."}
+	}
+	return nil
 }
 
 func (f *fakeAPI) putApp(w http.ResponseWriter, r *http.Request, who api.WhoAmI, appID string) {

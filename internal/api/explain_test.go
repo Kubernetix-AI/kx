@@ -146,6 +146,8 @@ func explainCases() []explainCase {
 			Problem{"quota_blocked", "shop-api v15 didn't go live: " + quotaRestoredMsg, quotaFix, 5}},
 		{"unknown failure class", &kxerr.DeployFailed{App: "shop-api", Version: 15, ServingVersion: 14, Code: "some_new_class", Reason: "your container is crashing on start"},
 			Problem{"deploy_failed", "shop-api v15 didn't go live: your container is crashing on start. Version 14 is still serving.", "See why: kx logs --deployment v15", 8}},
+		{"env var refused", &kxerr.Usage{Code: "invalid_env_var", What: "Kubernetix didn't accept the change: 'BIG' has a 40000-byte value; the limit is 32768.", Fix: "BIG is already on shop-api: remove it first (kx env unset BIG), then run the command again."},
+			Problem{"invalid_env_var", "Kubernetix didn't accept the change: 'BIG' has a 40000-byte value; the limit is 32768.", "BIG is already on shop-api: remove it first (kx env unset BIG), then run the command again.", 2}},
 		// Kubernetix put the serving version back and recorded that as a
 		// new version (an automatic rollback).
 		{"deploy crashed, restored as a new version", &kxerr.DeployFailed{App: "shop-api", Version: 16, ServingVersion: 14, RestoredAs: 17},

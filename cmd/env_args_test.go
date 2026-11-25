@@ -142,3 +142,67 @@ func TestEnvSet_MasksValuesInGitHubActions(t *testing.T) {
 		t.Fatalf("stderr:\n%s", h2.err.String())
 	}
 }
+
+// Kubernetix checks the variables the app would hold after the change, the
+// ones it already has included, and names the one that breaks a rule.
+func TestEnvSet_AppHoldsAVariableThatBreaksARule(t *testing.T) {
+	h := configured(t)
+	h.api.envValues = map[string]map[string]string{appShopID: {"BIG_CERT": strings.Repeat("x", 40000)}}
+	h.expect(h.run("env", "set", "A=1"), 2)
+	want := "Kubernetix didn't accept the change: 'BIG_CERT' has a 40000-byte value; the limit is 32768.\n" +
+		"BIG_CERT is already on shop-api: remove it first (kx env unset BIG_CERT), then run the command again.\n"
+	if !strings.HasSuffix(h.err.String(), want) {
+		t.Fatalf("stderr:\n%s\nwant it to end with\n%s", h.err.String(), want)
+	}
+	if len(h.api.deployPosts) != 0 || h.api.envValues[appShopID]["A"] != "" {
+		t.Fatal("changed or deployed the app after a refusal")
+	}
+	h.expect(h.run("env", "set", "A=1", "--json"), 2)
+	if e := errJSON(t, h); e["code"] != "invalid_env_var" || e["saved"] != false {
+		t.Fatalf("error = %v", e)
+	}
+	// Removing it is allowed, and then setting works.
+	h.expect(h.run("env", "unset", "BIG_CERT", "--no-deploy"), 0)
+	h.expect(h.run("env", "set", "A=1", "--no-deploy"), 0)
+
+	// Over the total: no variable to name.
+	h.api.envValues[appShopID] = map[string]string{}
+	for i := range 9 {
+		h.api.envValues[appShopID][fmt.Sprintf("PART_%d", i)] = strings.Repeat("y", 30000)
+	}
+	h.expect(h.run("env", "set", "A=2", "--no-deploy"), 2)
+	if !strings.HasSuffix(h.err.String(), "Kubernetix didn't accept the change: Environment variables total 270056 bytes; the limit is 262144.\n"+
+		"Remove variables shop-api no longer needs (kx env unset NAME), then run the command again.\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+}
+
+// A value over Kubernetix's limit is refused before anything is sent,
+// without showing it.
+func TestEnvSet_ValueTooLarge(t *testing.T) {
+	h := configured(t)
+	big := strings.Repeat("s", 32769)
+	h.expect(h.run("env", "set", "OK=1", "CERT="+big), 2)
+	if !strings.HasSuffix(h.err.String(), "Argument 2 has a 32769-byte value; Kubernetix takes at most 32768.\n"+
+		"Store a value that large as a secret in the dashboard (Secrets) and bind it to the app.\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	if err := os.WriteFile(filepath.Join(h.dir, ".env"), []byte("OK=1\nCERT="+big+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.expect(h.run("env", "set", "--from-file", ".env"), 2)
+	if !strings.Contains(h.err.String(), "Line 2 of .env has a 32769-byte value; Kubernetix takes at most 32768.\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	h.stdin = big
+	h.expect(h.run("env", "set", "CERT", "--stdin"), 2)
+	if !strings.Contains(h.err.String(), "Standard input holds a 32769-byte value; Kubernetix takes at most 32768.\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	if len(h.api.envPatches) != 0 {
+		t.Fatal("sent a value Kubernetix would refuse")
+	}
+	h.noSecrets(big[:64])
+	// The limit itself is fine.
+	h.expect(h.run("env", "set", "CERT="+big[1:], "--no-deploy"), 0)
+}

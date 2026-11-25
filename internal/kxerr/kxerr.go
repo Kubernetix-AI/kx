@@ -196,7 +196,11 @@ func (e *InsecureURL) Error() string {
 }
 
 // Usage is a mistake in how kx was called. What and Fix are shown as-is.
-type Usage struct{ What, Fix string }
+type Usage struct {
+	What, Fix string
+	// Code, when set, is the problem code instead of "usage".
+	Code string
+}
 
 func (e *Usage) Error() string { return e.What }
 

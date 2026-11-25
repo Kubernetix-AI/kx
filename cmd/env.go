@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -146,7 +147,7 @@ func runEnvSet(ctx context.Context, a *App, cmd *cobra.Command, f configureFlags
 		step:    func(app *api.App) (string, string) { return "Set", listOf(names) + " on " + app.Name },
 		save: func(ctx context.Context, c *api.Client, app *api.App) error {
 			_, err := c.PatchAppEnv(ctx, app.ID, values, nil)
-			return err
+			return envRefused(app, values, err)
 		},
 		undone: func(before *api.App) func(*api.App) (bool, bool) {
 			// Only a name the app didn't have shows the change is gone:
@@ -260,6 +261,18 @@ func emptyValue(where string, arg bool) error {
 	return &kxerr.Usage{What: where + " sets an empty value; to set it empty, add --allow-empty.", Fix: "To remove a variable instead: kx env unset NAME"}
 }
 
+// maxEnvValue is the longest value Kubernetix takes, in bytes.
+const maxEnvValue = 32768
+
+// tooLarge refuses a value over maxEnvValue. where is "Argument 2", "Line
+// 5 of .env" or "Standard input"; the value itself is never shown.
+func tooLarge(where, verb string, n int) error {
+	return &kxerr.Usage{
+		What: fmt.Sprintf("%s %s a %d-byte value; Kubernetix takes at most %d.", where, verb, n, maxEnvValue),
+		Fix:  "Store a value that large as a secret in the dashboard (Secrets) and bind it to the app.",
+	}
+}
+
 // envValues reads the variables kx env set was given: NAME=VALUE
 // arguments, NAME arguments (the value of kx's own NAME variable), the
 // NAME=VALUE lines of --from-file, or one NAME with --stdin. Errors name a
@@ -301,6 +314,8 @@ func envValues(ctx context.Context, a *App, in envInput, args []string) (map[str
 			return nil, usageLine("kx env set", fmt.Sprintf("Argument %d looks like a value: write NAME=value, or NAME to take the value from kx's environment.", i+1), envExample)
 		case v == "" && !in.allowEmpty:
 			return nil, emptyValue(fmt.Sprintf("Argument %d", i+1), true)
+		case len(v) > maxEnvValue:
+			return nil, tooLarge(fmt.Sprintf("Argument %d", i+1), "has", len(v))
 		}
 		if err := add(k, v); err != nil {
 			return nil, err
@@ -337,6 +352,9 @@ func stdinValue(ctx context.Context, a *App, in envInput, args []string) (map[st
 	}
 	if v == "" && !in.allowEmpty {
 		return nil, &kxerr.Usage{What: "Standard input holds an empty value; to set an empty value, add --allow-empty.", Fix: "To remove a variable instead: kx env unset " + name}
+	}
+	if len(v) > maxEnvValue {
+		return nil, tooLarge("Standard input", "holds", len(v))
 	}
 	return map[string]string{name: v}, nil
 }
@@ -402,6 +420,9 @@ func readEnvFile(a *App, name string, allowEmpty bool) ([][2]string, error) {
 		if v == "" && !allowEmpty {
 			return nil, emptyValue(fmt.Sprintf("Line %d of %s", n, name), false)
 		}
+		if len(v) > maxEnvValue {
+			return nil, tooLarge(fmt.Sprintf("Line %d of %s", n, name), "has", len(v))
+		}
 		out = append(out, [2]string{k, v})
 	}
 	if err := sc.Err(); err != nil {
@@ -454,6 +475,25 @@ func envFileValue(v string) (string, bool) {
 		}
 	}
 	return v, true
+}
+
+// envRefused words Kubernetix's refusal of the variables an app would hold
+// after kx env set (invalid_env_var). kx checked what it sends, so the
+// variable named is one the app already holds, or the total is over the
+// limit. The platform's message names variables, never values.
+func envRefused(app *api.App, set map[string]string, err error) error {
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != "invalid_env_var" {
+		return err
+	}
+	what := "Kubernetix didn't accept the change: " + apiErr.Message
+	name, named := strings.CutPrefix(apiErr.Field, "env_vars.")
+	if _, ours := set[name]; named && name != "" && !ours {
+		return &kxerr.Usage{Code: "invalid_env_var", What: what,
+			Fix: fmt.Sprintf("%s is already on %s: remove it first (kx env unset %s), then run the command again.", name, app.Name, name)}
+	}
+	return &kxerr.Usage{Code: "invalid_env_var", What: what,
+		Fix: fmt.Sprintf("Remove variables %s no longer needs (kx env unset NAME), then run the command again.", app.Name)}
 }
 
 // envCheck is the command that shows an app's variables.
