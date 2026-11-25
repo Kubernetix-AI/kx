@@ -176,29 +176,34 @@ func runEnvUnset(ctx context.Context, a *App, cmd *cobra.Command, f configureFla
 	if len(args) == 0 {
 		return usageLine("kx env unset", "kx env unset needs at least one name.", "OLD_FLAG")
 	}
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	for i, k := range args {
-		if !envNameRe.MatchString(k) {
-			// It could be a value typed by mistake: name the position only.
-			return usageLine("kx env unset", fmt.Sprintf("Argument %d isn't a name: kx env unset takes names only.", i+1), "OLD_FLAG")
-		}
-		if seen[k] {
+		if first, dup := seen[k]; dup {
+			if !envNameRe.MatchString(k) {
+				// It could be a value typed by mistake: positions only.
+				return &kxerr.Usage{What: fmt.Sprintf("Argument %d repeats argument %d.", i+1, first), Fix: "Give each variable once."}
+			}
 			return &kxerr.Usage{What: k + " is given twice.", Fix: "Give each variable once."}
 		}
-		seen[k] = true
+		seen[k] = i + 1
 	}
-	names := append([]string(nil), args...)
-	sort.Strings(names)
 	// Only the names the app has are removed; the others are counted, not
-	// named (a name typed here could be a value by mistake).
+	// named (a name typed here could be a value by mistake). An argument
+	// that breaks kx's name rule is taken only when the app holds exactly
+	// that name (set before, or in the dashboard); otherwise it's refused
+	// by its position, after kx has read the app.
 	var present []string
 	missing := 0
 	return runConfigure(ctx, a, cmd, f, appChange{
 		command: "kx env",
 		prepare: func(_ context.Context, _ *api.Client, app *api.App) (string, error) {
-			for _, k := range args {
-				if _, ok := app.EnvVars[k]; ok {
+			for i, k := range args {
+				_, held := app.EnvVars[k]
+				switch {
+				case held:
 					present = append(present, k)
+				case !envNameRe.MatchString(k):
+					return "", usageLine("kx env unset", fmt.Sprintf("Argument %d isn't a name: kx env unset takes names only.", i+1), "OLD_FLAG")
 				}
 			}
 			missing = len(args) - len(present)
@@ -490,7 +495,7 @@ func envRefused(app *api.App, set map[string]string, err error) error {
 	name, named := strings.CutPrefix(apiErr.Field, "env_vars.")
 	if _, ours := set[name]; named && name != "" && !ours {
 		return &kxerr.Usage{Code: "invalid_env_var", What: what,
-			Fix: fmt.Sprintf("%s is already on %s: remove it first (kx env unset %s), then run the command again.", name, app.Name, name)}
+			Fix: fmt.Sprintf("%s is already on %s: remove it first (kx env unset %s), then run the command again.", api.ShellQuote(name), app.Name, api.ShellQuote(name))}
 	}
 	return &kxerr.Usage{Code: "invalid_env_var", What: what,
 		Fix: fmt.Sprintf("Remove variables %s no longer needs (kx env unset NAME), then run the command again.", app.Name)}

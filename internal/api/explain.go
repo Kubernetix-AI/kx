@@ -396,7 +396,7 @@ func explainAPI(e *Error) Problem {
 	case "env_prefix_conflict":
 		fix := "Remove that variable from the app, or rebind the database with another prefix in the dashboard."
 		if name, ok := strings.CutPrefix(e.Field, "env_vars."); ok && name != "" {
-			fix = fmt.Sprintf("Remove %s from the app (kx env unset %s), or rebind the database with another prefix in the dashboard.", name, name)
+			fix = fmt.Sprintf("Remove %s from the app (kx env unset %s), or rebind the database with another prefix in the dashboard.", ShellQuote(name), ShellQuote(name))
 		}
 		return Problem{"env_prefix_conflict", platformSentence(e, "A variable of the app collides with one a database injects."), fix, ExitUsage}
 
@@ -539,6 +539,18 @@ func rollbackRefused(msg string) Problem {
 		fix = "Roll back in the dashboard, or deploy a new version."
 	}
 	return Problem{"token_not_allowed", what, fix, ExitAuth}
+}
+
+// plainWordRe is a word the shell takes as is.
+var plainWordRe = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+
+// ShellQuote quotes s for a POSIX shell when it holds anything but
+// letters, digits and _: MY VAR becomes 'MY VAR'.
+func ShellQuote(s string) string {
+	if plainWordRe.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // hintOr is the platform's hint for a refused field, or fallback.

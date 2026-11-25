@@ -85,6 +85,9 @@ func explainCases() []explainCase {
 			Problem{"image_refused", "shop-api v15 didn't go live: its image is in another organization's private repository.", "Use your own registry, a public image, or a registry you added a credential for in the dashboard.", 2}},
 		{"failed: image platform", &kxerr.DeployFailed{App: "shop-api", Version: 15, Code: "image_platform_unsupported"},
 			Problem{"image_refused", "shop-api v15 didn't go live: its image has no linux/amd64 build.", "Build it for linux/amd64 (kx deploy does) or publish a multi-arch image, then deploy again.", 2}},
+		{"env var collides, a name to quote", withPath(&Error{Status: 409, Code: "env_prefix_conflict", Field: "env_vars.MY-DB_URL",
+			Message: `env_vars["MY-DB_URL"] collides with the variable injected by database "main" (env_prefix "MY-DB").`, Ctx: loginCtx}, "POST", "/apps/a1/deployments"),
+			Problem{"env_prefix_conflict", `env_vars["MY-DB_URL"] collides with the variable injected by database "main" (env_prefix "MY-DB").`, "Remove 'MY-DB_URL' from the app (kx env unset 'MY-DB_URL'), or rebind the database with another prefix in the dashboard.", 2}},
 		// A refusal kx has no words of its own for: the platform's hint is
 		// the fix.
 		{"unknown refusal with a hint", withPath(&Error{Status: 400, Code: "invalid_port", Message: "port must be between 1 and 65535; got 0.", Hint: "Use the port your container listens on, e.g. 8080.", Ctx: loginCtx}, "POST", "/apps"),
@@ -761,6 +764,14 @@ func TestClient_ParsesTheTriesCeiling(t *testing.T) {
 		var apiErr *Error
 		if !errors.As(err, &apiErr) || apiErr.TriesLimit != want {
 			t.Errorf("%s: %+v", body, err)
+		}
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	for in, want := range map[string]string{"DATABASE_URL": "DATABASE_URL", "MY VAR": "'MY VAR'", "my-var": "'my-var'", "it's": `'it'\''s'`, "": "''"} {
+		if got := ShellQuote(in); got != want {
+			t.Errorf("ShellQuote(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

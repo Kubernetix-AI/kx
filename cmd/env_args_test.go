@@ -206,3 +206,30 @@ func TestEnvSet_ValueTooLarge(t *testing.T) {
 	// The limit itself is fine.
 	h.expect(h.run("env", "set", "CERT="+big[1:], "--no-deploy"), 0)
 }
+
+// An app can hold names kx itself wouldn't take (set before, or in the
+// dashboard): kx env unset removes a name the app holds exactly, and fix
+// lines quote names for the shell.
+func TestEnvUnset_NamesTheAppHolds(t *testing.T) {
+	h := configured(t)
+	h.api.envValues = map[string]map[string]string{appShopID: {"1LEGACY": "x", "my-var": "y", "MY VAR": "z", "KEEP": "k"}}
+	h.expect(h.run("env", "unset", "1LEGACY", "my-var", "MY VAR", "--no-deploy"), 0)
+	if fmt.Sprint(h.api.envPatches) != "[map[unset:[1LEGACY my-var MY VAR]]]" {
+		t.Fatalf("patches = %v", h.api.envPatches)
+	}
+	// Anything else that isn't a name is still refused by position only.
+	h.expect(h.run("env", "unset", "NOT HELD", "--no-deploy"), 2)
+	if !strings.HasSuffix(h.err.String(), "Argument 1 isn't a name: kx env unset takes names only.\nRun: kx env unset OLD_FLAG\n") || strings.Contains(h.err.String(), "NOT HELD") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+	if len(h.api.envPatches) != 1 {
+		t.Fatal("changed the app after a refusal")
+	}
+
+	// A held name that breaks a rule blocks other changes; the fix quotes it.
+	h.api.envValues[appShopID] = map[string]string{"MY VAR": "z"}
+	h.expect(h.run("env", "set", "A=1"), 2)
+	if !strings.HasSuffix(h.err.String(), "'MY VAR' is already on shop-api: remove it first (kx env unset 'MY VAR'), then run the command again.\n") {
+		t.Fatalf("stderr:\n%s", h.err.String())
+	}
+}
