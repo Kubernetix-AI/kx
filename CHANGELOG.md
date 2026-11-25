@@ -116,7 +116,16 @@
   (`invalid_env_var`: remove it first with `kx env unset`), and refuses a value over 32768 bytes
   before sending anything.
 - `kx rollback` with a token shows why Kubernetix refused a version that differs in settings the
-  token can't change, instead of "This token isn't allowed to do that."
+  token can't change, instead of "This token isn't allowed to do that." A token made for another
+  app gets the fix for a token that can reach this one, wherever the refusal comes.
+- `kx env unset` removes a name the app holds even when kx's own name rule wouldn't take it (set
+  before, or in the dashboard); fix lines quote variable names for the shell (`'MY VAR'`).
+- A saved variable that collides with one a database injects makes Kubernetix refuse every deploy
+  of the app; kx says so ("it stops shop-api's deploys (CI's included) until you remove it")
+  instead of "the next deploy applies it".
+- An image check that came out neither way (`image_check_error`) exits 1 and says to try again.
+- Log lines after a failure belong to the failed version by their pod template (the hash in the
+  replica's name), so a serving replica recreated during the deploy isn't counted.
 
 ### Version tags and repositories
 
