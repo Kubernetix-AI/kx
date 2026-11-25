@@ -532,4 +532,18 @@ func TestRun_FailureLogsByPodTemplate(t *testing.T) {
 	if strings.Contains(out, "serving: GET /cart") || !strings.Contains(out, "panic: missing DATABASE_URL\n") || !strings.Contains(out, "(second replica)") {
 		t.Fatalf("stderr:\n%s", out)
 	}
+
+	// Every serving replica was recreated during the deploy: being ready
+	// marks them as the serving version's.
+	e = newEnv(t)
+	e.api.statuses = []string{"pending", "deploying", "failed"}
+	e.api.replicas = func(int) []api.Replica { return []api.Replica{recreated} }
+	e.api.runtimeLogs = streams(map[string][]string{
+		"app-shop-7d9f-re3k": {"serving: GET /cart 200"},
+		"app-shop-8e1a-new":  {"panic: missing DATABASE_URL"},
+	})
+	_, _ = e.run(e.options())
+	if out := e.errOut.String(); strings.Contains(out, "serving: GET /cart") || !strings.Contains(out, "panic: missing DATABASE_URL\n") {
+		t.Fatalf("all serving replicas recreated:\n%s", out)
+	}
 }
